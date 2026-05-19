@@ -79,6 +79,18 @@ func Execute(ctx context.Context, plan resolver.Plan, env Env) (Result, error) {
 	return runTransaction(ctx, plan, env)
 }
 
+// Recover rolls back a transaction left pending by an interrupted run,
+// independently of any new plan — the `peipkg recover` path. It is a
+// no-op when no transaction is pending.
+func Recover(ctx context.Context, env Env) error {
+	lock, err := Acquire(env.LockPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	return recoverPending(ctx, env)
+}
+
 // runTransaction stages, commits, and finalises one plan.
 func runTransaction(ctx context.Context, plan resolver.Plan, env Env) (Result, error) {
 	// §7.4.3: fetch and verify every package before staging any of them.

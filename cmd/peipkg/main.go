@@ -1,17 +1,16 @@
 // Command peipkg is the Peios consumer-side package manager: it
 // installs, upgrades, removes, and queries packages on a Peios system.
 //
-// See DESIGN.md for the architecture. The command-line surface is the
-// final implementation slice; this entrypoint is a placeholder until
-// then.
+// See DESIGN.md for the architecture. The command-line surface lives in
+// internal/cli; this entrypoint only hands the arguments to it.
 package main
 
 import (
-	"fmt"
 	"os"
+
+	"github.com/peios/peipkg/internal/cli"
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "peipkg: not yet implemented")
-	os.Exit(1)
+	os.Exit(cli.Run(os.Args[1:]))
 }
