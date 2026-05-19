@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -18,10 +20,11 @@ import (
 // repository, refreshing its metadata, and loading its verified active
 // index.
 //
-// Note: v0.22 of this client requires a repository's descriptor and
-// indexes to be signed. Fully-unsigned repositories — permitted under
-// the `optional` signature policy (§6.1.6) — are a deferred case; the
-// `optional` policy still governs unsigned package acceptance.
+// A repository configured with the `optional` signature policy and no
+// trust anchors is operated in unsigned mode (§6.5.3): its descriptor
+// and index are fetched and decoded but not verified, it records an
+// empty trust set, and the caller is expected to warn the operator on
+// every operation that touches it. UnsignedMode reports this.
 type Client struct {
 	fetcher  Fetcher
 	store    *db.DB
@@ -34,6 +37,15 @@ func NewClient(fetcher Fetcher, store *db.DB, cacheDir string) *Client {
 	return &Client{fetcher: fetcher, store: store, cacheDir: cacheDir}
 }
 
+// UnsignedMode reports whether cfg selects unverified (unsigned-mode)
+// operation: the `optional` signature policy with no trust anchors to
+// bootstrap verification against (§6.5.3). Choosing `optional` without
+// anchors is the operator's deliberate opt-in; callers MUST warn on
+// every operation that touches such a repository.
+func UnsignedMode(cfg config.RepoConfig) bool {
+	return cfg.SignaturePolicy == config.PolicyOptional && len(cfg.TrustAnchors) == 0
+}
+
 // Add performs the first-add trust ceremony (§6.5.2): it fetches the
 // descriptor and verifies it against the operator-supplied trust
 // anchors, fetches and verifies the active index, and records the
@@ -41,6 +53,10 @@ func NewClient(fetcher Fetcher, store *db.DB, cacheDir string) *Client {
 func (c *Client) Add(ctx context.Context, cfg config.RepoConfig) error {
 	now := time.Now()
 	descriptorURL := cfg.BaseURL + "/repo.json"
+
+	if UnsignedMode(cfg) {
+		return c.addUnsigned(ctx, cfg, now)
+	}
 
 	desc, descBytes, descSig, err := c.fetchDescriptor(ctx, cfg)
 	if err != nil {
@@ -100,6 +116,10 @@ func (c *Client) Add(ctx context.Context, cfg config.RepoConfig) error {
 func (c *Client) Refresh(ctx context.Context, cfg config.RepoConfig) error {
 	now := time.Now()
 	descriptorURL := cfg.BaseURL + "/repo.json"
+
+	if UnsignedMode(cfg) {
+		return c.refreshUnsigned(ctx, cfg, now)
+	}
 
 	prev, found, err := c.store.GetRepository(ctx, cfg.Name)
 	if err != nil {
@@ -179,10 +199,84 @@ func (c *Client) ActiveIndex(ctx context.Context, repoName string) (Index, error
 	if err != nil {
 		return Index{}, err
 	}
-	if err := VerifyDetached(idxBytes, idxSig, trust.VerificationKeys(time.Now())); err != nil {
-		return Index{}, fmt.Errorf("peipkg/repository: cached index for %q: %w", repoName, err)
+	// A signed repository records signing keys; its cached index is
+	// re-verified on every use (§6.2.10). An unsigned-mode repository
+	// records an empty trust set and caches no signature — there is
+	// nothing to verify against (§6.5.3).
+	if len(trust.Keys) > 0 {
+		if idxSig == nil {
+			return Index{}, fmt.Errorf(
+				"peipkg/repository: cached index for %q has no signature", repoName)
+		}
+		if err := VerifyDetached(idxBytes, idxSig, trust.VerificationKeys(time.Now())); err != nil {
+			return Index{}, fmt.Errorf("peipkg/repository: cached index for %q: %w", repoName, err)
+		}
 	}
 	return DecodeIndex(idxBytes)
+}
+
+// addUnsigned performs the first-add of a repository in unsigned mode
+// (§6.5.3): its descriptor and active index are fetched and decoded but
+// not verified, and the recorded trust set is left empty.
+func (c *Client) addUnsigned(ctx context.Context, cfg config.RepoConfig, now time.Time) error {
+	desc, err := c.fetchDescriptorDocument(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	idx, idxBytes, err := c.fetchIndexDocument(ctx, cfg, desc, desc.ActiveIndex, IndexActive)
+	if err != nil {
+		return err
+	}
+	if cfg.MinIndexVersion > 0 && idx.IndexVersion < cfg.MinIndexVersion {
+		return fmt.Errorf("peipkg/repository: %q served active index version %d, below the "+
+			"configured minimum %d; repo-add refused (§6.2.3)",
+			cfg.Name, idx.IndexVersion, cfg.MinIndexVersion)
+	}
+	return c.record(ctx, db.Repository{
+		Name:                cfg.Name,
+		HighestIndexVersion: idx.IndexVersion,
+		GeneratedAtFloor:    idx.GeneratedAt.Unix(),
+		LastRefreshAt:       now,
+		TrustKeys:           "", // an empty trust set marks unsigned mode
+	}, idxBytes, nil)
+}
+
+// refreshUnsigned re-fetches an unsigned-mode repository's descriptor
+// and active index and applies the §6.2.3 freshness gate. Nothing is
+// verified; the recorded trust set stays empty.
+func (c *Client) refreshUnsigned(ctx context.Context, cfg config.RepoConfig, now time.Time) error {
+	prev, found, err := c.store.GetRepository(ctx, cfg.Name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("peipkg/repository: %q has no recorded state; add it first", cfg.Name)
+	}
+	desc, err := c.fetchDescriptorDocument(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	idx, idxBytes, err := c.fetchIndexDocument(ctx, cfg, desc, desc.ActiveIndex, IndexActive)
+	if err != nil {
+		return err
+	}
+
+	row := db.Repository{Name: cfg.Name, TrustKeys: ""}
+	switch CheckFreshness(idx, prev.HighestIndexVersion, time.Unix(prev.GeneratedAtFloor, 0)) {
+	case FreshnessRejected:
+		return fmt.Errorf("peipkg/repository: %q served a rolled-back index "+
+			"(version %d, recorded floor %d); refresh refused",
+			cfg.Name, idx.IndexVersion, prev.HighestIndexVersion)
+	case FreshnessNoProgress:
+		row.HighestIndexVersion = prev.HighestIndexVersion
+		row.GeneratedAtFloor = prev.GeneratedAtFloor
+		row.LastRefreshAt = prev.LastRefreshAt
+	default: // FreshnessProgress
+		row.HighestIndexVersion = idx.IndexVersion
+		row.GeneratedAtFloor = idx.GeneratedAt.Unix()
+		row.LastRefreshAt = now
+	}
+	return c.record(ctx, row, idxBytes, nil)
 }
 
 // ArchiveIndex fetches, verifies, and decodes a repository's archive
@@ -248,6 +342,50 @@ func (c *Client) fetchDescriptor(ctx context.Context, cfg config.RepoConfig) (
 		return Descriptor{}, nil, nil, fmt.Errorf("peipkg/repository: descriptor has no repo name")
 	}
 	return desc, descBytes, descSig, nil
+}
+
+// fetchDescriptorDocument fetches and decodes a repository's descriptor
+// without its detached signature — the unsigned-mode path (§6.5.3).
+func (c *Client) fetchDescriptorDocument(ctx context.Context, cfg config.RepoConfig) (
+	Descriptor, error) {
+
+	descBytes, err := c.fetcher.Fetch(ctx, cfg.BaseURL+"/repo.json", maxDescriptorFetch)
+	if err != nil {
+		return Descriptor{}, err
+	}
+	return DecodeDescriptor(descBytes)
+}
+
+// fetchIndexDocument fetches and decodes an index without its detached
+// signature — the unsigned-mode path (§6.5.3). It still checks the
+// index kind and that the index names the descriptor's repository.
+func (c *Client) fetchIndexDocument(ctx context.Context, cfg config.RepoConfig, desc Descriptor,
+	ptr IndexPointer, expectKind IndexKind) (Index, []byte, error) {
+
+	idxURL, err := resolveURL(cfg.BaseURL, cfg.BaseURL+"/repo.json", ptr.URL,
+		cfg.AllowInsecureTransport)
+	if err != nil {
+		return Index{}, nil, err
+	}
+	idxBytes, err := c.fetcher.Fetch(ctx, idxURL, maxIndexFetch)
+	if err != nil {
+		return Index{}, nil, err
+	}
+	idx, err := DecodeIndex(idxBytes)
+	if err != nil {
+		return Index{}, nil, err
+	}
+	if idx.Kind != expectKind {
+		return Index{}, nil, fmt.Errorf(
+			"peipkg/repository: %q served a %q index where the %q index was expected",
+			cfg.Name, idx.Kind, expectKind)
+	}
+	if idx.RepoName != desc.RepoName {
+		return Index{}, nil, fmt.Errorf(
+			"peipkg/repository: index names repository %q but the descriptor names %q",
+			idx.RepoName, desc.RepoName)
+	}
+	return idx, idxBytes, nil
 }
 
 // fetchKeys fetches every signing key file the descriptor declares and
@@ -385,7 +523,17 @@ func (c *Client) cacheIndex(repoName string, idxBytes, idxSig []byte) error {
 	if err := os.WriteFile(idxPath, idxBytes, 0o644); err != nil {
 		return fmt.Errorf("peipkg/repository: caching index for %q: %w", repoName, err)
 	}
-	if err := os.WriteFile(idxPath+".sig", idxSig, 0o644); err != nil {
+	sigPath := idxPath + ".sig"
+	if idxSig == nil {
+		// Unsigned-mode repository: drop any signature left from an
+		// earlier signed state so it cannot be verified against later.
+		if err := os.Remove(sigPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("peipkg/repository: clearing index signature for %q: %w",
+				repoName, err)
+		}
+		return nil
+	}
+	if err := os.WriteFile(sigPath, idxSig, 0o644); err != nil {
 		return fmt.Errorf("peipkg/repository: caching index signature for %q: %w", repoName, err)
 	}
 	return nil
@@ -400,6 +548,9 @@ func (c *Client) loadCachedIndex(repoName string) ([]byte, []byte, error) {
 			repoName, err)
 	}
 	idxSig, err := os.ReadFile(idxPath + ".sig")
+	if errors.Is(err, fs.ErrNotExist) {
+		return idxBytes, nil, nil // an unsigned-mode repository caches no signature
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("peipkg/repository: reading cached index signature for %q: %w",
 			repoName, err)

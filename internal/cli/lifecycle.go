@@ -195,6 +195,7 @@ func availableSet(ctx context.Context, app *App, store *db.DB) (
 			fmt.Fprintf(app.errOut, "peipkg: skipping repository %q: %v\n", cfg.Name, err)
 			continue
 		}
+		app.warnUnsigned(cfg)
 		for _, e := range idx.Packages {
 			candidates = append(candidates, resolver.Candidate{
 				Name: e.Name, Version: e.Version, Architecture: e.Architecture,

@@ -271,3 +271,43 @@ func TestClientAddRejectsBelowMinIndexVersion(t *testing.T) {
 		t.Errorf("Add should accept an index at the minimum: %v", err)
 	}
 }
+
+func TestClientAddUnsigned(t *testing.T) {
+	pub, priv := keypair(t)
+	// An unsigned-mode repository publishes no detached signatures.
+	fetcher := publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z")
+	delete(fetcher, testRepoBase+"/repo.json.sig")
+	delete(fetcher, testRepoBase+"/index/active.json.sig")
+	delete(fetcher, testRepoBase+"/index/archive.json.sig")
+
+	// The `optional` policy with no trust anchors selects unsigned mode.
+	cfg := config.RepoConfig{
+		Name: testRepoName, BaseURL: testRepoBase,
+		Priority: 10, SignaturePolicy: config.PolicyOptional,
+	}
+	if !repository.UnsignedMode(cfg) {
+		t.Fatal("config should select unsigned mode")
+	}
+	client := repository.NewClient(fetcher, newTestStore(t), t.TempDir())
+	if err := client.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add (unsigned): %v", err)
+	}
+	idx, err := client.ActiveIndex(t.Context(), testRepoName)
+	if err != nil {
+		t.Fatalf("ActiveIndex (unsigned): %v", err)
+	}
+	if idx.IndexVersion != 5 || len(idx.Packages) != 1 {
+		t.Errorf("unsigned index: version=%d, packages=%d", idx.IndexVersion, len(idx.Packages))
+	}
+}
+
+func TestClientAddRequiredRejectsMissingSignature(t *testing.T) {
+	pub, priv := keypair(t)
+	// A required-policy repository must serve a descriptor signature.
+	fetcher := publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z")
+	delete(fetcher, testRepoBase+"/repo.json.sig")
+	client := repository.NewClient(fetcher, newTestStore(t), t.TempDir())
+	if err := client.Add(t.Context(), testConfig(pub)); err == nil {
+		t.Error("Add should fail for a required-policy repository with no descriptor signature")
+	}
+}

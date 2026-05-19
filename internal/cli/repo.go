@@ -29,6 +29,16 @@ func (app *App) repoClient(store *db.DB) *repository.Client {
 	return repository.NewClient(repository.NewHTTPFetcher(), store, app.paths.cacheDir)
 }
 
+// warnUnsigned emits the §6.5.3 per-operation warning when a repository
+// is operated in unsigned mode — added with the `optional` policy and
+// no trust anchors, so its metadata and packages go unverified.
+func (app *App) warnUnsigned(cfg config.RepoConfig) {
+	if repository.UnsignedMode(cfg) {
+		fmt.Fprintf(app.errOut, "peipkg: warning: repository %q is unsigned — its metadata "+
+			"and packages are not cryptographically verified (§6.5.3)\n", cfg.Name)
+	}
+}
+
 // cmdRepo dispatches the repo subcommands.
 func cmdRepo(app *App, args []string) error {
 	if len(args) == 0 {
@@ -93,6 +103,7 @@ func cmdRepoAdd(app *App, args []string) error {
 		return err
 	}
 	app.printf("added repository %q\n", cfg.Name)
+	app.warnUnsigned(cfg)
 	return nil
 }
 
@@ -205,6 +216,7 @@ func cmdRefresh(app *App, args []string) error {
 			continue
 		}
 		app.printf("refreshed %q\n", cfg.Name)
+		app.warnUnsigned(cfg)
 		refreshed++
 	}
 	if refreshed == 0 && failures == 0 {
