@@ -3,6 +3,7 @@ module github.com/peios/peipkg
 go 1.26.2
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/klauspost/compress v1.18.6
 	golang.org/x/text v0.37.0
 	modernc.org/sqlite v1.50.1
