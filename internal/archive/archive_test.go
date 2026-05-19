@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -375,5 +376,45 @@ func TestVerifyRejectsGarbage(t *testing.T) {
 	pub, _ := keypair(t)
 	if _, err := archive.Verify(bytes.NewReader([]byte("not a zstd archive")), resolverFor(pub)); err == nil {
 		t.Error("Verify should reject input that is not a .peipkg archive")
+	}
+}
+
+func TestExtract(t *testing.T) {
+	pub, priv := keypair(t)
+	data := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files: []pkgFile{
+			{"usr/bin/testpkg", []byte("binary content")},
+			{"usr/share/testpkg/data", []byte("payload data")},
+		},
+		dirs:     []string{"usr/share/testpkg"},
+		symlinks: []pkgSymlink{{"usr/bin/testpkg-link", "usr/bin/testpkg"}},
+		pub:      pub, priv: priv,
+	})
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	files := map[string]string{}
+	count := 0
+	err := archive.Extract(bytes.NewReader(data), func(e archive.PayloadEntry, content io.Reader) error {
+		count++
+		body, err := io.ReadAll(content)
+		if err != nil {
+			return err
+		}
+		if e.Type == archive.EntryFile {
+			files[e.Path] = string(body)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if count != 4 { // two files, one directory, one symlink
+		t.Errorf("Extract yielded %d entries, want 4", count)
+	}
+	if files["usr/bin/testpkg"] != "binary content" {
+		t.Errorf("extracted file content: got %q", files["usr/bin/testpkg"])
 	}
 }
