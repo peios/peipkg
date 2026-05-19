@@ -86,6 +86,9 @@ func commitOp(op fileOp) error {
 			return fmt.Errorf("peipkg/install: installing %s: %w", op.finalPath, err)
 		}
 	case actionRemove:
+		if !exists(op.finalPath) {
+			return nil // already absent — nothing to remove or back up
+		}
 		if err := os.Rename(op.finalPath, op.backupPath); err != nil {
 			return fmt.Errorf("peipkg/install: removing %s: %w", op.finalPath, err)
 		}

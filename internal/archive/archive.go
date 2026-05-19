@@ -71,7 +71,10 @@ type PayloadEntry struct {
 // Package is a fully-verified .peipkg, the result of [Verify].
 type Package struct {
 	Manifest manifest.Manifest
-	Payload  []PayloadEntry
+	// ManifestJSON is the manifest's exact bytes, retained verbatim for
+	// the package database to store unaltered.
+	ManifestJSON []byte
+	Payload      []PayloadEntry
 	// Signed reports whether the package carried an inline signature.
 	// An unsigned package is not an error here; whether to accept one
 	// is the caller's per-repository trust-policy decision (§6.5.3).
@@ -98,7 +101,8 @@ func Verify(r io.ReadSeeker, resolveKey KeyResolver) (*Package, error) {
 		return nil, err
 	}
 	if !res.signed {
-		return &Package{Manifest: res.manifest, Payload: res.payload, Signed: false}, nil
+		return &Package{Manifest: res.manifest, ManifestJSON: res.manifestJSON,
+			Payload: res.payload, Signed: false}, nil
 	}
 
 	digest, err := signedDigest(r, res.signedLen)
@@ -113,16 +117,18 @@ func Verify(r io.ReadSeeker, resolveKey KeyResolver) (*Package, error) {
 	if err := res.envelope.Verify(key, digest); err != nil {
 		return nil, fmt.Errorf("peipkg/archive: %w", err)
 	}
-	return &Package{Manifest: res.manifest, Payload: res.payload, Signed: true}, nil
+	return &Package{Manifest: res.manifest, ManifestJSON: res.manifestJSON,
+		Payload: res.payload, Signed: true}, nil
 }
 
 // walkResult carries everything pass one of Verify extracts.
 type walkResult struct {
-	manifest  manifest.Manifest
-	payload   []PayloadEntry
-	signed    bool
-	envelope  signature.Envelope
-	signedLen int64 // length of the signature's signed byte range (§5.1.2)
+	manifest     manifest.Manifest
+	manifestJSON []byte
+	payload      []PayloadEntry
+	signed       bool
+	envelope     signature.Envelope
+	signedLen    int64 // length of the signature's signed byte range (§5.1.2)
 }
 
 // walk decompresses and validates the archive in a single pass: tar
@@ -175,6 +181,7 @@ walkLoop:
 			if err != nil {
 				return res, fmt.Errorf("peipkg/archive: %w", err)
 			}
+			res.manifestJSON = data
 			// size_installed is now known; tighten the decompression cap.
 			capped.limit = min(maxDecompressed, res.manifest.SizeInstalled+decompressionAllowance)
 
