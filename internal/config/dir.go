@@ -38,6 +38,7 @@ type wireRepo struct {
 	SignaturePolicy        string   `toml:"signature_policy"`
 	TrustAnchors           []string `toml:"trust_anchors"`
 	AllowInsecureTransport bool     `toml:"allow_insecure_transport"`
+	MinIndexVersion        *int64   `toml:"min_index_version"`
 }
 
 // Repositories returns every configured repository, ordered by name. A
@@ -96,6 +97,7 @@ func (p *DirProvider) Put(cfg RepoConfig) error {
 		SignaturePolicy:        string(cfg.SignaturePolicy),
 		TrustAnchors:           cfg.TrustAnchors,
 		AllowInsecureTransport: cfg.AllowInsecureTransport,
+		MinIndexVersion:        &cfg.MinIndexVersion,
 	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(w); err != nil {
@@ -145,6 +147,9 @@ func (p *DirProvider) load(name, path string) (RepoConfig, error) {
 	}
 	if w.SignaturePolicy != "" {
 		cfg.SignaturePolicy = SignaturePolicy(w.SignaturePolicy)
+	}
+	if w.MinIndexVersion != nil {
+		cfg.MinIndexVersion = *w.MinIndexVersion
 	}
 	if err := cfg.validate(); err != nil {
 		return RepoConfig{}, err

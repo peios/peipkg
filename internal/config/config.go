@@ -50,6 +50,11 @@ type RepoConfig struct {
 	// AllowInsecureTransport permits an http:// base URL. It is intended
 	// only for trusted local-network development (§6.4.1).
 	AllowInsecureTransport bool
+	// MinIndexVersion is the operator-supplied minimum acceptable
+	// index_version (§6.2.3), distributed out-of-band alongside the
+	// trust anchors. The first-add of the repository is refused if its
+	// active index is below this value. Zero means no floor.
+	MinIndexVersion int64
 }
 
 // Provider supplies and stores repository configuration. The
@@ -87,6 +92,10 @@ func (c RepoConfig) validate() error {
 		if err := validateFingerprint(anchor); err != nil {
 			return fmt.Errorf("peipkg/config: repository %q: trust anchor: %w", c.Name, err)
 		}
+	}
+	if c.MinIndexVersion < 0 {
+		return fmt.Errorf("peipkg/config: repository %q: min_index_version must not be negative",
+			c.Name)
 	}
 	return nil
 }

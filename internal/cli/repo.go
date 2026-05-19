@@ -54,6 +54,8 @@ func cmdRepoAdd(app *App, args []string) error {
 	priority := fs.Int("priority", 50, "resolution priority — a lower number wins")
 	policy := fs.String("policy", "required", "signature policy: required or optional")
 	insecure := fs.Bool("insecure", false, "permit an http base URL")
+	minIndex := fs.Int64("min-index-version", 0,
+		"out-of-band minimum acceptable index_version (§6.2.3)")
 	var anchors stringList
 	fs.Var(&anchors, "anchor", "a trusted signing-key fingerprint (repeatable)")
 	pos, err := parseArgs(fs, args)
@@ -70,6 +72,7 @@ func cmdRepoAdd(app *App, args []string) error {
 		SignaturePolicy:        config.SignaturePolicy(*policy),
 		TrustAnchors:           anchors,
 		AllowInsecureTransport: *insecure,
+		MinIndexVersion:        *minIndex,
 	}
 
 	ctx := context.Background()

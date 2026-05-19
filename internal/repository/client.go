@@ -69,6 +69,14 @@ func (c *Client) Add(ctx context.Context, cfg config.RepoConfig) error {
 	if err != nil {
 		return err
 	}
+	// §6.2.3: refuse the first-add when the served index is below the
+	// operator-supplied minimum — an out-of-band rollback floor that
+	// defends against a stale-but-signed index at the trust bootstrap.
+	if cfg.MinIndexVersion > 0 && idx.IndexVersion < cfg.MinIndexVersion {
+		return fmt.Errorf("peipkg/repository: %q served active index version %d, below the "+
+			"configured minimum %d; repo-add refused (§6.2.3)",
+			cfg.Name, idx.IndexVersion, cfg.MinIndexVersion)
+	}
 	trustJSON, err := trust.Marshal()
 	if err != nil {
 		return err

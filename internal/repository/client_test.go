@@ -213,3 +213,24 @@ func TestClientRefreshNeedsPriorState(t *testing.T) {
 		t.Error("Refresh should fail for a repository that was never added")
 	}
 }
+
+func TestClientAddRejectsBelowMinIndexVersion(t *testing.T) {
+	pub, priv := keypair(t)
+
+	// The served active index is version 5; a minimum of 10 refuses it.
+	cfg := testConfig(pub)
+	cfg.MinIndexVersion = 10
+	below := repository.NewClient(
+		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+	if err := below.Add(t.Context(), cfg); err == nil {
+		t.Error("Add should refuse an index below the configured minimum (§6.2.3)")
+	}
+
+	// At the minimum, the add succeeds.
+	cfg.MinIndexVersion = 5
+	atFloor := repository.NewClient(
+		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+	if err := atFloor.Add(t.Context(), cfg); err != nil {
+		t.Errorf("Add should accept an index at the minimum: %v", err)
+	}
+}
