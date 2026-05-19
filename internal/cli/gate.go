@@ -23,18 +23,25 @@ func (app *App) presentPlan(plan resolver.Plan) {
 	}
 }
 
-// describeOp renders one planned operation.
+// describeOp renders one planned operation. A package supplied as a
+// local file — recognised by an empty candidate Repo — is marked, so
+// the operator sees that the repository trust layer was skipped.
 func describeOp(op resolver.Operation) string {
+	var s string
 	switch op.Kind {
 	case resolver.OpInstall:
-		return fmt.Sprintf("install    %s %s", op.Name, op.ToVersion)
+		s = fmt.Sprintf("install    %s %s", op.Name, op.ToVersion)
 	case resolver.OpUpgrade:
-		return fmt.Sprintf("upgrade    %s %s -> %s", op.Name, op.FromVersion, op.ToVersion)
+		s = fmt.Sprintf("upgrade    %s %s -> %s", op.Name, op.FromVersion, op.ToVersion)
 	case resolver.OpDowngrade:
-		return fmt.Sprintf("downgrade  %s %s -> %s", op.Name, op.FromVersion, op.ToVersion)
+		s = fmt.Sprintf("downgrade  %s %s -> %s", op.Name, op.FromVersion, op.ToVersion)
 	default:
-		return fmt.Sprintf("remove     %s %s", op.Name, op.FromVersion)
+		s = fmt.Sprintf("remove     %s %s", op.Name, op.FromVersion)
 	}
+	if op.Candidate != nil && op.Candidate.Repo == "" {
+		s += "  (local file)"
+	}
+	return s
 }
 
 // authorize obtains the deliberate, specific operator authorisation that

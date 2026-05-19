@@ -202,3 +202,38 @@ func TestEndToEndInstall(t *testing.T) {
 		t.Error("the file was not removed by uninstall")
 	}
 }
+
+// TestEndToEndLocalInstall installs a package straight from a .peipkg
+// file on disk — a raw local install, with no repository involved.
+func TestEndToEndLocalInstall(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pkgBytes, _ := buildSignedPackage(t, priv, pub, "tool", "2.0-1",
+		map[string]string{"usr/bin/tool": "#!/bin/sh\necho tool\n"})
+
+	pkgPath := filepath.Join(t.TempDir(), "tool_2.0-1_x86_64.peipkg")
+	if err := os.WriteFile(pkgPath, pkgBytes, 0o644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+
+	app, out := testApp(t)
+	if err := cmdInstall(app, []string{pkgPath, "--yes"}); err != nil {
+		t.Fatalf("install (local file): %v", err)
+	}
+
+	// The payload landed under the operating root.
+	got, err := os.ReadFile(filepath.Join(app.paths.root, "usr/bin/tool"))
+	if err != nil || !strings.Contains(string(got), "echo tool") {
+		t.Errorf("installed file: content %q, err %v", got, err)
+	}
+	// The package is recorded with no origin repository.
+	out.Reset()
+	if err := cmdInfo(app, []string{"tool"}); err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	if !strings.Contains(out.String(), "(local file)") {
+		t.Errorf("info should mark the local-file origin:\n%s", out.String())
+	}
+}

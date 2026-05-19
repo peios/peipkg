@@ -24,13 +24,25 @@ func cmdInstall(app *App, args []string) error {
 		return err
 	}
 	if len(pos) == 0 {
-		return fmt.Errorf("install: at least one package name is required")
+		return fmt.Errorf("install: at least one package name or .peipkg file is required")
 	}
-	reqs := make([]resolver.Request, len(pos))
-	for i, name := range pos {
-		reqs[i] = resolver.Request{Kind: resolver.Install, Name: name}
+	// An argument may name a repository package or a local .peipkg file;
+	// a local file is installed raw — the repository trust layer skipped.
+	reqs := make([]resolver.Request, 0, len(pos))
+	var locals []resolver.Candidate
+	for _, arg := range pos {
+		if isLocalPeipkg(arg) {
+			cand, err := readLocalPackage(arg)
+			if err != nil {
+				return err
+			}
+			locals = append(locals, cand)
+			reqs = append(reqs, resolver.Request{Kind: resolver.Install, Name: cand.Name})
+			continue
+		}
+		reqs = append(reqs, resolver.Request{Kind: resolver.Install, Name: arg})
 	}
-	return transact(app, reqs, resolver.Options{}, *dryRun, *yes)
+	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, locals)
 }
 
 // cmdUpgrade upgrades the named packages, or every installed package
@@ -52,7 +64,7 @@ func cmdUpgrade(app *App, args []string) error {
 			reqs = append(reqs, resolver.Request{Kind: resolver.Upgrade, Name: name})
 		}
 	}
-	return transact(app, reqs, resolver.Options{}, *dryRun, *yes)
+	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, nil)
 }
 
 // cmdUninstall removes one or more packages.
@@ -73,12 +85,15 @@ func cmdUninstall(app *App, args []string) error {
 	for i, name := range pos {
 		reqs[i] = resolver.Request{Kind: resolver.Remove, Name: name}
 	}
-	return transact(app, reqs, resolver.Options{CascadeRemovals: *cascade}, *dryRun, *yes)
+	return transact(app, reqs, resolver.Options{CascadeRemovals: *cascade}, *dryRun, *yes, nil)
 }
 
 // transact resolves a set of requests into a plan, presents it for
 // approval, and — once approved — executes it as one transaction.
-func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, yes bool) error {
+// localCandidates are raw local-file packages added to the resolver's
+// candidate set alongside the repository packages.
+func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, yes bool,
+	localCandidates []resolver.Candidate) error {
 	ctx := context.Background()
 	store, err := app.openDB(ctx)
 	if err != nil {
@@ -91,6 +106,9 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	if err != nil {
 		return err
 	}
+	// Raw local-file installs join the resolver's candidate set; their
+	// dependencies still resolve against the configured repositories.
+	available = append(available, localCandidates...)
 	installed, err := installedSet(ctx, store, configs)
 	if err != nil {
 		return err

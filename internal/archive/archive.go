@@ -120,6 +120,25 @@ func Verify(r io.ReadSeeker, resolveKey KeyResolver) (*Package, error) {
 		Payload: res.payload, Signed: true}, nil
 }
 
+// VerifyFormat reads a .peipkg archive from r and checks everything
+// Verify does — decompression bounds, tar structure, payload paths and
+// types, the manifest and integrity-manifest schemas, and every payload
+// file's hash — except the inline signature's trust. The returned
+// Package's Signed reports whether a well-formed signature was present;
+// it is not checked against any key.
+//
+// It is the entry point for a raw local-file install, where there is no
+// repository and so no trust set to verify a signature against. A
+// repository install uses Verify.
+func VerifyFormat(r io.ReadSeeker) (*Package, error) {
+	res, err := walk(r)
+	if err != nil {
+		return nil, err
+	}
+	return &Package{Manifest: res.manifest, ManifestJSON: res.manifestJSON,
+		Payload: res.payload, Signed: res.signed}, nil
+}
+
 // walkResult carries everything pass one of Verify extracts.
 type walkResult struct {
 	manifest     manifest.Manifest
