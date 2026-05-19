@@ -2,16 +2,23 @@ package install
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/resolver"
 )
+
+// etcNewMarker is the suffix of the file an upgrade writes beside an
+// operator-modified /etc file instead of overwriting it (§7.2.2).
+const etcNewMarker = ".peipkg-new"
 
 // stagedOp is everything one plan operation contributes to a
 // transaction: its staged file operations, the package-database rows it
@@ -25,6 +32,9 @@ type stagedOp struct {
 	files []db.PackageFile
 	// sideEffects are the maintenance operations the package declares.
 	sideEffects []string
+	// warnings are non-fatal divergences the operator should see —
+	// chiefly §7.2.2 modified /etc files preserved across an upgrade.
+	warnings []string
 }
 
 // stageOperation stages one plan operation. On failure it returns the
@@ -57,6 +67,10 @@ func stagePackage(ctx context.Context, env Env, txnID int64, op resolver.Operati
 		if existing, err = env.DB.PackageFiles(ctx, op.Name); err != nil {
 			return s, err
 		}
+	}
+	existingByPath := make(map[string]db.PackageFile, len(existing))
+	for _, f := range existing {
+		existingByPath[f.Path] = f
 	}
 
 	// Extract: write each payload file's content, each symlink, and each
@@ -107,7 +121,25 @@ func stagePackage(ctx context.Context, env Env, txnID int64, op resolver.Operati
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeDir})
 		case archive.EntryFile:
-			s.fileOps = append(s.fileOps, plannedOp(physical, stagedAt[logical], txnID))
+			dest := physical
+			// §7.2.2 modified-detection: an operator-edited /etc file is
+			// not clobbered by an upgrade. The new default lands beside
+			// it and the divergence is reported; the database still
+			// records the path with the new version's hash.
+			if old, ok := existingByPath[logical]; ok && old.Type == db.FileTypeFile &&
+				isEtcPath(logical) && exists(physical) {
+				modified, err := fileModified(physical, old.Hash)
+				if err != nil {
+					return s, err
+				}
+				if modified {
+					dest = physical + etcNewMarker
+					s.warnings = append(s.warnings, fmt.Sprintf(
+						"%s has been modified since install — keeping it; the new "+
+							"default was written to %s%s", logical, logical, etcNewMarker))
+				}
+			}
+			s.fileOps = append(s.fileOps, plannedOp(dest, stagedAt[logical], txnID))
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeFile, Hash: entry.Hash})
 		case archive.EntrySymlink:
@@ -200,4 +232,26 @@ func originRepo(op resolver.Operation) string {
 		return op.Candidate.Repo
 	}
 	return ""
+}
+
+// isEtcPath reports whether a logical path is configuration under /etc,
+// where §7.2.2 modified-detection applies.
+func isEtcPath(logical string) bool {
+	return strings.HasPrefix(logical, "/etc/")
+}
+
+// fileModified reports whether the file at path has content differing
+// from recordedHash — the hex SHA-256 the package database recorded for
+// it at install.
+func fileModified(path, recordedHash string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("peipkg/install: reading %s: %w", path, err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false, fmt.Errorf("peipkg/install: hashing %s: %w", path, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)) != recordedHash, nil
 }

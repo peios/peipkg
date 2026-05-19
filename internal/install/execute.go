@@ -151,9 +151,16 @@ func runTransaction(ctx context.Context, plan resolver.Plan, env Env) (Result, e
 		return Result{}, fmt.Errorf("peipkg/install: committing transaction %d: %w", txnID, err)
 	}
 
+	// The transaction has committed. Surface the staging-time warnings
+	// (§7.2.2 modified /etc files), discard the now-purposeless backups
+	// (§7.2.2 step 4.3), and run the post-commit side effects.
 	var result Result
+	for _, s := range staged {
+		result.Warnings = append(result.Warnings, s.warnings...)
+	}
+	result.Warnings = append(result.Warnings, discardBackups(ops)...)
 	if env.RunSideEffects {
-		result.Warnings = runSideEffects(sideEffectsOf(staged))
+		result.Warnings = append(result.Warnings, runSideEffects(sideEffectsOf(staged))...)
 	}
 	return result, nil
 }

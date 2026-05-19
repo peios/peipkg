@@ -141,6 +141,25 @@ func rollbackOp(op fileOp) error {
 	}
 }
 
+// discardBackups removes the displaced-original backups of a committed
+// transaction (§7.2.2 step 4.3). Once a transaction has committed its
+// backups serve no purpose — recovery only ever rolls back a *pending*
+// transaction. A failed removal is reported, not fatal: the
+// transaction has already committed.
+func discardBackups(ops []fileOp) []string {
+	var warnings []string
+	for _, op := range ops {
+		if op.backupPath == "" {
+			continue
+		}
+		if err := os.Remove(op.backupPath); err != nil && !os.IsNotExist(err) {
+			warnings = append(warnings,
+				fmt.Sprintf("could not remove backup %s: %v", op.backupPath, err))
+		}
+	}
+	return warnings
+}
+
 // exists reports whether a filesystem object is present at path. A
 // symlink counts as present even if its target is missing.
 func exists(path string) bool {

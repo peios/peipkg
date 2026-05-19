@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -339,5 +340,121 @@ func TestExecuteEmptyPlan(t *testing.T) {
 		PeipkgVersion: "0.1.0-test", Provider: fakeProvider{}}
 	if _, err := install.Execute(t.Context(), resolver.Plan{}, env); err != nil {
 		t.Errorf("Execute of an empty plan: %v", err)
+	}
+}
+
+// upgradeOp builds the plan operation for an app upgrade.
+func upgradeOp(t *testing.T, from, to string) resolver.Operation {
+	return resolver.Operation{
+		Kind: resolver.OpUpgrade, Name: "app",
+		FromVersion: mustVer(t, from), ToVersion: mustVer(t, to),
+		Candidate: &resolver.Candidate{Repo: "official"},
+	}
+}
+
+func TestExecuteUpgradeKeepsModifiedEtcFile(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	baseEnv := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+
+	installEnv := baseEnv
+	installEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.0-1",
+		files: map[string]string{"etc/app.conf": "default config v1"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "app", "1.0-1")}}, installEnv); err != nil {
+		t.Fatalf("Execute (install): %v", err)
+	}
+
+	// The operator edits the config file after install.
+	confPath := filepath.Join(root, "etc/app.conf")
+	if err := os.WriteFile(confPath, []byte("operator's edits"), 0o644); err != nil {
+		t.Fatalf("edit conf: %v", err)
+	}
+
+	upgradeEnv := baseEnv
+	upgradeEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.1-1",
+		files: map[string]string{"etc/app.conf": "default config v2"}})}
+	result, err := install.Execute(ctx, resolver.Plan{
+		Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "1.1-1")}}, upgradeEnv)
+	if err != nil {
+		t.Fatalf("Execute (upgrade): %v", err)
+	}
+
+	// §7.2.2: the operator's file is kept; the new default lands beside it.
+	if got, _ := os.ReadFile(confPath); string(got) != "operator's edits" {
+		t.Errorf("modified /etc file: content %q, want the operator's edits", got)
+	}
+	if got, _ := os.ReadFile(confPath + ".peipkg-new"); string(got) != "default config v2" {
+		t.Errorf(".peipkg-new: content %q, want the new default", got)
+	}
+	if len(result.Warnings) == 0 {
+		t.Error("the upgrade did not report the modified /etc file")
+	}
+}
+
+func TestExecuteUpgradeReplacesUnmodifiedEtcFile(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	baseEnv := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+
+	installEnv := baseEnv
+	installEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.0-1",
+		files: map[string]string{"etc/app.conf": "default config v1"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "app", "1.0-1")}}, installEnv); err != nil {
+		t.Fatalf("Execute (install): %v", err)
+	}
+
+	// The operator leaves the file untouched, so the upgrade replaces it.
+	upgradeEnv := baseEnv
+	upgradeEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.1-1",
+		files: map[string]string{"etc/app.conf": "default config v2"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{
+		Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "1.1-1")}}, upgradeEnv); err != nil {
+		t.Fatalf("Execute (upgrade): %v", err)
+	}
+
+	confPath := filepath.Join(root, "etc/app.conf")
+	if got, _ := os.ReadFile(confPath); string(got) != "default config v2" {
+		t.Errorf("an unmodified /etc file should be replaced: content %q", got)
+	}
+	if _, err := os.Lstat(confPath + ".peipkg-new"); !os.IsNotExist(err) {
+		t.Error("an unmodified /etc file should not produce a .peipkg-new")
+	}
+}
+
+func TestExecuteDiscardsBackupsAfterCommit(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	baseEnv := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+
+	installEnv := baseEnv
+	installEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.0-1", files: map[string]string{"usr/bin/app": "v1"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "app", "1.0-1")}}, installEnv); err != nil {
+		t.Fatalf("Execute (install): %v", err)
+	}
+	upgradeEnv := baseEnv
+	upgradeEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.1-1", files: map[string]string{"usr/bin/app": "v2"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{
+		Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "1.1-1")}}, upgradeEnv); err != nil {
+		t.Fatalf("Execute (upgrade): %v", err)
+	}
+
+	// §7.2.2 step 4.3: no backup survives a committed transaction.
+	entries, err := os.ReadDir(filepath.Join(root, "usr/bin"))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".peipkg-backup-") {
+			t.Errorf("backup %q survived the committed transaction", e.Name())
+		}
 	}
 }
