@@ -26,6 +26,12 @@ type worldPkg struct {
 	// installedVersion is the version this package is currently
 	// installed at, or nil if it is not installed.
 	installedVersion *version.Version
+	// installedRepo and installedRepoPriority record the repository the
+	// package was installed from, for the §6.5.7 foreign-replaces gate;
+	// installedRepo is empty when the package is not installed or its
+	// origin is unknown.
+	installedRepo         string
+	installedRepoPriority int
 	// candidate is the chosen replacement, or nil if the package is left
 	// at its installed version.
 	candidate *Candidate
@@ -52,7 +58,9 @@ func Resolve(reqs []Request, installed []Installed, available []Candidate, opts 
 		world[inst.Name] = &worldPkg{
 			name: inst.Name, version: inst.Version, architecture: inst.Architecture,
 			dependencies: inst.Dependencies, conflicts: inst.Conflicts, provides: inst.Provides,
-			installedVersion: &v,
+			installedVersion:      &v,
+			installedRepo:         inst.Repo,
+			installedRepoPriority: inst.RepoPriority,
 		}
 	}
 
@@ -85,6 +93,7 @@ func Resolve(reqs []Request, installed []Installed, available []Candidate, opts 
 	if err := resolveForward(world, idx, goals, opts, &auths); err != nil {
 		return Plan{}, err
 	}
+	applyReplaces(world, &auths)
 	if err := checkConsistency(world, opts, downgradeAllowed); err != nil {
 		return Plan{}, err
 	}
@@ -314,4 +323,48 @@ func dedupeAuthorizations(auths []Authorization) []Authorization {
 		out = append(out, a)
 	}
 	return out
+}
+
+// applyReplaces enacts §4.1.5 succession. A package being installed or
+// upgraded that declares a `replaces` entry matching an installed
+// package supersedes it: the replaced package is dropped from the
+// desired world, so the plan removes it and installs the replacer in
+// its place. A succession driven by a package from a lower-priority
+// repository than the replaced package's origin is an elevated action
+// requiring explicit operator authorisation (§6.5.7).
+//
+// World package names are visited in sorted order so the authorizations
+// are produced deterministically (§4.2.7).
+func applyReplaces(world map[string]*worldPkg, auths *[]Authorization) {
+	var superseded []string
+	for _, name := range sortedNames(world) {
+		p := world[name]
+		if p.candidate == nil {
+			continue // not being installed or upgraded — its replaces is inert
+		}
+		for _, r := range p.candidate.Replaces {
+			victim, ok := world[r.Name]
+			if !ok || victim.installedVersion == nil {
+				continue // the named package is not installed — nothing to supersede
+			}
+			if !r.Constraint.Matches(*victim.installedVersion) {
+				continue
+			}
+			superseded = append(superseded, r.Name)
+			if victim.installedRepo != "" &&
+				p.candidate.RepoPriority > victim.installedRepoPriority {
+				*auths = append(*auths, Authorization{
+					Kind: AuthForeignReplaces,
+					Detail: fmt.Sprintf(
+						"%q from repository %q (priority %d) replaces %q, which was "+
+							"installed from higher-priority repository %q (priority %d)",
+						p.name, p.candidate.Repo, p.candidate.RepoPriority,
+						r.Name, victim.installedRepo, victim.installedRepoPriority),
+				})
+			}
+		}
+	}
+	for _, name := range superseded {
+		delete(world, name)
+	}
 }

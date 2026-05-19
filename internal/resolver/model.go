@@ -56,6 +56,7 @@ type Candidate struct {
 	Dependencies []manifest.Dependency
 	Conflicts    []manifest.Dependency
 	Provides     []manifest.Provides
+	Replaces     []manifest.Replaces
 
 	Repo string
 	// RepoPriority orders repositories; a lower number is higher
@@ -76,6 +77,13 @@ type Installed struct {
 	Dependencies []manifest.Dependency
 	Conflicts    []manifest.Dependency
 	Provides     []manifest.Provides
+
+	// Repo is the repository the package was installed from, and
+	// RepoPriority that repository's current priority — used to gate a
+	// §6.5.7 foreign `replaces`. Repo is empty when the origin is
+	// unknown (a local-file install, or a repository since removed).
+	Repo         string
+	RepoPriority int
 }
 
 // Options carries the system facts and per-transaction policy a

@@ -451,3 +451,48 @@ func TestLowTrustProvidesRaisesAuthorization(t *testing.T) {
 		t.Fatalf("expected one AuthLowTrustProvides, got %#v", plan.Authorizations)
 	}
 }
+
+func TestReplacesSupersedesInstalled(t *testing.T) {
+	// nginx supersedes the renamed nginx-core (§4.1.5). Installing nginx
+	// removes nginx-core and installs nginx in its place.
+	nginx := cand(t, "nginx", "1.26-1")
+	nginx.Replaces = []manifest.Replaces{{Name: "nginx-core"}}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "nginx"}},
+		[]resolver.Installed{inst(t, "nginx-core", "1.20-1")},
+		[]resolver.Candidate{nginx},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{"remove nginx-core", "install nginx"}) {
+		t.Errorf("plan: got %v, want [remove nginx-core, install nginx]", got)
+	}
+	if len(plan.Authorizations) != 0 {
+		t.Errorf("unexpected authorizations: %#v", plan.Authorizations)
+	}
+}
+
+func TestForeignReplacesRaisesAuthorization(t *testing.T) {
+	// A package from a low-priority repository replacing one installed
+	// from a higher-priority repository is an elevated action (§6.5.7).
+	nginx := cand(t, "nginx", "1.26-1")
+	nginx.Repo, nginx.RepoPriority = "extra", 50
+	nginx.Replaces = []manifest.Replaces{{Name: "nginx-core"}}
+	core := inst(t, "nginx-core", "1.20-1")
+	core.Repo, core.RepoPriority = "official", 10
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "nginx"}},
+		[]resolver.Installed{core},
+		[]resolver.Candidate{nginx},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(plan.Authorizations) != 1 ||
+		plan.Authorizations[0].Kind != resolver.AuthForeignReplaces {
+		t.Fatalf("expected one AuthForeignReplaces, got %#v", plan.Authorizations)
+	}
+}

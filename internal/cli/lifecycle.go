@@ -87,11 +87,11 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	defer store.Close()
 
 	opts.PrimaryArch = primaryArch(ctx, store)
-	installed, err := installedSet(ctx, store)
+	available, configs, err := availableSet(ctx, app, store)
 	if err != nil {
 		return err
 	}
-	available, configs, err := availableSet(ctx, app, store)
+	installed, err := installedSet(ctx, store, configs)
 	if err != nil {
 		return err
 	}
@@ -139,8 +139,12 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 }
 
 // installedSet builds the resolver's view of the installed packages
-// from the package database.
-func installedSet(ctx context.Context, store *db.DB) ([]resolver.Installed, error) {
+// from the package database. configs supplies the current repository
+// priorities so each package can carry its origin repository's trust
+// level for the §6.5.7 foreign-replaces gate.
+func installedSet(ctx context.Context, store *db.DB,
+	configs map[string]config.RepoConfig) ([]resolver.Installed, error) {
+
 	pkgs, err := store.ListPackages(ctx)
 	if err != nil {
 		return nil, err
@@ -155,10 +159,18 @@ func installedSet(ctx context.Context, store *db.DB) ([]resolver.Installed, erro
 		if err != nil {
 			return nil, fmt.Errorf("installed package %q has an unreadable manifest: %w", p.Name, err)
 		}
-		installed = append(installed, resolver.Installed{
+		inst := resolver.Installed{
 			Name: p.Name, Version: v, Architecture: p.Architecture,
 			Dependencies: m.Dependencies, Conflicts: m.Conflicts, Provides: m.Provides,
-		})
+		}
+		// Record the origin repository's current priority when that
+		// repository is still configured; otherwise the origin is
+		// unknown and the §6.5.7 gate cannot apply.
+		if cfg, ok := configs[p.OriginRepo]; ok && p.OriginRepo != "" {
+			inst.Repo = p.OriginRepo
+			inst.RepoPriority = cfg.Priority
+		}
+		installed = append(installed, inst)
 	}
 	return installed, nil
 }
@@ -186,7 +198,8 @@ func availableSet(ctx context.Context, app *App, store *db.DB) (
 		for _, e := range idx.Packages {
 			candidates = append(candidates, resolver.Candidate{
 				Name: e.Name, Version: e.Version, Architecture: e.Architecture,
-				Dependencies: e.Dependencies, Conflicts: e.Conflicts, Provides: e.Provides,
+				Dependencies: e.Dependencies, Conflicts: e.Conflicts,
+				Provides: e.Provides, Replaces: e.Replaces,
 				Repo: cfg.Name, RepoPriority: cfg.Priority,
 				URL: e.URL, Hash: e.Hash,
 				SizeCompressed: e.SizeCompressed, SizeInstalled: e.SizeInstalled,
