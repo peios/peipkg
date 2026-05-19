@@ -12,9 +12,11 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 )
@@ -143,6 +145,33 @@ func (e Envelope) Verify(pub ed25519.PublicKey, digest []byte) error {
 func Fingerprint(pub ed25519.PublicKey) string {
 	sum := sha256.Sum256(pub)
 	return hex.EncodeToString(sum[:])
+}
+
+// ParsePublicKey decodes an Ed25519 public key from a published key
+// file (§5.2.2): either the raw 32 bytes, or a PEM "PUBLIC KEY" block
+// in SubjectPublicKeyInfo form. Both encodings must be accepted.
+func ParsePublicKey(data []byte) (ed25519.PublicKey, error) {
+	if len(data) == ed25519.PublicKeySize {
+		return ed25519.PublicKey(bytes.Clone(data)), nil
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf(
+			"peipkg/signature: public key is neither the raw 32 bytes nor a PEM block")
+	}
+	if block.Type != "PUBLIC KEY" {
+		return nil, fmt.Errorf(
+			"peipkg/signature: PEM block type is %q, want \"PUBLIC KEY\"", block.Type)
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/signature: parsing public key: %w", err)
+	}
+	key, ok := parsed.(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("peipkg/signature: public key is %T, want Ed25519", parsed)
+	}
+	return key, nil
 }
 
 // validateFingerprint checks a fingerprint string is 64 lowercase hex

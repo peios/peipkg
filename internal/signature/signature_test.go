@@ -4,8 +4,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"strings"
 	"testing"
@@ -187,5 +189,32 @@ func TestDecodeEnvelopeRejectsBadValues(t *testing.T) {
 func TestDecodeEnvelopeRejectsMalformedJSON(t *testing.T) {
 	if _, err := signature.DecodeEnvelope([]byte("{not json")); err == nil {
 		t.Error("malformed JSON should be rejected")
+	}
+}
+
+func TestParsePublicKey(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	// The raw 32-byte encoding.
+	if got, err := signature.ParsePublicKey(pub); err != nil || !got.Equal(pub) {
+		t.Errorf("ParsePublicKey (raw): got %x, err %v", got, err)
+	}
+
+	// The PEM SubjectPublicKeyInfo encoding.
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey: %v", err)
+	}
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	if got, err := signature.ParsePublicKey(pemKey); err != nil || !got.Equal(pub) {
+		t.Errorf("ParsePublicKey (PEM): got %x, err %v", got, err)
+	}
+
+	// Neither form.
+	if _, err := signature.ParsePublicKey([]byte("not a public key")); err == nil {
+		t.Error("ParsePublicKey should reject input that is neither raw nor PEM")
 	}
 }
