@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/install"
 )
 
@@ -37,6 +38,8 @@ func cmdRecover(app *App, args []string) error {
 	if err := install.Recover(ctx, env); err != nil {
 		return err
 	}
+	app.emit(audit.Event{Type: audit.TypeRecovery, Outcome: audit.OutcomeSuccess,
+		Detail: "an interrupted transaction was rolled back"})
 	app.printf("recovered: the interrupted transaction was rolled back\n")
 	return nil
 }

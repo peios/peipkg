@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/resolver"
 )
@@ -21,6 +22,7 @@ func testApp(t *testing.T) (*App, *bytes.Buffer) {
 	t.Helper()
 	out := &bytes.Buffer{}
 	app := newApp(t.TempDir(), strings.NewReader(""), out, &bytes.Buffer{})
+	app.emitter = &audit.Recorder{} // record audit events instead of emitting to KMES
 	return app, out
 }
 
@@ -306,6 +308,19 @@ func TestInverseRequests(t *testing.T) {
 	// A removal is undone by reinstalling the removed version.
 	if reqs[2].Kind != resolver.Downgrade || reqs[2].Version.String() != "3.0-1" {
 		t.Errorf("remove inverse: %+v", reqs[2])
+	}
+}
+
+func TestAuditFailedResolutionEmitsEvent(t *testing.T) {
+	app, _ := testApp(t)
+	rec := app.emitter.(*audit.Recorder)
+	if err := cmdInstall(app, []string{"nonexistent"}); err == nil {
+		t.Fatal("install of an unknown package should fail")
+	}
+	// §7.6: a rejected operation emits a transaction-failed event.
+	if len(rec.Events) != 1 || rec.Events[0].Type != audit.TypeTxnFailed ||
+		rec.Events[0].Outcome != audit.OutcomeRejection {
+		t.Fatalf("expected one rejection transaction-failed event, got %+v", rec.Events)
 	}
 }
 

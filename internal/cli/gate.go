@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/resolver"
 )
 
@@ -56,6 +57,10 @@ func (app *App) authorize(auths []resolver.Authorization) bool {
 		if !app.readConfirmation() {
 			return false
 		}
+		// §7.6.6: the authorising act and what it authorised are
+		// recorded in the audit stream.
+		app.emit(audit.Event{Type: audit.TypeAuthorisation,
+			Outcome: audit.OutcomeSuccess, Detail: a.Detail})
 	}
 	return true
 }

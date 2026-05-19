@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sort"
 
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/install"
@@ -43,7 +44,7 @@ func cmdInstall(app *App, args []string) error {
 		}
 		reqs = append(reqs, resolver.Request{Kind: resolver.Install, Name: arg})
 	}
-	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, locals)
+	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, locals, audit.TypeInstall)
 }
 
 // cmdUpgrade upgrades the named packages, or every installed package
@@ -65,7 +66,7 @@ func cmdUpgrade(app *App, args []string) error {
 			reqs = append(reqs, resolver.Request{Kind: resolver.Upgrade, Name: name})
 		}
 	}
-	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, nil)
+	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, nil, audit.TypeUpgrade)
 }
 
 // cmdUninstall removes one or more packages.
@@ -86,17 +87,21 @@ func cmdUninstall(app *App, args []string) error {
 	for i, name := range pos {
 		reqs[i] = resolver.Request{Kind: resolver.Remove, Name: name}
 	}
-	return transact(app, reqs, resolver.Options{CascadeRemovals: *cascade}, *dryRun, *yes, nil)
+	return transact(app, reqs, resolver.Options{CascadeRemovals: *cascade},
+		*dryRun, *yes, nil, audit.TypeUninstall)
 }
 
 // transact resolves a set of requests into a plan, presents it for
-// approval, and — once approved — executes it as one transaction.
+// approval, and — once approved — executes it as one transaction. It
+// emits the §7.6 audit event for the outcome: eventType on success, or
+// peipkg.transaction-failed on a rejection or rollback.
+//
 // extraCandidates are packages added to the resolver's candidate set
 // beyond the repositories' active indexes — raw local-file packages.
 // When opts.AllowDowngrade is set the repositories' archive indexes are
 // fetched too, so a downgrade or undo can reach historical versions.
 func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, yes bool,
-	extraCandidates []resolver.Candidate) error {
+	extraCandidates []resolver.Candidate, eventType string) error {
 	ctx := context.Background()
 	store, err := app.openDB(ctx)
 	if err != nil {
@@ -128,6 +133,8 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 
 	plan, err := resolver.Resolve(reqs, installed, available, opts)
 	if err != nil {
+		app.emit(audit.Event{Type: audit.TypeTxnFailed,
+			Outcome: audit.OutcomeRejection, Detail: err.Error()})
 		return err
 	}
 	app.presentPlan(plan)
@@ -159,13 +166,39 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	}
 	result, err := install.Execute(ctx, plan, env)
 	if err != nil {
+		app.emit(audit.Event{Type: audit.TypeTxnFailed, TxnID: result.TxnID,
+			Outcome: audit.OutcomeRollback, Packages: auditPackages(plan),
+			Detail: err.Error()})
 		return err
 	}
 	for _, w := range result.Warnings {
 		fmt.Fprintf(app.errOut, "peipkg: warning: %s\n", w)
 	}
+	app.emit(audit.Event{Type: eventType, TxnID: result.TxnID,
+		Outcome: audit.OutcomeSuccess, Packages: auditPackages(plan),
+		Detail: operationCount(plan)})
 	app.printf("done — %s\n", operationCount(plan))
 	return nil
+}
+
+// auditPackages renders a plan's operations as audit package
+// references: the version each package ends at, or — for a removal —
+// the version removed.
+func auditPackages(plan resolver.Plan) []audit.PackageRef {
+	refs := make([]audit.PackageRef, 0, len(plan.Operations))
+	for _, op := range plan.Operations {
+		ref := audit.PackageRef{Name: op.Name}
+		if op.Kind == resolver.OpRemove {
+			ref.Version = op.FromVersion.String()
+		} else {
+			ref.Version = op.ToVersion.String()
+			if op.Candidate != nil {
+				ref.Architecture = op.Candidate.Architecture
+			}
+		}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 // installedSet builds the resolver's view of the installed packages
@@ -280,7 +313,10 @@ func cmdDowngrade(app *App, args []string) error {
 		return fmt.Errorf("downgrade: invalid version %q: %w", pos[1], err)
 	}
 	reqs := []resolver.Request{{Kind: resolver.Downgrade, Name: pos[0], Version: target}}
-	return transact(app, reqs, resolver.Options{AllowDowngrade: true}, *dryRun, *yes, nil)
+	// §7.6 has no `downgrade` event type; a downgrade is audited as an
+	// upgrade (a downgrade is an upgrade to an older version, §7.2.5).
+	return transact(app, reqs, resolver.Options{AllowDowngrade: true},
+		*dryRun, *yes, nil, audit.TypeUpgrade)
 }
 
 // cmdUndo reverses the most recent committed transaction: an install is
@@ -311,7 +347,10 @@ func cmdUndo(app *App, args []string) error {
 		return err
 	}
 	app.printf("undoing transaction %d (%s)\n", last.ID, last.OpSummary)
-	return transact(app, reqs, resolver.Options{AllowDowngrade: true}, *dryRun, *yes, nil)
+	// An undo is a version-changing transaction; §7.6 has no dedicated
+	// type, so it is audited as an upgrade.
+	return transact(app, reqs, resolver.Options{AllowDowngrade: true},
+		*dryRun, *yes, nil, audit.TypeUpgrade)
 }
 
 // lastCommittedTxn returns the most recent committed transaction and

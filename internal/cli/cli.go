@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/db"
 )
 
@@ -34,11 +36,12 @@ type paths struct {
 
 // App is the context shared by every peipkg command.
 type App struct {
-	paths  paths
-	in     io.Reader
-	reader *bufio.Reader // buffers in; shared so prompts do not lose input
-	out    io.Writer
-	errOut io.Writer
+	paths   paths
+	in      io.Reader
+	reader  *bufio.Reader // buffers in; shared so prompts do not lose input
+	out     io.Writer
+	errOut  io.Writer
+	emitter audit.Emitter // the §7.6 audit-event sink
 }
 
 // newApp builds an App rooted at root, reading from in and writing to
@@ -54,10 +57,11 @@ func newApp(root string, in io.Reader, out, errOut io.Writer) *App {
 			lockPath:  filepath.Join(state, "lock"),
 			cacheDir:  filepath.Join(state, "cache"),
 		},
-		in:     in,
-		reader: bufio.NewReader(in),
-		out:    out,
-		errOut: errOut,
+		in:      in,
+		reader:  bufio.NewReader(in),
+		out:     out,
+		errOut:  errOut,
+		emitter: audit.KMESEmitter{},
 	}
 }
 
@@ -132,6 +136,16 @@ func (app *App) openDB(ctx context.Context) (*db.DB, error) {
 // printf writes a formatted line to the command's standard output.
 func (app *App) printf(format string, a ...any) {
 	fmt.Fprintf(app.out, format, a...)
+}
+
+// emit records an audit event for an operation (§7.6). It stamps the
+// event with the current time; emission is best-effort, so a failure
+// is reported as a warning, never raised as a fault.
+func (app *App) emit(ev audit.Event) {
+	ev.Timestamp = time.Now()
+	if err := app.emitter.Emit(ev); err != nil {
+		fmt.Fprintf(app.errOut, "peipkg: warning: audit emission failed: %v\n", err)
+	}
 }
 
 // printUsage writes the list of commands to w.

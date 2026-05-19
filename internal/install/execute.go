@@ -48,8 +48,13 @@ type Env struct {
 	RunSideEffects bool
 }
 
-// Result reports the outcome of a successful execution.
+// Result reports the outcome of an execution.
 type Result struct {
+	// TxnID identifies the transaction this execution opened. It is set
+	// whenever a transaction was begun — including on the failure paths
+	// — so the caller can audit the outcome (§7.6); it is zero only when
+	// the run failed before any transaction was opened.
+	TxnID int64
 	// Warnings are non-fatal problems — chiefly post-commit side-effect
 	// failures — that the operator should see. The transaction
 	// committed regardless.
@@ -119,20 +124,20 @@ func runTransaction(ctx context.Context, plan resolver.Plan, env Env) (Result, e
 		staged = append(staged, s) // s carries its file ops even on failure
 		if err != nil {
 			abandon(ctx, env, txnID, staged, "staging failed")
-			return Result{}, err
+			return Result{TxnID: txnID}, err
 		}
 	}
 
 	if err := writeJournal(ctx, env.DB, txnID, staged); err != nil {
 		abandon(ctx, env, txnID, staged, "recording the journal failed")
-		return Result{}, err
+		return Result{TxnID: txnID}, err
 	}
 
 	ops := allFileOps(staged)
 	if err := commitOps(ops); err != nil {
 		_ = rollbackOps(ops)
 		_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, "applying file changes failed")
-		return Result{}, err
+		return Result{TxnID: txnID}, err
 	}
 
 	// The durability boundary (§7.4.5, F2): the new package state and
@@ -148,13 +153,14 @@ func runTransaction(ctx context.Context, plan resolver.Plan, env Env) (Result, e
 	if err != nil {
 		_ = rollbackOps(ops)
 		_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, "committing package state failed")
-		return Result{}, fmt.Errorf("peipkg/install: committing transaction %d: %w", txnID, err)
+		return Result{TxnID: txnID},
+			fmt.Errorf("peipkg/install: committing transaction %d: %w", txnID, err)
 	}
 
 	// The transaction has committed. Surface the staging-time warnings
 	// (§7.2.2 modified /etc files), discard the now-purposeless backups
 	// (§7.2.2 step 4.3), and run the post-commit side effects.
-	var result Result
+	result := Result{TxnID: txnID}
 	for _, s := range staged {
 		result.Warnings = append(result.Warnings, s.warnings...)
 	}

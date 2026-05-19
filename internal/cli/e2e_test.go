@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/signature"
 )
 
@@ -244,6 +245,40 @@ func TestEndToEndLocalInstall(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "(local file)") {
 		t.Errorf("info should mark the local-file origin:\n%s", out.String())
+	}
+}
+
+// TestAuditLocalInstallEmitsEvent confirms a successful install emits a
+// §7.6 peipkg.install audit event.
+func TestAuditLocalInstallEmitsEvent(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pkgBytes, _ := buildSignedPackage(t, priv, pub, "tool", "1.0-1",
+		map[string]string{"usr/bin/tool": "x"})
+	pkgPath := filepath.Join(t.TempDir(), "tool_1.0-1_x86_64.peipkg")
+	if err := os.WriteFile(pkgPath, pkgBytes, 0o644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+
+	app, _ := testApp(t) // testApp wires an audit.Recorder
+	rec := app.emitter.(*audit.Recorder)
+	if err := cmdInstall(app, []string{pkgPath, "--yes"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if len(rec.Events) != 1 {
+		t.Fatalf("expected one audit event, got %d: %+v", len(rec.Events), rec.Events)
+	}
+	e := rec.Events[0]
+	if e.Type != audit.TypeInstall || e.Outcome != audit.OutcomeSuccess {
+		t.Errorf("event: type=%q outcome=%q, want %q success", e.Type, e.Outcome, audit.TypeInstall)
+	}
+	if len(e.Packages) != 1 || e.Packages[0].Name != "tool" {
+		t.Errorf("event packages: %+v", e.Packages)
+	}
+	if e.TxnID == 0 {
+		t.Error("event has no transaction id")
 	}
 }
 

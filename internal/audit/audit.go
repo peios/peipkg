@@ -27,10 +27,11 @@ const (
 	TypeConfigChange  = "peipkg.config-change"
 )
 
-// Outcomes an event can report.
+// Outcomes an event can report (§7.6).
 const (
-	OutcomeSuccess  = "success"
-	OutcomeRollback = "rollback"
+	OutcomeSuccess   = "success"
+	OutcomeRejection = "rejection"
+	OutcomeRollback  = "rollback"
 )
 
 // PackageRef identifies a package an event concerns.

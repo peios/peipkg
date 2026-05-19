@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/repository"
@@ -104,6 +105,8 @@ func cmdRepoAdd(app *App, args []string) error {
 	}
 	app.printf("added repository %q\n", cfg.Name)
 	app.warnUnsigned(cfg)
+	app.emit(audit.Event{Type: audit.TypeRepoAdd, Outcome: audit.OutcomeSuccess,
+		Repo: cfg.Name, Detail: cfg.BaseURL})
 	return nil
 }
 
@@ -166,6 +169,7 @@ func cmdRepoRemove(app *App, args []string) error {
 		return err
 	}
 	app.printf("removed repository %q\n", name)
+	app.emit(audit.Event{Type: audit.TypeRepoRemove, Outcome: audit.OutcomeSuccess, Repo: name})
 	return nil
 }
 
@@ -222,6 +226,12 @@ func cmdRefresh(app *App, args []string) error {
 	if refreshed == 0 && failures == 0 {
 		app.printf("no repositories to refresh\n")
 	}
+	outcome := audit.OutcomeSuccess
+	if failures > 0 {
+		outcome = audit.OutcomeRejection
+	}
+	app.emit(audit.Event{Type: audit.TypeRefresh, Outcome: outcome,
+		Detail: fmt.Sprintf("%d refreshed, %d failed", refreshed, failures)})
 	if failures > 0 {
 		return fmt.Errorf("%d repository refresh(es) failed", failures)
 	}
