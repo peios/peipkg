@@ -21,10 +21,16 @@ the normative package format and repository protocol.
 5. **`internal/install`** — the transaction executor (stage / commit / recover)
 6. **`internal/cli`** — the command-line surface
 
-Some refinements are deliberately deferred — KMES audit emission, KACS
-security-descriptor application, `/etc` modified-detection, and a few
-secondary commands; these are noted in the commit history and the
-design doc.
+The deferred-feature follow-up is complete: the dependency-resolution
+refinements, repository handling (archive index, unsigned repositories,
+the rollback floor), `/etc` modified-detection and backup retention,
+raw local-file install, the secondary CLI verbs (`search`, `verify`,
+`clean`, `downgrade`, `undo`), and KMES audit emission.
+
+Two items remain deliberately deferred: KACS security-descriptor
+application (`sd_overrides`) — pending the §3.4 SD-override policy
+design — and `RESOLVE_NO_SYMLINKS`, parked on a kernel ABI gap. Both
+are recorded in the commit history.
 
 ## Layout
 
