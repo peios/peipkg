@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/resolver"
 )
 
 // testApp builds an App rooted at a fresh temporary directory and
@@ -181,6 +182,26 @@ func TestRepoList(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "official") {
 		t.Errorf("repo list output missing the repository:\n%s", out.String())
+	}
+}
+
+func TestAuthorizeRequiresExplicitYes(t *testing.T) {
+	auths := []resolver.Authorization{{Kind: resolver.AuthLowTrustProvides, Detail: "x"}}
+
+	// End-of-input is a refusal — --yes never reaches this gate.
+	app := newApp(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if app.authorize(auths) {
+		t.Error("authorize should refuse on end-of-input")
+	}
+	// An explicit yes authorises the action.
+	app = newApp(t.TempDir(), strings.NewReader("y\n"), &bytes.Buffer{}, &bytes.Buffer{})
+	if !app.authorize(auths) {
+		t.Error("authorize should accept an explicit yes")
+	}
+	// With no elevated actions it is a no-op pass.
+	app = newApp(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if !app.authorize(nil) {
+		t.Error("authorize should pass when there are no elevated actions")
 	}
 }
 

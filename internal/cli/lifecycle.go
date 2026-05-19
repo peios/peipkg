@@ -108,6 +108,12 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		app.printf("(dry run — no changes were made)\n")
 		return nil
 	}
+	// §7.6.6: elevated actions need a deliberate, specific authorisation
+	// that the routine confirmation — and --yes — do not supply.
+	if !app.authorize(plan.Authorizations) {
+		app.printf("cancelled — required authorisation was not given\n")
+		return nil
+	}
 	if !yes && !app.confirm() {
 		app.printf("cancelled\n")
 		return nil

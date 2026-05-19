@@ -81,13 +81,19 @@ func Resolve(reqs []Request, installed []Installed, available []Candidate, opts 
 		goals = append(goals, names...)
 	}
 
-	if err := resolveForward(world, idx, goals, opts); err != nil {
+	var auths []Authorization
+	if err := resolveForward(world, idx, goals, opts, &auths); err != nil {
 		return Plan{}, err
 	}
 	if err := checkConsistency(world, opts, downgradeAllowed); err != nil {
 		return Plan{}, err
 	}
-	return buildPlan(world, installed)
+	plan, err := buildPlan(world, installed)
+	if err != nil {
+		return Plan{}, err
+	}
+	plan.Authorizations = dedupeAuthorizations(auths)
+	return plan, nil
 }
 
 // candidateIndex indexes available candidates for satisfaction queries.
@@ -189,7 +195,8 @@ func placeCandidate(world map[string]*worldPkg, cand *Candidate) {
 
 // resolveForward greedily satisfies the dependencies of every package
 // reachable from the goals, adding candidates as needed (§4.2).
-func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []string, opts Options) error {
+func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []string,
+	opts Options, auths *[]Authorization) error {
 	worklist := append([]string(nil), goals...)
 	steps := 0
 	for len(worklist) > 0 {
@@ -217,6 +224,9 @@ func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []stri
 						"package satisfies", pkg.name, dep.Name)}
 			}
 			placeCandidate(world, cand)
+			if a := lowTrustProvidesAuthorization(idx, dep, cand); a != nil {
+				*auths = append(*auths, *a)
+			}
 			worklist = append(worklist, cand.Name)
 		}
 	}
@@ -258,4 +268,50 @@ func satisfies(name string, ver version.Version, arch string, provides []manifes
 		}
 	}
 	return false
+}
+
+// lowTrustProvidesAuthorization reports the §4.2.4 elevated action, if
+// any, raised by choosing cand to satisfy dep: cand satisfies dep only
+// through a `provides` entry, and a higher-priority repository offers a
+// package whose name matches dep but whose version fails dep's
+// constraint. The operator must authorise such a substitution (§7.6.6).
+func lowTrustProvidesAuthorization(idx candidateIndex, dep manifest.Dependency,
+	cand *Candidate) *Authorization {
+
+	if cand.Name == dep.Name && dep.Constraint.Matches(cand.Version) {
+		return nil // a direct name match — not a `provides` substitution
+	}
+	for _, c := range idx.byName[dep.Name] {
+		if c.RepoPriority < cand.RepoPriority && !dep.Constraint.Matches(c.Version) {
+			return &Authorization{
+				Kind: AuthLowTrustProvides,
+				Detail: fmt.Sprintf(
+					"dependency %q is satisfied by %q %s via `provides` from repository %q, "+
+						"shadowing %q %s from higher-priority repository %q whose version "+
+						"does not meet the constraint",
+					dep.Name, cand.Name, cand.Version, cand.Repo,
+					c.Name, c.Version, c.Repo),
+			}
+		}
+	}
+	return nil
+}
+
+// dedupeAuthorizations drops authorizations with identical detail,
+// preserving order, so a package re-placed during resolution does not
+// raise the same elevated action twice.
+func dedupeAuthorizations(auths []Authorization) []Authorization {
+	if len(auths) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(auths))
+	out := auths[:0]
+	for _, a := range auths {
+		if seen[a.Detail] {
+			continue
+		}
+		seen[a.Detail] = true
+		out = append(out, a)
+	}
+	return out
 }

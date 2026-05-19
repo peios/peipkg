@@ -5,6 +5,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -35,6 +36,7 @@ type paths struct {
 type App struct {
 	paths  paths
 	in     io.Reader
+	reader *bufio.Reader // buffers in; shared so prompts do not lose input
 	out    io.Writer
 	errOut io.Writer
 }
@@ -53,6 +55,7 @@ func newApp(root string, in io.Reader, out, errOut io.Writer) *App {
 			cacheDir:  filepath.Join(state, "cache"),
 		},
 		in:     in,
+		reader: bufio.NewReader(in),
 		out:    out,
 		errOut: errOut,
 	}

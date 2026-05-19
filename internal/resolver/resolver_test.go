@@ -424,3 +424,30 @@ func TestSelectionRule2BoundedByPriority(t *testing.T) {
 		t.Errorf("rule 2 bound: lib chosen from %q, want \"official\" (higher-priority repo)", repo)
 	}
 }
+
+func TestLowTrustProvidesRaisesAuthorization(t *testing.T) {
+	// mailapp depends on smtp-server >= 2.0-1. The "official" repo has a
+	// package literally named smtp-server, but only at 1.0-1 — it fails
+	// the constraint. A lower-priority repo's postfix provides
+	// smtp-server 3.0-1. Choosing postfix shadows the official
+	// name-match, so §4.2.4 requires explicit operator authorisation.
+	mailapp := cand(t, "mailapp", "1.0-1", dep(t, "smtp-server", ">= 2.0-1"))
+	smtpOfficial := cand(t, "smtp-server", "1.0-1") // "official", priority 10
+	postfix := cand(t, "postfix", "3.8-1")
+	postfix.Repo, postfix.RepoPriority = "extra", 50
+	pv := ver(t, "3.0-1")
+	postfix.Provides = []manifest.Provides{{Name: "smtp-server", Version: &pv}}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "mailapp"}},
+		nil,
+		[]resolver.Candidate{mailapp, smtpOfficial, postfix},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(plan.Authorizations) != 1 ||
+		plan.Authorizations[0].Kind != resolver.AuthLowTrustProvides {
+		t.Fatalf("expected one AuthLowTrustProvides, got %#v", plan.Authorizations)
+	}
+}

@@ -1,14 +1,14 @@
 package cli
 
 import (
-	"bufio"
 	"fmt"
 	"strings"
 
 	"github.com/peios/peipkg/internal/resolver"
 )
 
-// presentPlan prints a resolved plan for the operator to review.
+// presentPlan prints a resolved plan for the operator to review,
+// including any elevated actions it carries.
 func (app *App) presentPlan(plan resolver.Plan) {
 	if len(plan.Operations) == 0 {
 		app.printf("nothing to do — the request is already satisfied\n")
@@ -17,6 +17,9 @@ func (app *App) presentPlan(plan resolver.Plan) {
 	app.printf("the following changes will be made:\n")
 	for _, op := range plan.Operations {
 		app.printf("  %s\n", describeOp(op))
+	}
+	for _, a := range plan.Authorizations {
+		app.printf("  ! elevated: %s\n", a.Detail)
 	}
 }
 
@@ -34,11 +37,33 @@ func describeOp(op resolver.Operation) string {
 	}
 }
 
-// confirm asks the operator to approve the plan, returning true when
-// the operation should proceed. End-of-input is treated as a refusal.
+// authorize obtains the deliberate, specific operator authorisation that
+// §7.6.6 requires for each elevated action in a plan. Each action is
+// presented and confirmed on its own; the routine proceed prompt — and
+// the --yes flag that skips it — never satisfy this. With no elevated
+// actions it is a no-op that returns true.
+func (app *App) authorize(auths []resolver.Authorization) bool {
+	for _, a := range auths {
+		app.printf("\nthis operation requires elevated authorisation:\n  %s\n", a.Detail)
+		app.printf("authorise this specific action? [y/N] ")
+		if !app.readConfirmation() {
+			return false
+		}
+	}
+	return true
+}
+
+// confirm asks the operator to approve the plan, returning true when the
+// operation should proceed. End-of-input is treated as a refusal.
 func (app *App) confirm() bool {
 	app.printf("proceed? [y/N] ")
-	line, _ := bufio.NewReader(app.in).ReadString('\n')
+	return app.readConfirmation()
+}
+
+// readConfirmation reads one line from the shared input and reports
+// whether it is an affirmative answer. End-of-input is a refusal.
+func (app *App) readConfirmation() bool {
+	line, _ := app.reader.ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
 }

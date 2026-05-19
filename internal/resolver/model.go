@@ -118,9 +118,37 @@ type Operation struct {
 	Candidate *Candidate
 }
 
+// AuthKind identifies an elevated action that §7.6.6 requires the
+// operator to authorise with a deliberate, specific act.
+type AuthKind uint8
+
+const (
+	// AuthLowTrustProvides marks a dependency satisfied via `provides`
+	// by a candidate from a lower-priority repository while a
+	// higher-priority repository offers a name-matching package that
+	// failed the dependency's version constraint (§4.2.4).
+	AuthLowTrustProvides AuthKind = iota
+	// AuthForeignReplaces marks a `replaces` succession (§4.1.5)
+	// declared by a package from a lower-priority repository against a
+	// package installed from a higher-priority one (§6.5.7).
+	AuthForeignReplaces
+)
+
+// Authorization is an elevated action in a resolved plan that the
+// operator MUST authorise with a deliberate, specific act before the
+// plan is applied (§7.6.6). The routine proceed-with-this confirmation
+// never satisfies it.
+type Authorization struct {
+	Kind   AuthKind
+	Detail string // human-readable, specific to the action
+}
+
 // Plan is a resolved, ordered sequence of operations: removals first
 // (dependents before their dependencies), then installs and upgrades
 // (dependencies before their dependents) — §4.2.1.
 type Plan struct {
 	Operations []Operation
+	// Authorizations are elevated actions the plan contains that the
+	// operator must explicitly authorise before it is applied (§7.6.6).
+	Authorizations []Authorization
 }
