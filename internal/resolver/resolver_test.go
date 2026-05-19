@@ -496,3 +496,19 @@ func TestForeignReplacesRaisesAuthorization(t *testing.T) {
 		t.Fatalf("expected one AuthForeignReplaces, got %#v", plan.Authorizations)
 	}
 }
+
+func TestDowngradeRaisesAuthorization(t *testing.T) {
+	// Moving a package backward is an elevated action (§7.2.5, §7.6.6).
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Downgrade, Name: "libc", Version: ver(t, "2.39-1")}},
+		[]resolver.Installed{inst(t, "libc", "2.40-1")},
+		[]resolver.Candidate{cand(t, "libc", "2.39-1"), cand(t, "libc", "2.40-1")},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(plan.Authorizations) != 1 ||
+		plan.Authorizations[0].Kind != resolver.AuthDowngrade {
+		t.Fatalf("expected one AuthDowngrade, got %#v", plan.Authorizations)
+	}
+}

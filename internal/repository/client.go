@@ -291,6 +291,15 @@ func (c *Client) ArchiveIndex(ctx context.Context, cfg config.RepoConfig) (Index
 	now := time.Now()
 	descriptorURL := cfg.BaseURL + "/repo.json"
 
+	if UnsignedMode(cfg) {
+		desc, err := c.fetchDescriptorDocument(ctx, cfg)
+		if err != nil {
+			return Index{}, err
+		}
+		idx, _, err := c.fetchIndexDocument(ctx, cfg, desc, desc.ArchiveIndex, IndexArchive)
+		return idx, err
+	}
+
 	row, found, err := c.store.GetRepository(ctx, cfg.Name)
 	if err != nil {
 		return Index{}, err

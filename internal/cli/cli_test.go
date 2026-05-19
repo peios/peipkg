@@ -283,6 +283,32 @@ func TestClean(t *testing.T) {
 	}
 }
 
+func TestInverseRequests(t *testing.T) {
+	reqs, err := inverseRequests([]db.TxnOp{
+		{PackageName: "fresh", Action: db.OpInstall, ToVersion: "1.0-1"},
+		{PackageName: "bumped", Action: db.OpUpgrade, FromVersion: "1.0-1", ToVersion: "2.0-1"},
+		{PackageName: "gone", Action: db.OpRemove, FromVersion: "3.0-1"},
+	})
+	if err != nil {
+		t.Fatalf("inverseRequests: %v", err)
+	}
+	if len(reqs) != 3 {
+		t.Fatalf("got %d requests, want 3", len(reqs))
+	}
+	// An install is undone by a removal.
+	if reqs[0].Kind != resolver.Remove || reqs[0].Name != "fresh" {
+		t.Errorf("install inverse: %+v", reqs[0])
+	}
+	// An upgrade is undone by restoring the prior version.
+	if reqs[1].Kind != resolver.Downgrade || reqs[1].Version.String() != "1.0-1" {
+		t.Errorf("upgrade inverse: %+v", reqs[1])
+	}
+	// A removal is undone by reinstalling the removed version.
+	if reqs[2].Kind != resolver.Downgrade || reqs[2].Version.String() != "3.0-1" {
+		t.Errorf("remove inverse: %+v", reqs[2])
+	}
+}
+
 func TestRecoverNothingPending(t *testing.T) {
 	app, out := testApp(t)
 	if err := cmdRecover(app, nil); err != nil {

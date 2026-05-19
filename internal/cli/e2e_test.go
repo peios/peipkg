@@ -246,3 +246,110 @@ func TestEndToEndLocalInstall(t *testing.T) {
 		t.Errorf("info should mark the local-file origin:\n%s", out.String())
 	}
 }
+
+// TestEndToEndDowngradeUndo installs a package, downgrades it to an
+// older version drawn from the archive index, then undoes the
+// downgrade — exercising the archive-index path and the inverse
+// transaction end to end.
+func TestEndToEndDowngradeUndo(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	fp := signature.Fingerprint(pub)
+
+	v1, _ := buildSignedPackage(t, priv, pub, "widget", "1.0-1",
+		map[string]string{"usr/bin/widget": "widget v1"})
+	v2, _ := buildSignedPackage(t, priv, pub, "widget", "2.0-1",
+		map[string]string{"usr/bin/widget": "widget v2"})
+	url1 := "/p/widget/1.0-1/widget_1.0-1_x86_64.peipkg"
+	url2 := "/p/widget/2.0-1/widget_2.0-1_x86_64.peipkg"
+	hash := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
+
+	entry := func(ver, hashHex, url string, size int) map[string]any {
+		return map[string]any{
+			"name": "widget", "version": ver, "architecture": "x86_64",
+			"dependencies": []any{}, "conflicts": []any{},
+			"size_compressed": size, "size_installed": 100,
+			"hash": map[string]any{"algorithm": "sha256", "value": hashHex},
+			"url":  url,
+		}
+	}
+	descriptor := mustMarshal(t, map[string]any{
+		"schema_version": 1,
+		"repo": map[string]any{"name": "test", "signing": map[string]any{
+			"algorithm": "ed25519",
+			"keys": []any{map[string]any{
+				"fingerprint": fp, "url": "/keys/" + fp + ".pub", "status": "active"}}}},
+		"indexes": map[string]any{
+			"active": map[string]any{
+				"url": "/index/active.json", "signature_url": "/index/active.json.sig"},
+			"archive": map[string]any{
+				"url": "/index/archive.json", "signature_url": "/index/archive.json.sig"}},
+	})
+	active := mustMarshal(t, map[string]any{
+		"schema_version": 1, "repo": "test", "kind": "active",
+		"index_version": 2, "generated_at": "2026-05-19T00:00:00Z",
+		"packages": []any{entry("2.0-1", hash(v2), url2, len(v2))},
+	})
+	archive := mustMarshal(t, map[string]any{
+		"schema_version": 1, "repo": "test", "kind": "archive",
+		"index_version": 2, "generated_at": "2026-05-19T00:00:00Z",
+		"packages": []any{
+			entry("2.0-1", hash(v2), url2, len(v2)),
+			entry("1.0-1", hash(v1), url1, len(v1)),
+		},
+	})
+	sign := func(b []byte) []byte {
+		return []byte(base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, b)))
+	}
+	served := map[string][]byte{
+		"/repo.json": descriptor, "/repo.json.sig": sign(descriptor),
+		"/keys/" + fp + ".pub":    []byte(pub),
+		"/index/active.json":      active,
+		"/index/active.json.sig":  sign(active),
+		"/index/archive.json":     archive,
+		"/index/archive.json.sig": sign(archive),
+		url1:                      v1,
+		url2:                      v2,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := served[r.URL.Path]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	// The downgrade's elevated authorisation reads one "y" from input.
+	out := &bytes.Buffer{}
+	app := newApp(t.TempDir(), strings.NewReader("y\n"), out, &bytes.Buffer{})
+	widgetPath := filepath.Join(app.paths.root, "usr/bin/widget")
+
+	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure"}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+	if err := cmdInstall(app, []string{"widget", "--yes"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got, _ := os.ReadFile(widgetPath); string(got) != "widget v2" {
+		t.Fatalf("after install: content %q, want widget v2", got)
+	}
+
+	// Downgrade to the archived 1.0-1.
+	if err := cmdDowngrade(app, []string{"widget", "1.0-1", "--yes"}); err != nil {
+		t.Fatalf("downgrade: %v", err)
+	}
+	if got, _ := os.ReadFile(widgetPath); string(got) != "widget v1" {
+		t.Fatalf("after downgrade: content %q, want widget v1", got)
+	}
+
+	// Undo the downgrade — widget returns to 2.0-1.
+	if err := cmdUndo(app, []string{"--yes"}); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if got, _ := os.ReadFile(widgetPath); string(got) != "widget v2" {
+		t.Errorf("after undo: content %q, want widget v2", got)
+	}
+}

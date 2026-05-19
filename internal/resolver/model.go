@@ -140,6 +140,9 @@ const (
 	// declared by a package from a lower-priority repository against a
 	// package installed from a higher-priority one (§6.5.7).
 	AuthForeignReplaces
+	// AuthDowngrade marks a plan operation that moves a package
+	// backward to an older version (§7.2.5, §7.6.6).
+	AuthDowngrade
 )
 
 // Authorization is an elevated action in a resolved plan that the

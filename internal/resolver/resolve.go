@@ -101,6 +101,17 @@ func Resolve(reqs []Request, installed []Installed, available []Candidate, opts 
 	if err != nil {
 		return Plan{}, err
 	}
+	// A move backward to an older version is an elevated action the
+	// operator must explicitly authorise (§7.2.5, §7.6.6).
+	for _, op := range plan.Operations {
+		if op.Kind == OpDowngrade {
+			auths = append(auths, Authorization{
+				Kind: AuthDowngrade,
+				Detail: fmt.Sprintf("%s would move backward from %s to %s",
+					op.Name, op.FromVersion, op.ToVersion),
+			})
+		}
+	}
 	plan.Authorizations = dedupeAuthorizations(auths)
 	return plan, nil
 }

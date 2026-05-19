@@ -71,8 +71,10 @@ func init() {
 	dispatch = map[string]command{
 		"install":   cmdInstall,
 		"upgrade":   cmdUpgrade,
+		"downgrade": cmdDowngrade,
 		"uninstall": cmdUninstall,
 		"remove":    cmdUninstall, // alias
+		"undo":      cmdUndo,
 		"list":      cmdList,
 		"info":      cmdInfo,
 		"files":     cmdFiles,
