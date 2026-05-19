@@ -34,12 +34,11 @@ const (
 )
 
 // decompressionAllowance bounds the decompressed tar above the manifest's
-// size_installed. §3.5.4 specifies "the lesser of 1% or 16 MiB", but
-// that formula collapses to roughly zero for small packages and would
-// false-reject them — the allowance is meant to cover tar overhead and
-// the metadata files, "a few KB". A flat 16 MiB (§3.5.4's own ceiling)
-// is the smallest value that fits the stated intent for all sizes.
-const decompressionAllowance = 16 << 20
+// size_installed. §3.5.4 fixes this at a flat 320 MiB: enough to cover the
+// tar header and block-padding overhead of the §3.2.7 limit of 100,000
+// entries plus the metadata files (manifest up to 16 MiB, files.json up
+// to 64 MiB), so that no package conforming to §3.2.7 is ever rejected.
+const decompressionAllowance = 320 << 20
 
 // Reserved metadata entry paths (§3.2.2).
 const (
