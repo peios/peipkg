@@ -86,8 +86,23 @@ func publishRepo(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey,
 			"url":  "/p/nginx/1.26.2-3/nginx_1.26.2-3_x86_64.peipkg",
 		}},
 	}
+	archive := map[string]any{
+		"schema_version": 1,
+		"repo":           testRepoName,
+		"kind":           "archive",
+		"index_version":  indexVersion,
+		"generated_at":   generatedAt,
+		"packages": []any{map[string]any{
+			"name": "nginx", "version": "1.26.2-3", "architecture": "x86_64",
+			"dependencies": []any{}, "conflicts": []any{},
+			"size_compressed": 1024, "size_installed": 4096,
+			"hash": map[string]any{"algorithm": "sha256", "value": hashHex},
+			"url":  "/p/nginx/1.26.2-3/nginx_1.26.2-3_x86_64.peipkg",
+		}},
+	}
 	descBytes := mustJSON(t, descriptor)
 	indexBytes := mustJSON(t, index)
+	archiveBytes := mustJSON(t, archive)
 	sign := func(b []byte) []byte {
 		return []byte(base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, b)))
 	}
@@ -97,6 +112,8 @@ func publishRepo(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey,
 		testRepoBase + "/keys/" + fingerprint + ".pub": []byte(pub),
 		testRepoBase + "/index/active.json":            indexBytes,
 		testRepoBase + "/index/active.json.sig":        sign(indexBytes),
+		testRepoBase + "/index/archive.json":           archiveBytes,
+		testRepoBase + "/index/archive.json.sig":       sign(archiveBytes),
 	}
 }
 
@@ -211,6 +228,26 @@ func TestClientRefreshNeedsPriorState(t *testing.T) {
 		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
 	if err := client.Refresh(t.Context(), testConfig(pub)); err == nil {
 		t.Error("Refresh should fail for a repository that was never added")
+	}
+}
+
+func TestClientArchiveIndex(t *testing.T) {
+	pub, priv := keypair(t)
+	cfg := testConfig(pub)
+	client := repository.NewClient(
+		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+	if err := client.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	idx, err := client.ArchiveIndex(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("ArchiveIndex: %v", err)
+	}
+	if idx.Kind != repository.IndexArchive {
+		t.Errorf("archive index kind: got %q, want %q", idx.Kind, repository.IndexArchive)
+	}
+	if len(idx.Packages) != 1 || idx.Packages[0].Name != "nginx" {
+		t.Errorf("archive index packages: %+v", idx.Packages)
 	}
 }
 

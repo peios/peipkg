@@ -185,6 +185,48 @@ func (c *Client) ActiveIndex(ctx context.Context, repoName string) (Index, error
 	return DecodeIndex(idxBytes)
 }
 
+// ArchiveIndex fetches, verifies, and decodes a repository's archive
+// index (§6.3) — the full version history, used for downgrades and
+// historical queries. Unlike the active index it is not cached: it is
+// large and consulted rarely (§6.3), so it is fetched fresh each time.
+//
+// The descriptor is re-fetched and verified against the trust state
+// recorded at the last add or refresh; the archive index is then
+// verified against the descriptor's current keys.
+func (c *Client) ArchiveIndex(ctx context.Context, cfg config.RepoConfig) (Index, error) {
+	now := time.Now()
+	descriptorURL := cfg.BaseURL + "/repo.json"
+
+	row, found, err := c.store.GetRepository(ctx, cfg.Name)
+	if err != nil {
+		return Index{}, err
+	}
+	if !found {
+		return Index{}, fmt.Errorf(
+			"peipkg/repository: %q has no recorded trust state; add it first", cfg.Name)
+	}
+	prevTrust, err := ParseTrustSet(row.TrustKeys)
+	if err != nil {
+		return Index{}, err
+	}
+	desc, descBytes, descSig, err := c.fetchDescriptor(ctx, cfg)
+	if err != nil {
+		return Index{}, err
+	}
+	if err := VerifyDetached(descBytes, descSig, prevTrust.VerificationKeys(now)); err != nil {
+		return Index{}, fmt.Errorf("peipkg/repository: descriptor for %q: %w", cfg.Name, err)
+	}
+	keys, err := c.fetchKeys(ctx, cfg, desc, descriptorURL)
+	if err != nil {
+		return Index{}, err
+	}
+	trust, err := NewTrustSet(desc, keys)
+	if err != nil {
+		return Index{}, err
+	}
+	return c.fetchArchiveIndex(ctx, cfg, desc, descriptorURL, trust, now)
+}
+
 // fetchDescriptor fetches and decodes a repository's descriptor and its
 // detached signature.
 func (c *Client) fetchDescriptor(ctx context.Context, cfg config.RepoConfig) (
@@ -279,6 +321,49 @@ func (c *Client) fetchActiveIndex(ctx context.Context, cfg config.RepoConfig, de
 			idx.RepoName, desc.RepoName)
 	}
 	return idx, idxBytes, idxSig, nil
+}
+
+// fetchArchiveIndex fetches, verifies, and decodes a repository's
+// archive index against a trust set.
+func (c *Client) fetchArchiveIndex(ctx context.Context, cfg config.RepoConfig, desc Descriptor,
+	descriptorURL string, trust TrustSet, now time.Time) (Index, error) {
+
+	idxURL, err := resolveURL(cfg.BaseURL, descriptorURL, desc.ArchiveIndex.URL,
+		cfg.AllowInsecureTransport)
+	if err != nil {
+		return Index{}, err
+	}
+	sigURL, err := resolveURL(cfg.BaseURL, descriptorURL, desc.ArchiveIndex.SignatureURL,
+		cfg.AllowInsecureTransport)
+	if err != nil {
+		return Index{}, err
+	}
+	idxBytes, err := c.fetcher.Fetch(ctx, idxURL, maxIndexFetch)
+	if err != nil {
+		return Index{}, err
+	}
+	idxSig, err := c.fetcher.Fetch(ctx, sigURL, maxSignatureFetch)
+	if err != nil {
+		return Index{}, err
+	}
+	if err := VerifyDetached(idxBytes, idxSig, trust.VerificationKeys(now)); err != nil {
+		return Index{}, fmt.Errorf("peipkg/repository: archive index for %q: %w", cfg.Name, err)
+	}
+	idx, err := DecodeIndex(idxBytes)
+	if err != nil {
+		return Index{}, err
+	}
+	if idx.Kind != IndexArchive {
+		return Index{}, fmt.Errorf(
+			"peipkg/repository: %q served a %q index where the archive index was expected",
+			cfg.Name, idx.Kind)
+	}
+	if idx.RepoName != desc.RepoName {
+		return Index{}, fmt.Errorf(
+			"peipkg/repository: archive index names repository %q but the descriptor names %q",
+			idx.RepoName, desc.RepoName)
+	}
+	return idx, nil
 }
 
 // record persists a repository's updated state: the database row and
