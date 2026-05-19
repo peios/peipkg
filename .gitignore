@@ -1,0 +1,7 @@
+# Built binaries
+/peipkg
+
+# Go test and coverage artifacts
+*.test
+*.out
+coverage.*
