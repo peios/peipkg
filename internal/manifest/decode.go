@@ -84,3 +84,59 @@ func Decode(data []byte) (Manifest, error) {
 func missingField(name string) error {
 	return fmt.Errorf("peipkg/manifest: missing required field %q", name)
 }
+
+// The four Decode*Array functions decode a §4.1 / §4.3 array from its
+// raw JSON, applying the same validation a manifest receives. The
+// repository layer reuses them: a repository index entry carries the
+// dependency, provides, replaces, and side-effect arrays under the
+// identical schema (§6.2.3). Empty input — an absent optional array —
+// decodes to an empty result.
+
+// DecodeDependencyArray decodes a dependencies-shaped array (§4.1.1).
+// field names the array in any error.
+func DecodeDependencyArray(field string, data []byte) ([]Dependency, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var wires []wireDependency
+	if err := json.Unmarshal(data, &wires); err != nil {
+		return nil, fmt.Errorf("peipkg/manifest: decoding %s: %w", field, err)
+	}
+	return validateDependencies(field, wires)
+}
+
+// DecodeProvidesArray decodes a provides array (§4.1.4).
+func DecodeProvidesArray(data []byte) ([]Provides, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var wires []wireProvides
+	if err := json.Unmarshal(data, &wires); err != nil {
+		return nil, fmt.Errorf("peipkg/manifest: decoding provides: %w", err)
+	}
+	return validateProvides(wires)
+}
+
+// DecodeReplacesArray decodes a replaces array (§4.1.5).
+func DecodeReplacesArray(data []byte) ([]Replaces, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var wires []wireReplaces
+	if err := json.Unmarshal(data, &wires); err != nil {
+		return nil, fmt.Errorf("peipkg/manifest: decoding replaces: %w", err)
+	}
+	return validateReplaces(wires)
+}
+
+// DecodeSideEffectArray decodes a side_effects array (§4.3).
+func DecodeSideEffectArray(data []byte) ([]SideEffect, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var raw []string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("peipkg/manifest: decoding side_effects: %w", err)
+	}
+	return validateSideEffects(raw)
+}

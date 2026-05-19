@@ -12,7 +12,6 @@ package archive
 
 import (
 	"archive/tar"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -79,11 +78,10 @@ type Package struct {
 	Signed bool
 }
 
-// KeyResolver looks up a trusted public key by its fingerprint
-// (§5.2.3), reporting false if no trusted key matches — for which
-// Verify rejects the package (§5.3 failure condition 6). The caller
-// supplies a resolver scoped to the originating repository's trust set.
-type KeyResolver func(fingerprint string) (ed25519.PublicKey, bool)
+// KeyResolver looks up a trusted public key by its fingerprint. It is
+// an alias for [signature.KeyResolver]; the canonical definition lives
+// with the signing primitives.
+type KeyResolver = signature.KeyResolver
 
 // Verify reads a .peipkg archive from r and checks it end to end:
 // decompression bounds, tar structure, payload paths and types, the

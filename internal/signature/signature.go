@@ -34,6 +34,13 @@ const fingerprintLen = 2 * sha256.Size
 // the public key — the package's authenticity is unproven (§5.3).
 var ErrSignatureInvalid = errors.New("peipkg/signature: signature does not verify")
 
+// KeyResolver looks up a trusted public key by its fingerprint
+// (§5.2.3), reporting false if no trusted key matches. A package
+// signature verifier rejects the package when the resolver returns
+// false (§5.3 failure condition 6). Callers obtain a resolver scoped to
+// the originating repository's trust set.
+type KeyResolver func(fingerprint string) (ed25519.PublicKey, bool)
+
 // Envelope is a decoded, structurally-valid `.peipkg/signature`
 // document (§5.1.3). Obtain one through [DecodeEnvelope].
 type Envelope struct {
