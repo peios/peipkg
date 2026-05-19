@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,6 +204,82 @@ func TestAuthorizeRequiresExplicitYes(t *testing.T) {
 	app = newApp(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if !app.authorize(nil) {
 		t.Error("authorize should pass when there are no elevated actions")
+	}
+}
+
+func TestVerify(t *testing.T) {
+	app, _ := testApp(t)
+	const content = "the tool binary"
+	sum := sha256.Sum256([]byte(content))
+	withDB(t, app, func(store *db.DB) {
+		ctx := context.Background()
+		if err := store.InsertPackage(ctx, db.Package{
+			Name: "tool", Version: "1.0-1", Architecture: "x86_64",
+			InstalledAt: time.Unix(1_700_000_000, 0), Manifest: "{}",
+		}); err != nil {
+			t.Fatalf("InsertPackage: %v", err)
+		}
+		if err := store.InsertPackageFiles(ctx, []db.PackageFile{{
+			PackageName: "tool", Path: "/usr/bin/tool", Type: db.FileTypeFile,
+			Hash: hex.EncodeToString(sum[:]),
+		}}); err != nil {
+			t.Fatalf("InsertPackageFiles: %v", err)
+		}
+	})
+
+	toolPath := filepath.Join(app.paths.root, "usr/bin/tool")
+	if err := os.MkdirAll(filepath.Dir(toolPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(toolPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	// An intact file verifies.
+	if err := cmdVerify(app, []string{"tool"}); err != nil {
+		t.Errorf("verify of an intact package: %v", err)
+	}
+	// A modified file fails verification.
+	if err := os.WriteFile(toolPath, []byte("tampered"), 0o644); err != nil {
+		t.Fatalf("rewrite file: %v", err)
+	}
+	if err := cmdVerify(app, []string{"tool"}); err == nil {
+		t.Error("verify should fail on a modified file")
+	}
+}
+
+func TestClean(t *testing.T) {
+	app, _ := testApp(t)
+	if err := os.MkdirAll(app.paths.cacheDir, 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	for _, f := range []string{
+		"official.active.json", "official.active.json.sig",
+		"gone.active.json", "gone.active.json.sig",
+	} {
+		if err := os.WriteFile(filepath.Join(app.paths.cacheDir, f), []byte("{}"), 0o644); err != nil {
+			t.Fatalf("write cache file: %v", err)
+		}
+	}
+	// Only "official" is a configured repository.
+	if err := os.MkdirAll(app.paths.configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	repoFile := "base_url = \"https://pkgs.peios.org\"\ntrust_anchors = [\"" +
+		strings.Repeat("ab", 32) + "\"]\n"
+	if err := os.WriteFile(filepath.Join(app.paths.configDir, "official.repo"),
+		[]byte(repoFile), 0o644); err != nil {
+		t.Fatalf("write .repo: %v", err)
+	}
+
+	if err := cmdClean(app, nil); err != nil {
+		t.Fatalf("cmdClean: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(app.paths.cacheDir, "gone.active.json")); !os.IsNotExist(err) {
+		t.Error("the orphaned cache file was not removed")
+	}
+	if _, err := os.Lstat(filepath.Join(app.paths.cacheDir, "official.active.json")); err != nil {
+		t.Error("the configured repository's cache file was removed")
 	}
 }
 

@@ -77,9 +77,12 @@ func init() {
 		"info":      cmdInfo,
 		"files":     cmdFiles,
 		"owns":      cmdOwns,
+		"search":    cmdSearch,
+		"verify":    cmdVerify,
 		"history":   cmdHistory,
 		"repo":      cmdRepo,
 		"refresh":   cmdRefresh,
+		"clean":     cmdClean,
 		"recover":   cmdRecover,
 	}
 }

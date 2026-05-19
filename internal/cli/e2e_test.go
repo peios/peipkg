@@ -174,6 +174,15 @@ func TestEndToEndInstall(t *testing.T) {
 	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure"}); err != nil {
 		t.Fatalf("repo add: %v", err)
 	}
+	// search finds the package in the freshly-added repository.
+	out.Reset()
+	if err := cmdSearch(app, []string{pkgName}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !strings.Contains(out.String(), pkgName) {
+		t.Errorf("search did not find the package:\n%s", out.String())
+	}
+
 	// Install the package end to end.
 	out.Reset()
 	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
