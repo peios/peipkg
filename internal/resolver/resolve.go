@@ -31,6 +31,17 @@ type worldPkg struct {
 	candidate *Candidate
 }
 
+// originRepo reports the repository this package is being installed from
+// and that repository's priority, for §4.2.4 rule 2. Both are zero when
+// the package is not being changed by this resolution (it has no chosen
+// candidate), in which case rule 2 does not apply.
+func (p *worldPkg) originRepo() (repo string, priority int) {
+	if p.candidate != nil {
+		return p.candidate.Repo, p.candidate.RepoPriority
+	}
+	return "", 0
+}
+
 // Resolve computes a plan that brings the installed set to a state
 // satisfying the requests, or returns a rejection (§4.2).
 func Resolve(reqs []Request, installed []Installed, available []Candidate, opts Options) (Plan, error) {
@@ -198,7 +209,8 @@ func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []stri
 			if worldSatisfies(world, dep, pkg.architecture) {
 				continue
 			}
-			cand := bestForDependency(idx, dep, pkg.architecture, opts.PrimaryArch)
+			depRepo, depPriority := pkg.originRepo()
+			cand := bestForDependency(idx, dep, pkg.architecture, opts.PrimaryArch, depRepo, depPriority)
 			if cand == nil {
 				return &Rejection{Reason: ReasonUnsatisfiable,
 					Detail: fmt.Sprintf("package %q depends on %q, which no available "+

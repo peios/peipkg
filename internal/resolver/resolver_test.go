@@ -365,3 +365,62 @@ func TestDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// opRepo returns the repository of the candidate chosen for the named
+// package's operation, or "" when the package has no operation.
+func opRepo(p resolver.Plan, name string) string {
+	for _, op := range p.Operations {
+		if op.Name == name && op.Candidate != nil {
+			return op.Candidate.Repo
+		}
+	}
+	return ""
+}
+
+func TestSelectionRule2PrefersDependerRepo(t *testing.T) {
+	// app (repo "official", priority 10) depends on lib. lib is offered
+	// by "official" at 1.0-1 and by "extra" (equal priority) at 2.0-1.
+	// §4.2.4 rule 2: the depender's own repository wins over the higher
+	// version, because "official" is at least as high-priority as "extra".
+	app := cand(t, "app", "1.0-1", dep(t, "lib", ""))
+	libOfficial := cand(t, "lib", "1.0-1")
+	libExtra := cand(t, "lib", "2.0-1")
+	libExtra.Repo, libExtra.RepoPriority = "extra", 10
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "app"}},
+		nil,
+		[]resolver.Candidate{app, libOfficial, libExtra},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if repo := opRepo(plan, "lib"); repo != "official" {
+		t.Errorf("rule 2: lib chosen from %q, want \"official\" (the depender's repo)", repo)
+	}
+}
+
+func TestSelectionRule2BoundedByPriority(t *testing.T) {
+	// A low-priority depender does not pull its own repository's
+	// candidate over a higher-trust alternative: §4.2.4 rule 2 does not
+	// apply when the depender's repo is lower-priority than the
+	// cross-repository candidate, so rule 3 selects the higher-priority
+	// repository instead.
+	app := cand(t, "app", "1.0-1", dep(t, "lib", ""))
+	app.Repo, app.RepoPriority = "extra", 50
+	libExtra := cand(t, "lib", "1.0-1")
+	libExtra.Repo, libExtra.RepoPriority = "extra", 50
+	libOfficial := cand(t, "lib", "2.0-1") // "official", priority 10
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "app"}},
+		nil,
+		[]resolver.Candidate{app, libExtra, libOfficial},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if repo := opRepo(plan, "lib"); repo != "official" {
+		t.Errorf("rule 2 bound: lib chosen from %q, want \"official\" (higher-priority repo)", repo)
+	}
+}
