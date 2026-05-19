@@ -2,7 +2,11 @@ module github.com/peios/peipkg
 
 go 1.26.2
 
-require modernc.org/sqlite v1.50.1
+require (
+	github.com/klauspost/compress v1.18.6
+	golang.org/x/text v0.37.0
+	modernc.org/sqlite v1.50.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
