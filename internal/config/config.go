@@ -131,13 +131,21 @@ func validateBaseURL(base string, allowInsecure bool) error {
 	}
 	switch u.Scheme {
 	case "https":
+	case "file":
+		// A local (e.g. 9p-mounted) repository: file:///path has no host,
+		// and trust comes from the signed index, not the transport. Require
+		// an absolute path and skip the host check below.
+		if u.Path == "" {
+			return fmt.Errorf("peipkg/config: file base_url %q has no path", base)
+		}
+		return nil
 	case "http":
 		if !allowInsecure {
 			return fmt.Errorf("peipkg/config: base_url %q uses http; set "+
 				"allow_insecure_transport to permit it", base)
 		}
 	default:
-		return fmt.Errorf("peipkg/config: base_url %q must use http or https", base)
+		return fmt.Errorf("peipkg/config: base_url %q must use http, https, or file", base)
 	}
 	if u.Host == "" {
 		return fmt.Errorf("peipkg/config: base_url %q has no host", base)

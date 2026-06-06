@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
@@ -65,12 +66,19 @@ type scanner interface {
 
 // Open opens the package database at path — creating an empty one if it
 // does not exist — configures the connection, and applies any pending
-// schema migrations. path must be absolute. The caller must [DB.Close]
-// the returned handle.
+// schema migrations. The path is resolved to an absolute path before use:
+// modernc.org/sqlite takes a file: URI, and a relative path would be
+// misparsed (its first segment read as a URI authority). Opening the
+// absolute path is identical to opening its relative form. The caller
+// must [DB.Close] the returned handle.
 func Open(ctx context.Context, path string) (*DB, error) {
-	sqlDB, err := sql.Open(driverName, dsn(path))
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, fmt.Errorf("peipkg/db: open %q: %w", path, err)
+		return nil, fmt.Errorf("peipkg/db: resolve %q: %w", path, err)
+	}
+	sqlDB, err := sql.Open(driverName, dsn(abs))
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/db: open %q: %w", abs, err)
 	}
 	db := &DB{sql: sqlDB, queries: &queries{q: sqlDB}}
 

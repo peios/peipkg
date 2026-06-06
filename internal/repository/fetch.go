@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -26,7 +27,10 @@ type Fetcher interface {
 	Fetch(ctx context.Context, url string, limit int64) ([]byte, error)
 }
 
-// HTTPFetcher is the production [Fetcher]: a plain HTTP(S) GET.
+// HTTPFetcher is the production [Fetcher]. It performs a plain HTTP(S)
+// GET, and also serves file:// URLs by reading from disk — used for a
+// local repository mounted into the system (e.g. over 9p), where trust
+// still comes from the signed index, not the transport.
 type HTTPFetcher struct {
 	client *http.Client
 }
@@ -36,9 +40,13 @@ func NewHTTPFetcher() *HTTPFetcher {
 	return &HTTPFetcher{client: &http.Client{Timeout: 60 * time.Second}}
 }
 
-// Fetch performs a GET, rejecting a non-200 response or a body that
-// exceeds limit.
+// Fetch retrieves the bytes at rawURL. A file:// URL is read from disk; any
+// other URL is fetched with an HTTP GET. Either way a body exceeding limit
+// is rejected.
 func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string, limit int64) ([]byte, error) {
+	if u, err := url.Parse(rawURL); err == nil && u.Scheme == "file" {
+		return fetchFile(u.Path, limit)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("peipkg/repository: building request for %s: %w", rawURL, err)
@@ -62,6 +70,24 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, rawURL string, limit int64) ([]
 	return data, nil
 }
 
+// fetchFile reads a file:// URL's path from disk, rejecting a body that
+// exceeds limit.
+func fetchFile(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/repository: opening %s: %w", path, err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/repository: reading %s: %w", path, err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("peipkg/repository: %s exceeds the %d-byte limit", path, limit)
+	}
+	return data, nil
+}
+
 // resolveURL resolves a URL reference appearing in a descriptor or
 // index (§6.4.5) and enforces the transport policy: the result must use
 // https unless allowInsecure permits http.
@@ -80,13 +106,16 @@ func resolveURL(base, documentURL, ref string, allowInsecure bool) (string, erro
 	}
 	switch u.Scheme {
 	case "https":
+	case "file":
+		// A local (e.g. 9p-mounted) repository. Not a network transport —
+		// trust comes from the signed index, so allowInsecure does not gate it.
 	case "http":
 		if !allowInsecure {
 			return "", fmt.Errorf("peipkg/repository: %q uses http but the "+
 				"repository does not permit insecure transport", resolved)
 		}
 	default:
-		return "", fmt.Errorf("peipkg/repository: %q must use http or https", resolved)
+		return "", fmt.Errorf("peipkg/repository: %q must use http, https, or file", resolved)
 	}
 	return resolved, nil
 }

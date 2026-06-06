@@ -23,6 +23,19 @@ import (
 	"github.com/peios/peipkg/internal/signature"
 )
 
+// detachedSig builds a detached-signature .sig body: a signature envelope
+// (§5.1.3) over SHA-256 of content — the scheme VerifyDetached expects.
+func detachedSig(priv ed25519.PrivateKey, content []byte) []byte {
+	digest := sha256.Sum256(content)
+	env, _ := json.Marshal(map[string]any{
+		"schema_version":  1,
+		"algorithm":       "ed25519",
+		"key_fingerprint": signature.Fingerprint(priv.Public().(ed25519.PublicKey)),
+		"signature":       base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, digest[:])),
+	})
+	return env
+}
+
 func mustMarshal(t *testing.T, v any) []byte {
 	t.Helper()
 	data, err := json.Marshal(v)
@@ -150,7 +163,7 @@ func TestEndToEndInstall(t *testing.T) {
 			"url":  pkgURL}},
 	})
 	sign := func(b []byte) []byte {
-		return []byte(base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, b)))
+		return detachedSig(priv, b)
 	}
 	served := map[string][]byte{
 		"/repo.json":             descriptor,
@@ -336,7 +349,7 @@ func TestEndToEndDowngradeUndo(t *testing.T) {
 		},
 	})
 	sign := func(b []byte) []byte {
-		return []byte(base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, b)))
+		return detachedSig(priv, b)
 	}
 	served := map[string][]byte{
 		"/repo.json": descriptor, "/repo.json.sig": sign(descriptor),

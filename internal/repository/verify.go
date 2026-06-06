@@ -2,10 +2,11 @@ package repository
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
+	"crypto/sha256"
 	"errors"
 	"fmt"
-	"strings"
+
+	"github.com/peios/peipkg/internal/signature"
 )
 
 // ErrUntrusted reports that a detached signature did not verify against
@@ -14,24 +15,22 @@ var ErrUntrusted = errors.New(
 	"peipkg/repository: signature does not verify against any trusted key")
 
 // VerifyDetached checks a detached signature over content. sigContent is
-// the raw body of the .sig file: base64 (RFC 4648 §4, no padding) of a
-// 64-byte Ed25519 signature over the artifact's exact bytes (§6.1.6).
+// the raw body of the .sig file: a signature envelope (§5.1.3) whose
+// signature is over SHA-256 of the artifact's exact bytes — the same
+// scheme as a package signature (§6.1.6).
 //
-// The descriptor and index .sig files carry no key fingerprint, so the
-// signature is tried against every candidate key; it is accepted if any
-// one verifies. The caller supplies the candidates already filtered to
-// those whose status permits verification.
+// The signature is tried against every candidate key and accepted if any
+// one verifies; the envelope's key_fingerprint is not consulted for
+// selection. The caller supplies the candidates already filtered to those
+// whose status permits verification.
 func VerifyDetached(content, sigContent []byte, candidates []ed25519.PublicKey) error {
-	sig, err := base64.RawStdEncoding.DecodeString(strings.TrimSpace(string(sigContent)))
+	env, err := signature.DecodeEnvelope(sigContent)
 	if err != nil {
-		return fmt.Errorf("peipkg/repository: signature is not valid base64: %w", err)
+		return fmt.Errorf("peipkg/repository: %w", err)
 	}
-	if len(sig) != ed25519.SignatureSize {
-		return fmt.Errorf("peipkg/repository: signature is %d bytes, want %d",
-			len(sig), ed25519.SignatureSize)
-	}
+	digest := sha256.Sum256(content)
 	for _, key := range candidates {
-		if len(key) == ed25519.PublicKeySize && ed25519.Verify(key, content, sig) {
+		if len(key) == ed25519.PublicKeySize && ed25519.Verify(key, digest[:], env.Signature) {
 			return nil
 		}
 	}

@@ -3,7 +3,6 @@ package repository_test
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -104,7 +103,7 @@ func publishRepo(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey,
 	indexBytes := mustJSON(t, index)
 	archiveBytes := mustJSON(t, archive)
 	sign := func(b []byte) []byte {
-		return []byte(base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, b)))
+		return detachedSig(priv, b)
 	}
 	return memFetcher{
 		testRepoBase + "/repo.json":                    descBytes,

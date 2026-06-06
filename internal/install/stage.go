@@ -198,8 +198,17 @@ func stageRemoval(ctx context.Context, env Env, txnID int64, op resolver.Operati
 // writeStagedFile writes a payload file's content to its staged sibling.
 // O_EXCL ensures a stray staged file from an earlier crash is noticed
 // rather than silently reused.
+//
+// INTERIM: staged files are written 0o755 (carried to the final path by the
+// commit rename). POSIX modes are not the security mechanism on Peios (KACS
+// gates access), but the execute bit is load-bearing for execve and the
+// format does not yet carry per-file executability (tar is canonical 0o777,
+// files.json has no exec field). Until that lands, every installed file is
+// made executable — mirroring the same interim in compose's assemble.go.
+// The correct rule (executable-in => 0o755, else 0o644, recorded in
+// files.json) is deferred.
 func writeStagedFile(staged string, content io.Reader) error {
-	f, err := os.OpenFile(staged, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(staged, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
 	if err != nil {
 		return err
 	}

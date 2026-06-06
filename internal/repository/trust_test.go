@@ -3,7 +3,9 @@ package repository_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -11,6 +13,21 @@ import (
 	"github.com/peios/peipkg/internal/repository"
 	"github.com/peios/peipkg/internal/signature"
 )
+
+// detachedSig builds a detached-signature .sig body: a signature envelope
+// (§5.1.3) over SHA-256 of content — the same scheme peipkg-repo emits and
+// that VerifyDetached now expects.
+func detachedSig(priv ed25519.PrivateKey, content []byte) []byte {
+	digest := sha256.Sum256(content)
+	sig := ed25519.Sign(priv, digest[:])
+	env, _ := json.Marshal(map[string]any{
+		"schema_version":  1,
+		"algorithm":       "ed25519",
+		"key_fingerprint": signature.Fingerprint(priv.Public().(ed25519.PublicKey)),
+		"signature":       base64.RawStdEncoding.EncodeToString(sig),
+	})
+	return env
+}
 
 func keypair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -156,7 +173,7 @@ func TestParseEmptyTrustSet(t *testing.T) {
 func TestVerifyDetached(t *testing.T) {
 	pub, priv := keypair(t)
 	content := []byte("the repository descriptor's exact bytes")
-	sigContent := []byte(base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, content)))
+	sigContent := detachedSig(priv, content)
 
 	if err := repository.VerifyDetached(content, sigContent, []ed25519.PublicKey{pub}); err != nil {
 		t.Errorf("VerifyDetached of a valid signature: %v", err)
