@@ -207,6 +207,18 @@ func TestInvalidDescription(t *testing.T) {
 	wantReject(t, m)
 }
 
+func TestDescriptionAllowsPrintableUTF8(t *testing.T) {
+	m := baseManifest()
+	m["description"] = "Swiss army knife — static utilities"
+	mustDecode(t, m)
+}
+
+func TestInvalidDescriptionUTF8(t *testing.T) {
+	m := baseManifest()
+	m["description"] = string([]byte{0xff})
+	wantReject(t, m)
+}
+
 func TestInvalidHomepage(t *testing.T) {
 	for _, homepage := range []string{
 		"javascript:alert(1)",

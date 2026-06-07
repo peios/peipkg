@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/peios/peipkg/internal/version"
 )
@@ -143,13 +145,19 @@ func validateArchitecture(s string) error {
 	return nil
 }
 
-// validateDescription enforces the §3.3.6 printable-ASCII rule, which
-// prevents terminal escape-sequence injection when the description is
-// shown to an operator.
+// validateDescription accepts printable UTF-8 while rejecting control
+// characters, which prevents terminal escape-sequence injection when the
+// description is shown to an operator.
 func validateDescription(s string) error {
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; c < 0x20 || c > 0x7E {
-			return fmt.Errorf("contains a non-printable-ASCII byte %#x", c)
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("is not valid UTF-8")
+	}
+	for _, r := range s {
+		if r == utf8.RuneError {
+			return fmt.Errorf("contains the Unicode replacement character")
+		}
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("contains a non-printable rune %#U", r)
 		}
 	}
 	return nil
