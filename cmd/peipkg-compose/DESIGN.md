@@ -53,7 +53,9 @@ compose lives in the **same Go module** as `peipkg`, at
 `cmd/peipkg-compose/`. This is not convenience — it is structural.
 compose reuses peipkg's `internal/` packages, and Go's `internal/`
 visibility rule forbids importing them across a module boundary. One
-module, two binaries.
+module, two binaries. External image-building tools use the narrow
+public API at `github.com/peios/peipkg/compose`; the resolver,
+repository, archive, database, and config machinery stay private.
 
 What compose **reuses**, essentially unchanged:
 

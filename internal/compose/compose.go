@@ -18,19 +18,37 @@ import (
 // is empty, the lock is written to [LockPath]`(manifestPath)`.
 func LockManifest(ctx context.Context, manifestPath, lockPath string,
 	fetcher repository.Fetcher, warnings io.Writer) error {
+	_, err := LockManifestWithResult(ctx, manifestPath, lockPath, fetcher, warnings)
+	return err
+}
+
+// LockResult describes the lock written by a manifest-resolution run.
+type LockResult struct {
+	ManifestPath string
+	LockPath     string
+	Lock         Lock
+}
+
+// LockManifestWithResult resolves a manifest, writes the resulting lock,
+// and returns the lock metadata needed by embedding build tools.
+func LockManifestWithResult(ctx context.Context, manifestPath, lockPath string,
+	fetcher repository.Fetcher, warnings io.Writer) (LockResult, error) {
 
 	m, err := LoadManifest(manifestPath)
 	if err != nil {
-		return err
+		return LockResult{}, err
 	}
 	if lockPath == "" {
 		lockPath = LockPath(manifestPath)
 	}
 	lock, err := Resolve(ctx, m, filepath.Base(manifestPath), fetcher, warnings)
 	if err != nil {
-		return err
+		return LockResult{}, err
 	}
-	return writeLock(lockPath, lock)
+	if err := writeLock(lockPath, lock); err != nil {
+		return LockResult{}, err
+	}
+	return LockResult{ManifestPath: manifestPath, LockPath: lockPath, Lock: lock}, nil
 }
 
 // BuildOptions configures a build.
@@ -41,6 +59,9 @@ type BuildOptions struct {
 	// the build creates it atomically by renaming from a sibling
 	// staging directory on success.
 	OutDir string
+	// LockPath is the lock file to use or write. When empty, the lock is
+	// derived from ManifestPath with [LockPath].
+	LockPath string
 	// Locked requires that the lock exist and matches the manifest;
 	// resolution is not performed. The air-gapped / CI mode.
 	Locked bool
@@ -58,31 +79,53 @@ type BuildOptions struct {
 // package, assemble into a fresh root — and finalises the output by
 // renaming a staging directory into place on success.
 func Build(ctx context.Context, opts BuildOptions) error {
+	_, err := BuildWithResult(ctx, opts)
+	return err
+}
+
+// BuildResult describes a completed root composition.
+type BuildResult struct {
+	ManifestPath string
+	RootDir      string
+	LockPath     string
+	Lock         Lock
+	PackageCount int
+}
+
+// BuildWithResult produces a populated peipkg root and returns the lock
+// and output metadata needed by embedding image builders.
+func BuildWithResult(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 	if opts.Locked && opts.Update {
-		return fmt.Errorf("peipkg/compose: --locked and --update are mutually exclusive")
+		return BuildResult{}, fmt.Errorf("peipkg/compose: --locked and --update are mutually exclusive")
 	}
 	if opts.OutDir == "" {
-		return fmt.Errorf("peipkg/compose: an output directory is required")
+		return BuildResult{}, fmt.Errorf("peipkg/compose: an output directory is required")
 	}
 	if opts.Warnings == nil {
 		opts.Warnings = io.Discard
 	}
+	if opts.Fetcher == nil {
+		opts.Fetcher = repository.NewHTTPFetcher()
+	}
 
 	m, err := LoadManifest(opts.ManifestPath)
 	if err != nil {
-		return err
+		return BuildResult{}, err
 	}
-	lockPath := LockPath(opts.ManifestPath)
+	lockPath := opts.LockPath
+	if lockPath == "" {
+		lockPath = LockPath(opts.ManifestPath)
+	}
 	manifestBase := filepath.Base(opts.ManifestPath)
 
 	lock, err := chooseLock(ctx, m, manifestBase, lockPath, opts)
 	if err != nil {
-		return err
+		return BuildResult{}, err
 	}
 
 	fetched, err := fetchAll(ctx, lock, opts.Fetcher)
 	if err != nil {
-		return err
+		return BuildResult{}, err
 	}
 
 	// Atomicity is at the granularity of the whole artifact: assemble
@@ -91,21 +134,27 @@ func Build(ctx context.Context, opts BuildOptions) error {
 	// A failed or interrupted build leaves the staging directory for
 	// inspection; the next attempt clears it.
 	if _, err := os.Stat(opts.OutDir); err == nil {
-		return fmt.Errorf("peipkg/compose: output directory %q already exists", opts.OutDir)
+		return BuildResult{}, fmt.Errorf("peipkg/compose: output directory %q already exists", opts.OutDir)
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("peipkg/compose: checking output directory: %w", err)
+		return BuildResult{}, fmt.Errorf("peipkg/compose: checking output directory: %w", err)
 	}
 	staging := opts.OutDir + ".peipkg-compose-tmp"
 	if err := os.RemoveAll(staging); err != nil {
-		return fmt.Errorf("peipkg/compose: clearing prior staging directory: %w", err)
+		return BuildResult{}, fmt.Errorf("peipkg/compose: clearing prior staging directory: %w", err)
 	}
 	if err := assemble(ctx, staging, m, fetched); err != nil {
-		return err
+		return BuildResult{}, err
 	}
 	if err := os.Rename(staging, opts.OutDir); err != nil {
-		return fmt.Errorf("peipkg/compose: finalising output: %w", err)
+		return BuildResult{}, fmt.Errorf("peipkg/compose: finalising output: %w", err)
 	}
-	return nil
+	return BuildResult{
+		ManifestPath: opts.ManifestPath,
+		RootDir:      opts.OutDir,
+		LockPath:     lockPath,
+		Lock:         lock,
+		PackageCount: len(lock.Packages),
+	}, nil
 }
 
 // chooseLock returns the lock to build from, honouring the --locked and

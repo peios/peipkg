@@ -171,3 +171,69 @@ func TestBuildFlagConflict(t *testing.T) {
 		t.Errorf("got %v, want a mutual-exclusion error", err)
 	}
 }
+
+func TestBuildWithResultUsesExplicitLockPath(t *testing.T) {
+	payload := []byte("#!/bin/sh\n")
+	raw := buildPeipkg(t,
+		minimalManifestJSON(t, "foo", "1.0-1", "x86_64", int64(len(payload))),
+		[]testEntry{{Path: "usr/bin/foo", Content: payload}})
+	sum := sha256.Sum256(raw)
+
+	dir := t.TempDir()
+	pkgPath := filepath.Join(dir, "foo.peipkg")
+	if err := os.WriteFile(pkgPath, raw, 0o644); err != nil {
+		t.Fatalf("writing package: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.toml")
+	if err := os.WriteFile(manifestPath, []byte(`
+schema = 1
+arch = "x86_64"
+source_date = "2026-06-01T00:00:00Z"
+
+[[package]]
+name = "foo"
+`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	lockPath := filepath.Join(dir, "locks", "root.lock.toml")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("creating lock dir: %v", err)
+	}
+	lock := Lock{
+		Arch:       "x86_64",
+		SourceDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		Manifest:   filepath.Base(manifestPath),
+		Packages: []LockedPackage{{
+			Name:         "foo",
+			Version:      "1.0-1",
+			Architecture: "x86_64",
+			Source:       LocalSource,
+			URL:          pkgPath,
+			Hash:         hex.EncodeToString(sum[:]),
+		}},
+	}
+	encoded, err := lock.Encode()
+	if err != nil {
+		t.Fatalf("encoding lock: %v", err)
+	}
+	if err := os.WriteFile(lockPath, encoded, 0o644); err != nil {
+		t.Fatalf("writing lock: %v", err)
+	}
+
+	outDir := filepath.Join(dir, "root")
+	result, err := BuildWithResult(context.Background(), BuildOptions{
+		ManifestPath: manifestPath,
+		OutDir:       outDir,
+		LockPath:     lockPath,
+		Locked:       true,
+	})
+	if err != nil {
+		t.Fatalf("BuildWithResult: %v", err)
+	}
+	if result.RootDir != outDir || result.LockPath != lockPath || result.PackageCount != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "var/lib/peipkg/db.sqlite")); err != nil {
+		t.Fatalf("seeded database missing: %v", err)
+	}
+}

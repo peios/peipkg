@@ -35,6 +35,7 @@ are recorded in the commit history.
 ## Layout
 
 - `cmd/peipkg/` — the command entrypoint
+- `compose/` — the public root-composition API for image builders
 - `internal/` — the implementation packages listed above
 
 ## Building
