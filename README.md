@@ -4,9 +4,11 @@ The Peios **consumer-side package manager** — the client tool that
 installs, upgrades, removes, and queries packages on a Peios system
 (`peipkg install nginx`).
 
-It is the counterpart to the producer side (`peipkg-build`,
-`peipkg-repo`, `peipkg-manager`), which builds and serves `.peipkg`
-files and repositories.
+It is the counterpart to the producer side (`peipkg-repo`,
+`peipkg-manager`), which serves `.peipkg` files and repositories. The
+producer-side *format emitter* lives here too: the public `pack/`
+package creates `.peipkg` files for external build tools (it absorbed
+the core of the retired `peipkg-build`).
 
 ## Status
 
@@ -36,7 +38,9 @@ are recorded in the commit history.
 
 - `cmd/peipkg/` — the command entrypoint
 - `compose/` — the public root-composition API for image builders
-- `internal/` — the implementation packages listed above
+- `pack/` — the public .peipkg-creation API for build tools
+- `internal/` — the implementation packages listed above, plus
+  `internal/build/` (the producer-side emitter behind `pack/`)
 
 ## Building
 
