@@ -5,3 +5,6 @@
 *.test
 *.out
 coverage.*
+
+# pekit stages
+/out/

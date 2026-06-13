@@ -1,0 +1,18 @@
+outDir = "out"
+
+# Two binaries: the peipkg client ships to the target root; peipkg-compose
+# is a build-host image-assembly tool (dist gets it via `go install`),
+# host-only like prelude's mkirf — built here but not packaged.
+# Static + CGO-free so the client runs on a bare Peios root.
+
+[build.client]
+command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $PEKIT_OUT/peipkg ./cmd/peipkg"
+
+[build.compose]
+command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $PEKIT_OUT/peipkg-compose ./cmd/peipkg-compose"
+
+[test]
+command = "go test ./..."
+
+[clean]
+command = "go clean"

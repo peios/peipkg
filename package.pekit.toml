@@ -1,0 +1,11 @@
+format = "peipkg"
+
+[package]
+version      = "0.1.1-1"
+architecture = "x86_64"
+description  = "Peios package manager client (peipkg consumer; static, CGO-free)"
+license      = "MIT"
+
+# Only the client ships; peipkg-compose is a build-host tool.
+[files]
+"client:peipkg" = "usr/bin/peipkg"
