@@ -3,6 +3,7 @@ package pack_test
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/peios/libp-go/sddl"
 
 	"github.com/peios/peipkg/pack"
 )
@@ -116,6 +118,81 @@ func TestPackSortsArrays(t *testing.T) {
 	}
 	if manifest.Provides[0].Name != "greeter" || manifest.Provides[1].Name != "hello-impl" {
 		t.Errorf("provides not sorted: %+v", manifest.Provides)
+	}
+}
+
+// TestPackSDOverrides verifies both supply forms produce the §3.3.5
+// wire value: unpadded base64 of the binary self-relative descriptor,
+// with SDDL compiled via libp.
+func TestPackSDOverrides(t *testing.T) {
+	const sddlText = "O:BAG:SY"
+	d, err := sddl.Parse(sddlText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBinary, err := d.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := helloNoarchManifest()
+	m.SDOverrides = []pack.SDOverride{
+		{Path: "usr/share/hello/MESSAGE", SDDL: sddlText},
+		{Path: "usr/share/hello", SD: []byte("raw descriptor bytes")},
+	}
+
+	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
+	var buf bytes.Buffer
+	if err := pack.Pack(pack.PackOptions{
+		Manifest:   m,
+		StagedRoot: filepath.Join(caseDir, "staged"),
+		Out:        &buf,
+	}); err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+
+	var manifest struct {
+		SDOverrides []struct {
+			Path string `json:"path"`
+			SD   string `json:"sd"`
+		} `json:"sd_overrides"`
+	}
+	if err := json.Unmarshal(extractEntry(t, buf.Bytes(), ".peipkg/manifest.json"), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.SDOverrides) != 2 {
+		t.Fatalf("got %d sd_overrides, want 2", len(manifest.SDOverrides))
+	}
+	// Sorted by path: "usr/share/hello" (raw) before ".../MESSAGE" (SDDL).
+	if got, want := manifest.SDOverrides[0].SD, base64.RawStdEncoding.EncodeToString([]byte("raw descriptor bytes")); got != want {
+		t.Errorf("raw-form sd = %q, want %q", got, want)
+	}
+	if got, want := manifest.SDOverrides[1].SD, base64.RawStdEncoding.EncodeToString(wantBinary); got != want {
+		t.Errorf("SDDL-form sd = %q, want %q", got, want)
+	}
+}
+
+// TestPackSDOverrideRequiresOneForm verifies exactly one of SD and SDDL
+// must be set, and that SDDL errors surface with the offending path.
+func TestPackSDOverrideRequiresOneForm(t *testing.T) {
+	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
+	for name, override := range map[string]pack.SDOverride{
+		"both":     {Path: "usr/share/hello/MESSAGE", SD: []byte("x"), SDDL: "O:SY"},
+		"neither":  {Path: "usr/share/hello/MESSAGE"},
+		"bad sddl": {Path: "usr/share/hello/MESSAGE", SDDL: "not sddl"},
+	} {
+		m := helloNoarchManifest()
+		m.SDOverrides = []pack.SDOverride{override}
+		err := pack.Pack(pack.PackOptions{
+			Manifest:   m,
+			StagedRoot: filepath.Join(caseDir, "staged"),
+			Out:        io.Discard,
+		})
+		if err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+		} else if !strings.Contains(err.Error(), "usr/share/hello/MESSAGE") {
+			t.Errorf("%s: error does not name the override path: %v", name, err)
+		}
 	}
 }
 

@@ -16,9 +16,12 @@ package pack
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"sort"
+
+	"github.com/peios/libp-go/sddl"
 
 	internalmanifest "github.com/peios/peipkg/internal/build/manifest"
 	internalpack "github.com/peios/peipkg/internal/build/pack"
@@ -49,8 +52,8 @@ type Manifest struct {
 	// in the order given.
 	SideEffects []string
 
-	// SDOverrides are §3.3.5 security-descriptor overrides. SD is the
-	// base64-encoded binary self-relative SD.
+	// SDOverrides are §3.3.5 security-descriptor overrides, supplied
+	// in binary or SDDL form; Pack owns the on-wire encoding.
 	SDOverrides []SDOverride
 
 	// Build is the §3.3.4 build-provenance object. Required.
@@ -79,9 +82,19 @@ type Replaces struct {
 }
 
 // SDOverride is one entry in the sd_overrides array (§3.3.5).
+// Exactly one of SD and SDDL must be set.
 type SDOverride struct {
 	Path string
-	SD   string
+
+	// SD is the binary self-relative security descriptor, used
+	// verbatim. Pack handles the on-wire base64 encoding.
+	SD []byte
+
+	// SDDL is the textual form (MS-DTYP §2.5.1); Pack compiles it to
+	// the binary self-relative descriptor via libp. Absolute SID
+	// aliases only — there is no domain/machine resolution context at
+	// pack time, so domain-relative aliases (DA, EA, …) are an error.
+	SDDL string
 }
 
 // BuildInfo is the build-provenance object (§3.3.4). Timestamp MUST be
@@ -213,7 +226,11 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 			return internalmanifest.Manifest{}, fmt.Errorf("sd_overrides: duplicate path %q", v.Path)
 		}
 		seenOver[v.Path] = struct{}{}
-		overrides = append(overrides, internalmanifest.SDOverride{Path: v.Path, SD: v.SD})
+		sd, err := encodeSDOverride(v)
+		if err != nil {
+			return internalmanifest.Manifest{}, fmt.Errorf("sd_overrides: %s: %w", v.Path, err)
+		}
+		overrides = append(overrides, internalmanifest.SDOverride{Path: v.Path, SD: sd})
 	}
 	sort.Slice(overrides, func(i, j int) bool { return overrides[i].Path < overrides[j].Path })
 
@@ -237,6 +254,30 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 			SourceRef: m.Build.SourceRef,
 		},
 	}, nil
+}
+
+// encodeSDOverride turns one override into its on-wire sd value: the
+// unpadded base64 of the binary self-relative descriptor (§3.3.5),
+// compiling SDDL first when that form was supplied.
+func encodeSDOverride(v SDOverride) (string, error) {
+	switch {
+	case len(v.SD) > 0 && v.SDDL != "":
+		return "", fmt.Errorf("SD and SDDL are both set; supply exactly one")
+	case len(v.SD) > 0:
+		return base64.RawStdEncoding.EncodeToString(v.SD), nil
+	case v.SDDL != "":
+		d, err := sddl.Parse(v.SDDL)
+		if err != nil {
+			return "", fmt.Errorf("parse SDDL: %w", err)
+		}
+		raw, err := d.Marshal()
+		if err != nil {
+			return "", fmt.Errorf("marshal security descriptor: %w", err)
+		}
+		return base64.RawStdEncoding.EncodeToString(raw), nil
+	default:
+		return "", fmt.Errorf("neither SD nor SDDL is set; supply exactly one")
+	}
 }
 
 func convertDeps(in []Dependency, field string) ([]internalmanifest.Dependency, error) {
