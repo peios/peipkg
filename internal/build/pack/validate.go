@@ -14,7 +14,8 @@ import (
 // separator, so "etc/foo" matches "etc/" but "etcetera" does not).
 //
 // usr/lib/ admits any first-segment-after-lib name to allow the per-triplet
-// dispatch (validateLibPath narrows it to "<arch>-linux-peios/" or rejects).
+// dispatch (validateLibPath narrows it to "<arch>-linux-peios/" or the
+// "debug/" separated-debug-info tree, or rejects).
 var permittedTopLevels = []string{
 	"usr/bin/",
 	"usr/lib/",
@@ -132,11 +133,23 @@ func hasPermittedTopLevel(p string) bool {
 // validateLibPath enforces §3.4.2: anything under /usr/lib/ must be under
 // /usr/lib/<triplet>/, the triplet must be <architecture>-linux-peios, and
 // noarch packages must not have any /usr/lib/<triplet>/ entries at all.
+//
+// /usr/lib/debug/ is the documented exception: separated debug information
+// (§3.4.1) mirrors the install path of the file it describes rather than
+// sitting under <triplet>, so it is exempt from the triplet layout. It is
+// still arch-dependent, so noarch packages must not ship it.
 func validateLibPath(architecture, leafPath string) error {
 	rest := strings.TrimPrefix(leafPath, "usr/lib/")
-	triplet, _, ok := strings.Cut(rest, "/")
+	first, _, ok := strings.Cut(rest, "/")
 	if !ok {
 		return fmt.Errorf("%s sits directly under /usr/lib/ (§3.4.2 requires /usr/lib/<triplet>/<...>)", leafPath)
+	}
+
+	if first == "debug" {
+		if architecture == "noarch" {
+			return fmt.Errorf("noarch package contains arch-specific debug info %s (§3.4.2 forbids /usr/lib/debug/ entries in noarch packages)", leafPath)
+		}
+		return nil
 	}
 
 	if architecture == "noarch" {
@@ -144,8 +157,8 @@ func validateLibPath(architecture, leafPath string) error {
 	}
 
 	expected := architecture + "-linux-peios"
-	if triplet != expected {
-		return fmt.Errorf("%s uses triplet %q, expected %q for architecture %q (§3.4.2)", leafPath, triplet, expected, architecture)
+	if first != expected {
+		return fmt.Errorf("%s uses triplet %q, expected %q for architecture %q (§3.4.2)", leafPath, first, expected, architecture)
 	}
 	return nil
 }

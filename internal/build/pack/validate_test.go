@@ -93,6 +93,42 @@ func TestValidateRejectsBareUsrLib(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsDebugTree(t *testing.T) {
+	// /usr/lib/debug/ holds separated debug information (§3.4.1) mirroring
+	// the install paths of the files it describes, plus the build-id index.
+	// It is exempt from the §3.4.2 <triplet> requirement.
+	leaves := []entry{
+		{path: "usr/lib/debug/usr/bin/foo.debug", kind: kindFile},
+		{path: "usr/lib/debug/usr/lib/x86_64-linux-peios/libfoo.so.1.debug", kind: kindFile},
+		{path: "usr/lib/debug/.build-id/ab/cdef0123.debug", kind: kindFile},
+	}
+	if err := validateEntries("x86_64", leaves); err != nil {
+		t.Errorf("expected accept of /usr/lib/debug/ tree, got: %v", err)
+	}
+}
+
+func TestValidateRejectsNoarchDebug(t *testing.T) {
+	// Debug information is arch-dependent; a noarch package must not ship it.
+	err := validateEntries("noarch", []entry{
+		{path: "usr/lib/debug/usr/bin/foo.debug", kind: kindFile},
+	})
+	if err == nil || !strings.Contains(err.Error(), "noarch") || !strings.Contains(err.Error(), "debug") {
+		t.Errorf("expected noarch debug rejection, got %v", err)
+	}
+}
+
+func TestValidateRejectsBareUsrLibDebugFile(t *testing.T) {
+	// A file literally named "debug" directly under /usr/lib/ is not the
+	// debug tree; it sits bare under /usr/lib/ and is rejected like any
+	// other non-triplet entry.
+	err := validateEntries("x86_64", []entry{
+		{path: "usr/lib/debug", kind: kindFile},
+	})
+	if err == nil || !strings.Contains(err.Error(), "directly under /usr/lib/") {
+		t.Errorf("expected bare /usr/lib/debug rejection, got %v", err)
+	}
+}
+
 func TestValidateAcceptsBootSymlinkAndFile(t *testing.T) {
 	// /boot/ is a §3.4.1 permitted destination admitting both real files
 	// and symlinks. The SHOULD-be-symlinks rule (§3.4.1) is not enforced
