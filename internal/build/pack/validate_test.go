@@ -129,6 +129,33 @@ func TestValidateRejectsBareUsrLibDebugFile(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsSrcDebugTree(t *testing.T) {
+	// /usr/src/debug/ holds the debugger source files the debug info
+	// references (§3.4.1). Source is architecture-independent, so it carries
+	// no triplet and no noarch restriction — both arch and noarch packages
+	// may install there.
+	for _, arch := range []string{"x86_64", "noarch"} {
+		leaves := []entry{
+			{path: "usr/src/debug/foo-1.0/main.c", kind: kindFile},
+			{path: "usr/src/debug/foo-1.0/include/foo.h", kind: kindFile},
+		}
+		if err := validateEntries(arch, leaves); err != nil {
+			t.Errorf("arch %q: expected accept of /usr/src/debug/ tree, got: %v", arch, err)
+		}
+	}
+}
+
+func TestValidateRejectsNonDebugUsrSrc(t *testing.T) {
+	// Only the debug subtree of /usr/src/ is permitted; the rest of
+	// /usr/src/ is not a package destination.
+	err := validateEntries("x86_64", []entry{
+		{path: "usr/src/linux-headers-6.12/Makefile", kind: kindFile},
+	})
+	if err == nil || !strings.Contains(err.Error(), "§3.4.1") {
+		t.Errorf("expected rejection of non-debug /usr/src/ path, got %v", err)
+	}
+}
+
 func TestValidateAcceptsBootSymlinkAndFile(t *testing.T) {
 	// /boot/ is a §3.4.1 permitted destination admitting both real files
 	// and symlinks. The SHOULD-be-symlinks rule (§3.4.1) is not enforced
