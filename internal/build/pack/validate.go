@@ -21,6 +21,7 @@ var permittedTopLevels = []string{
 	"usr/lib/",
 	"usr/share/",
 	"usr/include/",
+	"usr/src/debug/", // only the debug-source subtree of usr/src is a destination
 	"etc/",
 	"var/",
 	"opt/",
