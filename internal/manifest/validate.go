@@ -112,8 +112,8 @@ func validateName(s string) error {
 			return fmt.Errorf("%q contains the invalid character %q", s, c)
 		}
 	}
-	if !isLowerOrDigit(s[0]) || !isLowerOrDigit(s[len(s)-1]) {
-		return fmt.Errorf("%q must start and end with a lowercase letter or digit", s)
+	if !isLowerOrDigit(s[0]) || (!isLowerOrDigit(s[len(s)-1]) && s[len(s)-1] != '+') {
+		return fmt.Errorf("%q must start with a lowercase letter or digit and end with one or a plus sign", s)
 	}
 	for i := 1; i < len(s); i++ {
 		if isNameSeparator(s[i]) && isNameSeparator(s[i-1]) {
@@ -398,6 +398,9 @@ func isLowerOrDigit(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
-func isNameSeparator(c byte) bool { return c == '-' || c == '.' || c == '+' }
+// A plus sign is a regular name character, not a separator: it is intrinsic to
+// names like "libstdc++" / "g++" (it may repeat and may end a name), unlike the
+// hyphen and dot that join components and may not be adjacent or sit at an edge.
+func isNameSeparator(c byte) bool { return c == '-' || c == '.' }
 
-func isNameChar(c byte) bool { return isLowerOrDigit(c) || isNameSeparator(c) }
+func isNameChar(c byte) bool { return isLowerOrDigit(c) || isNameSeparator(c) || c == '+' }
