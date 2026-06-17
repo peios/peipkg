@@ -170,11 +170,24 @@ func TestInvalidName(t *testing.T) {
 		"ng--inx", // consecutive separators
 		"ngin x",  // space
 		"nginx_1", // underscore is not permitted
+		"++nginx", // starts with a plus (only allowed at the end / interior)
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := baseManifest()
 			m["name"] = name
 			wantReject(t, m)
+		})
+	}
+}
+
+func TestValidNameWithPlus(t *testing.T) {
+	// A plus sign is a regular name character, not a separator: it is intrinsic
+	// to names like libstdc++ / g++, so it may repeat and may end a name. §2.1.
+	for _, name := range []string{"libstdc++", "g++", "c++", "libstdc++-devel"} {
+		t.Run(name, func(t *testing.T) {
+			m := baseManifest()
+			m["name"] = name
+			mustDecode(t, m)
 		})
 	}
 }
