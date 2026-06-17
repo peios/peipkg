@@ -118,8 +118,16 @@ func Pack(in Input) error {
 	}
 
 	allEntries := withAncestorDirs(leaves)
+	// Sort by the on-wire tar name, not the bare path: directory entries
+	// emit with a trailing slash (writePayloadEntry), and the archive
+	// reader verifies payload order against those slash-terminated names.
+	// Sorting by the bare path diverges whenever a file and a directory
+	// share a prefix — e.g. "asm/fpu.h" vs the directory "asm/fpu": bare,
+	// "asm/fpu" < "asm/fpu.h", but on the wire '.' (0x2e) < '/' (0x2f) puts
+	// "asm/fpu.h" before "asm/fpu/". Keying on the wire name keeps the
+	// emitted order strictly ascending, as the reader requires.
 	sort.Slice(allEntries, func(i, j int) bool {
-		return allEntries[i].path < allEntries[j].path
+		return allEntries[i].wireName() < allEntries[j].wireName()
 	})
 
 	m := in.Manifest
@@ -176,6 +184,17 @@ type entry struct {
 	kind       entryKind
 	size       int64  // regular files only
 	linkTarget string // symlinks only
+}
+
+// wireName is the entry's tar name as emitted: a directory carries the
+// POSIX-pax trailing slash (see writePayloadEntry), a file or symlink
+// does not. Payload entries are sorted by this so the emitted order
+// matches what the archive reader verifies.
+func (e entry) wireName() string {
+	if e.kind == kindDir {
+		return e.path + "/"
+	}
+	return e.path
 }
 
 // walkLeaves discovers every regular file and symlink under stagedRoot.
