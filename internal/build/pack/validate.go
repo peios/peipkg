@@ -18,6 +18,7 @@ import (
 // "debug/" separated-debug-info tree, or rejects).
 var permittedTopLevels = []string{
 	"usr/bin/",
+	"usr/sbin/", // system binaries (daemons, init/boot, service executables)
 	"usr/lib/",
 	"usr/share/",
 	"usr/include/",
@@ -27,6 +28,7 @@ var permittedTopLevels = []string{
 	"opt/",
 	"boot/",
 	"system/",
+	"hooks/", // initramfs boot hooks — mkirf scans /hooks/ when packing the cpio
 }
 
 var permittedDirectoryOnlyRoots = map[string]bool{

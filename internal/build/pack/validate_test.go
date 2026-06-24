@@ -10,12 +10,14 @@ import (
 func TestValidateAcceptsPermittedPaths(t *testing.T) {
 	leaves := []entry{
 		{path: "usr/bin/foo", kind: kindFile},
+		{path: "usr/sbin/food", kind: kindFile},
 		{path: "usr/lib/x86_64-linux-peios/libfoo.so.1", kind: kindFile},
 		{path: "usr/share/doc/foo/README", kind: kindFile},
 		{path: "usr/include/foo.h", kind: kindFile},
 		{path: "etc/foo/foo.conf", kind: kindFile},
 		{path: "opt/foo/bin/foo", kind: kindFile},
 		{path: "system/boot/prelude/init", kind: kindFile},
+		{path: "hooks/mount-root.sh", kind: kindFile},
 		{path: "var", kind: kindDir},
 		{path: "proc", kind: kindDir},
 		{path: "sys", kind: kindDir},
