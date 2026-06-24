@@ -134,6 +134,38 @@ func minimalManifestJSON(t *testing.T, name, ver, arch string, sizeInstalled int
 	return data
 }
 
+// providerManifestJSON is minimalManifestJSON plus a single provides entry
+// that fills one claim slot (role/slot -> target, with a provider default
+// path) — the shape of a claim-holding package like prelude.
+func providerManifestJSON(t *testing.T, name, ver, arch string, sizeInstalled int64,
+	role, slot, target, path string) []byte {
+	t.Helper()
+	m := map[string]any{
+		"schema_version": 1,
+		"name":           name,
+		"version":        ver,
+		"architecture":   arch,
+		"dependencies":   []any{},
+		"conflicts":      []any{},
+		"provides": []any{map[string]any{
+			"name":    role,
+			"version": "1",
+			"claims":  map[string]any{slot: map[string]any{"target": target, "path": path}},
+		}},
+		"size_installed": sizeInstalled,
+		"build": map[string]any{
+			"timestamp":  "2026-06-01T00:00:00Z",
+			"farm_id":    "test",
+			"source_ref": "test",
+		},
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	return data
+}
+
 // fakeFetcher is a repository.Fetcher backed by an in-memory map.
 type fakeFetcher map[string][]byte
 

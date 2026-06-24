@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -154,20 +156,12 @@ func verifyFile(root string, f db.PackageFile) string {
 	return ""
 }
 
-// cmdClean removes cached repository indexes that no longer correspond
-// to a configured repository.
+// cmdClean removes orphaned repository indexes and stale cache objects.
 func cmdClean(app *App, args []string) error {
 	fs := flags("clean")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
-
-	ctx := context.Background()
-	store, err := app.openDB(ctx)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
 
 	repos, err := app.configProvider().Repositories()
 	if err != nil {
@@ -177,6 +171,7 @@ func cmdClean(app *App, args []string) error {
 	for _, r := range repos {
 		configured[r.Name] = true
 	}
+	keep := configuredCacheKeepSet(app.paths.cacheDir, configured)
 
 	entries, err := os.ReadDir(app.paths.cacheDir)
 	if os.IsNotExist(err) {
@@ -189,7 +184,7 @@ func cmdClean(app *App, args []string) error {
 	removed := 0
 	for _, e := range entries {
 		repo := cachedRepoName(e.Name())
-		if repo == "" || configured[repo] {
+		if repo == "" || (configured[repo] && keep[e.Name()]) {
 			continue
 		}
 		if err := os.Remove(filepath.Join(app.paths.cacheDir, e.Name())); err != nil {
@@ -197,18 +192,53 @@ func cmdClean(app *App, args []string) error {
 		}
 		removed++
 	}
-	app.printf("removed %d orphaned cache file(s)\n", removed)
+	app.printf("removed %d cache file(s)\n", removed)
 	return nil
 }
 
+const repositoryCachePointerPrefix = "peipkg-cache-v1\n"
+
+type repositoryCachePointer struct {
+	Index     string `json:"index"`
+	Signature string `json:"signature,omitempty"`
+}
+
+func configuredCacheKeepSet(cacheDir string, configured map[string]bool) map[string]bool {
+	keep := map[string]bool{}
+	for repo := range configured {
+		pointerName := repo + ".active.json"
+		keep[pointerName] = true
+		keep[pointerName+".sig"] = true
+
+		data, err := os.ReadFile(filepath.Join(cacheDir, pointerName))
+		if err != nil || !bytes.HasPrefix(data, []byte(repositoryCachePointerPrefix)) {
+			continue
+		}
+		var ptr repositoryCachePointer
+		if err := json.Unmarshal(data[len(repositoryCachePointerPrefix):], &ptr); err != nil {
+			continue
+		}
+		if filepath.Base(ptr.Index) == ptr.Index && cachedRepoName(ptr.Index) == repo {
+			keep[ptr.Index] = true
+		}
+		if filepath.Base(ptr.Signature) == ptr.Signature && cachedRepoName(ptr.Signature) == repo {
+			keep[ptr.Signature] = true
+		}
+	}
+	return keep
+}
+
 // cachedRepoName extracts the repository name from a cached index
-// filename (<repo>.active.json or <repo>.active.json.sig), or "" if the
-// filename is not a cached index.
+// filename. It accepts both the legacy <repo>.active.json[.sig] layout
+// and the content-addressed <repo>.active.<hash>.* cache objects.
 func cachedRepoName(filename string) string {
 	for _, suffix := range []string{".active.json.sig", ".active.json"} {
 		if name, ok := strings.CutSuffix(filename, suffix); ok {
 			return name
 		}
+	}
+	if name, _, ok := strings.Cut(filename, ".active."); ok {
+		return name
 	}
 	return ""
 }

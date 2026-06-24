@@ -1,0 +1,21 @@
+-- peipkg package database — schema version 6: cross-root commit payload
+-- (DESIGN-named-roots.md → cross-root dependencies, roll-forward).
+--
+-- The transaction journal (txn_op, txn_file) records what a transaction
+-- must do to ROLL BACK — final paths, backups, staged content. It does
+-- not record the forward package state (the package rows, file hashes and
+-- types, the verbatim manifest, claim links) needed to COMMIT, because a
+-- single-root transaction never needs to: a crashed single-root
+-- transaction is always rolled back.
+--
+-- A cross-root transaction is different. Its commit phase flips each
+-- participating root's durability boundary one at a time; a crash partway
+-- leaves some roots committed and some prepared-but-pending. The committed
+-- roots cannot be undone (their backups are gone), so recovery must roll
+-- the pending roots FORWARD — and to commit a root without the original
+-- in-memory plan it needs that forward state persisted. commit_payload is
+-- it: a JSON blob written at prepare time (only for a cross-root
+-- transaction) carrying exactly what the commit would apply. It is NULL
+-- for every single-root transaction. The blob is self-versioned, so its
+-- format can evolve without a journal-schema change.
+ALTER TABLE txn ADD COLUMN commit_payload TEXT;

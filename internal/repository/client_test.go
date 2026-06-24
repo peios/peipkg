@@ -5,7 +5,9 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/peios/peipkg/internal/config"
@@ -154,6 +156,26 @@ func TestClientAdd(t *testing.T) {
 	}
 }
 
+func TestClientAddCacheFailureDoesNotRecordRepository(t *testing.T) {
+	pub, priv := keypair(t)
+	store := newTestStore(t)
+	cachePath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(cachePath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write cache blocker: %v", err)
+	}
+	client := repository.NewClient(
+		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), store, cachePath)
+
+	if err := client.Add(t.Context(), testConfig(pub)); err == nil {
+		t.Fatal("Add should fail when the cache path is not a directory")
+	}
+	if _, found, err := store.GetRepository(t.Context(), testRepoName); err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	} else if found {
+		t.Fatal("repository state was recorded despite cache failure")
+	}
+}
+
 func TestClientAddRejectsUntrustedAnchor(t *testing.T) {
 	pub, priv := keypair(t)
 	wrongAnchor, _ := keypair(t)
@@ -186,6 +208,36 @@ func TestClientRefreshProgress(t *testing.T) {
 	}
 	if idx.IndexVersion != 6 {
 		t.Errorf("after refresh: index version %d, want 6", idx.IndexVersion)
+	}
+}
+
+func TestActiveIndexRejectsCacheAheadOfTrustState(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
+
+	add := repository.NewClient(publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), store, cache)
+	if err := add.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	oldRow, found, err := store.GetRepository(t.Context(), testRepoName)
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	if !found {
+		t.Fatal("repository state was not recorded")
+	}
+
+	refresh := repository.NewClient(publishRepo(t, pub, priv, 6, "2026-05-20T00:00:00Z"), store, cache)
+	if err := refresh.Refresh(t.Context(), cfg); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if err := store.UpsertRepository(t.Context(), oldRow); err != nil {
+		t.Fatalf("restore old repository state: %v", err)
+	}
+
+	_, err = refresh.ActiveIndex(t.Context(), testRepoName)
+	if err == nil || !strings.Contains(err.Error(), "recorded trust state has version 5") {
+		t.Fatalf("ActiveIndex error = %v, want cached/recorded version mismatch", err)
 	}
 }
 

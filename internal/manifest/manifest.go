@@ -22,6 +22,13 @@ type Manifest struct {
 	License     string
 	Homepage    string
 
+	// DefaultRoot is the named root a top-level install of this package
+	// lands in when no --root is given (§3.3.6, DESIGN-named-roots.md). ""
+	// when absent — the package expresses no top-level placement
+	// preference. It is a root reference (a named reference, never a path)
+	// and governs top-level placement only, never dependency placement.
+	DefaultRoot string
+
 	Dependencies         []Dependency
 	OptionalDependencies []Dependency
 	Conflicts            []Dependency
@@ -42,6 +49,19 @@ type Dependency struct {
 	// Constraint restricts the satisfying versions. The zero Constraint
 	// — for a dependency with no constraint field — matches any version.
 	Constraint version.Constraint
+	// Root is the installation root this dependency is placed and
+	// satisfied in (§4.1.1, DESIGN-named-roots.md). "" means the
+	// depending package's own root (the default — a dependency closure
+	// flows into the root the depender occupies); a non-empty value is a
+	// root reference naming a different root the dependency crosses into.
+	// Carried only on dependencies and optional_dependencies, never
+	// conflicts.
+	Root string
+	// Claims is the claims field (§4.4.2): the role slots this dependency
+	// declares a claim path for, keyed by slot name. nil when the entry
+	// has no claims. Present only on dependencies and
+	// optional_dependencies — never conflicts, where claims are rejected.
+	Claims map[string]ClaimSlot
 }
 
 // Provides is one entry of the provides array: a virtual name this
@@ -51,6 +71,26 @@ type Provides struct {
 	// Version is the version of the virtual capability, or nil when the
 	// provides entry carried no version (it then provides any version).
 	Version *version.Version
+	// Claims is the claims field (§4.4.2): the role slots this package
+	// fills when it holds the named role, keyed by slot name. nil when
+	// the entry has no claims.
+	Claims map[string]ClaimSlot
+}
+
+// ClaimSlot is one slot of a claims field (§4.4.2): the binding of a
+// role's named channel to a filesystem location. On a dependency entry
+// (the consumer side) a slot carries Path only; on a provides entry (the
+// provider side) it carries Target and, optionally, a default Path.
+type ClaimSlot struct {
+	// Path is the absolute claim path the slot materialises at — the
+	// symlink location. Set on a consumer slot; optional on a provider
+	// slot, where it is a default used when no consumer declares one. ""
+	// when absent.
+	Path string
+	// Target is the absolute payload path the link points at while this
+	// package holds the role. Set on a provider slot; never on a consumer
+	// slot. "" when absent.
+	Target string
 }
 
 // Replaces is one entry of the replaces array: a package this one

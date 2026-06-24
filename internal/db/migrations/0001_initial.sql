@@ -142,7 +142,7 @@ CREATE TABLE txn_op (
     seq          INTEGER NOT NULL,
     package_name TEXT    NOT NULL,
     action       TEXT    NOT NULL
-                     CHECK (action IN ('install', 'upgrade', 'downgrade', 'remove')),
+                     CHECK (action IN ('install', 'upgrade', 'downgrade', 'remove', 'claim')),
     from_version TEXT,                  -- NULL for install
     to_version   TEXT,                  -- NULL for remove
     origin_repo  TEXT,                  -- NULL for remove / local-file install
@@ -151,9 +151,13 @@ CREATE TABLE txn_op (
     UNIQUE (txn_id, seq),
 
     -- Version columns are populated exactly as the action requires.
+    -- A 'claim' op (a standalone grant/revoke of a role, §7.7) changes a
+    -- holder pointer and its symlinks, not a package version, so it
+    -- carries neither version.
     CHECK (action != 'install' OR (from_version IS NULL     AND to_version IS NOT NULL)),
     CHECK (action != 'remove'  OR (from_version IS NOT NULL AND to_version IS NULL)),
-    CHECK (action IN ('install', 'remove')
+    CHECK (action != 'claim'   OR (from_version IS NULL     AND to_version IS NULL)),
+    CHECK (action IN ('install', 'remove', 'claim')
            OR (from_version IS NOT NULL AND to_version IS NOT NULL))
 );
 

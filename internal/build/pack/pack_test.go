@@ -75,6 +75,23 @@ func TestPackDeterministic(t *testing.T) {
 	}
 }
 
+func TestPackStagedRootRejectsInvalidPayloadPath(t *testing.T) {
+	root := t.TempDir()
+	bad := filepath.Join(root, "usr", "bin", `bad\name`)
+	if err := os.MkdirAll(filepath.Dir(bad), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(bad, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write bad path: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := pack.Pack(pack.Input{StagedRoot: root, Manifest: helloNoarchManifest(), Out: &out})
+	if err == nil || !strings.Contains(err.Error(), "backslash") {
+		t.Fatalf("Pack error = %v, want backslash path rejection", err)
+	}
+}
+
 func firstDiff(a, b []byte) int {
 	n := min(len(a), len(b))
 	for i := range n {

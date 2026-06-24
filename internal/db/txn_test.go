@@ -248,6 +248,30 @@ func TestTxnFilesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTxnDirsRoundTrip(t *testing.T) {
+	d, _ := newTestDB(t)
+	ctx := t.Context()
+	id, err := d.BeginTxn(ctx, testVersion, testJournalSchema)
+	if err != nil {
+		t.Fatalf("BeginTxn: %v", err)
+	}
+	dirs := []db.TxnDir{
+		{Seq: 0, Path: "/usr"},
+		{Seq: 1, Path: "/usr/share"},
+		{Seq: 2, Path: "/usr/share/app"},
+	}
+	if err := d.InsertTxnDirs(ctx, id, dirs); err != nil {
+		t.Fatalf("InsertTxnDirs: %v", err)
+	}
+	got, err := d.TxnDirs(ctx, id)
+	if err != nil {
+		t.Fatalf("TxnDirs: %v", err)
+	}
+	if want := []string{"/usr", "/usr/share", "/usr/share/app"}; !slices.Equal(got, want) {
+		t.Errorf("TxnDirs = %+v, want %+v", got, want)
+	}
+}
+
 // TestTxnFileRequiresAnOp exercises the composite foreign key: every
 // txn_file must belong to a declared package operation.
 func TestTxnFileRequiresAnOp(t *testing.T) {
@@ -285,6 +309,9 @@ func TestDeleteTxnCascades(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertTxnFiles: %v", err)
 	}
+	if err := d.InsertTxnDirs(ctx, id, []db.TxnDir{{Seq: 0, Path: "/usr/bin"}}); err != nil {
+		t.Fatalf("InsertTxnDirs: %v", err)
+	}
 	if err := d.FinishTxn(ctx, id, db.TxnCommitted, ""); err != nil {
 		t.Fatalf("FinishTxn: %v", err)
 	}
@@ -297,6 +324,9 @@ func TestDeleteTxnCascades(t *testing.T) {
 	}
 	if files, err := d.TxnFiles(ctx, id); err != nil || len(files) != 0 {
 		t.Errorf("txn_file rows after DeleteTxn: got %d (err %v), want 0", len(files), err)
+	}
+	if dirs, err := d.TxnDirs(ctx, id); err != nil || len(dirs) != 0 {
+		t.Errorf("txn_dir rows after DeleteTxn: got %d (err %v), want 0", len(dirs), err)
 	}
 	if _, found, err := d.GetTxn(ctx, id); err != nil || found {
 		t.Errorf("GetTxn after DeleteTxn: found=%v err=%v", found, err)

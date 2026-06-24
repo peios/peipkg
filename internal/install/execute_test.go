@@ -334,6 +334,36 @@ func TestExecuteRecoversPendingTransaction(t *testing.T) {
 	}
 }
 
+func TestExecuteRecoversPendingTransactionRemovesCreatedDirs(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+
+	dir := filepath.Join(root, "usr/share/ghost")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir staged dir: %v", err)
+	}
+	txnID, err := store.BeginTxn(ctx, "0.1.0-test", 2)
+	if err != nil {
+		t.Fatalf("BeginTxn: %v", err)
+	}
+	if err := store.InsertTxnDirs(ctx, txnID, []db.TxnDir{
+		{Seq: 0, Path: filepath.Join(root, "usr")},
+		{Seq: 1, Path: filepath.Join(root, "usr/share")},
+		{Seq: 2, Path: dir},
+	}); err != nil {
+		t.Fatalf("InsertTxnDirs: %v", err)
+	}
+
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test",
+		Provider: fakeProvider{}}
+	if _, err := install.Execute(ctx, resolver.Plan{}, env); err != nil {
+		t.Fatalf("Execute (recovery): %v", err)
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatalf("recovery did not remove created dir: %v", err)
+	}
+}
+
 func TestExecuteEmptyPlan(t *testing.T) {
 	store, root, lock := freshEnv(t)
 	env := install.Env{Root: root, DB: store, LockPath: lock,

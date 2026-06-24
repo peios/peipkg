@@ -36,33 +36,49 @@ type paths struct {
 
 // App is the context shared by every peipkg command.
 type App struct {
-	paths   paths
-	in      io.Reader
-	reader  *bufio.Reader // buffers in; shared so prompts do not lose input
-	out     io.Writer
-	errOut  io.Writer
-	emitter audit.Emitter // the §7.6 audit-event sink
+	paths paths
+	// rootExplicit records whether the operator passed --root. When false,
+	// a top-level install may re-root itself to a package's default_root
+	// (§3.3.6, DESIGN-named-roots.md); an explicit --root always wins.
+	rootExplicit bool
+	in           io.Reader
+	reader       *bufio.Reader // buffers in; shared so prompts do not lose input
+	out          io.Writer
+	errOut       io.Writer
+	emitter      audit.Emitter // the §7.6 audit-event sink
+}
+
+// newPaths locates peipkg's files beneath an operating root.
+func newPaths(root string) paths {
+	state := filepath.Join(root, "var/lib/peipkg")
+	return paths{
+		root:      root,
+		stateDir:  state,
+		configDir: filepath.Join(root, "conf/peipkg"),
+		dbPath:    filepath.Join(state, "db.sqlite"),
+		lockPath:  filepath.Join(state, "lock"),
+		cacheDir:  filepath.Join(state, "cache"),
+	}
 }
 
 // newApp builds an App rooted at root, reading from in and writing to
 // out and errOut.
 func newApp(root string, in io.Reader, out, errOut io.Writer) *App {
-	state := filepath.Join(root, "var/lib/peipkg")
 	return &App{
-		paths: paths{
-			root:      root,
-			stateDir:  state,
-			configDir: filepath.Join(root, "conf/peipkg"),
-			dbPath:    filepath.Join(state, "db.sqlite"),
-			lockPath:  filepath.Join(state, "lock"),
-			cacheDir:  filepath.Join(state, "cache"),
-		},
+		paths:   newPaths(root),
 		in:      in,
 		reader:  bufio.NewReader(in),
 		out:     out,
 		errOut:  errOut,
 		emitter: audit.KMESEmitter{},
 	}
+}
+
+// setRoot re-points the App at a different operating root, recomputing
+// every derived path. It is how a top-level install moves itself to a
+// package's default_root before the transaction opens.
+func (app *App) setRoot(root string) {
+	app.paths = newPaths(root)
 }
 
 // command is the handler for one peipkg verb.
@@ -78,6 +94,7 @@ func init() {
 		"downgrade": cmdDowngrade,
 		"uninstall": cmdUninstall,
 		"remove":    cmdUninstall, // alias
+		"claim":     cmdClaim,
 		"undo":      cmdUndo,
 		"list":      cmdList,
 		"info":      cmdInfo,
@@ -87,6 +104,7 @@ func init() {
 		"verify":    cmdVerify,
 		"history":   cmdHistory,
 		"repo":      cmdRepo,
+		"root":      cmdRoot,
 		"refresh":   cmdRefresh,
 		"clean":     cmdClean,
 		"recover":   cmdRecover,
@@ -109,7 +127,25 @@ func Run(args []string) int {
 		return 2
 	}
 
-	app := newApp(*root, os.Stdin, os.Stdout, os.Stderr)
+	// Resolve --root: a path-like value is a literal filesystem path
+	// (today's behaviour), a bare name is a registered root resolved
+	// against the system anchor (DESIGN-named-roots.md D2/D3).
+	resolvedRoot, err := resolveRootRef(context.Background(), systemAnchor, *root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "peipkg: %v\n", err)
+		return 2
+	}
+	// Whether --root was given explicitly governs default_root: an
+	// explicit root always wins over a package's preference (§3.3.6).
+	rootExplicit := false
+	global.Visit(func(f *flag.Flag) {
+		if f.Name == "root" {
+			rootExplicit = true
+		}
+	})
+
+	app := newApp(resolvedRoot, os.Stdin, os.Stdout, os.Stderr)
+	app.rootExplicit = rootExplicit
 	verb, cmdArgs := rest[0], rest[1:]
 	handler, ok := dispatch[verb]
 	if !ok {
@@ -124,13 +160,22 @@ func Run(args []string) int {
 	return 0
 }
 
-// openDB opens — creating and migrating if necessary — the package
-// database.
+// openDB opens — creating and migrating if necessary — the operating
+// root's package database.
 func (app *App) openDB(ctx context.Context) (*db.DB, error) {
-	if err := os.MkdirAll(app.paths.stateDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", app.paths.stateDir, err)
+	return app.openDBAt(ctx, app.paths.root)
+}
+
+// openDBAt opens — creating and migrating if necessary — the package
+// database of an arbitrary root. It is how a cross-root transaction
+// reaches a participating root other than the one invoked (and how a root
+// receiving its first cross-root install gets its database created).
+func (app *App) openDBAt(ctx context.Context, root string) (*db.DB, error) {
+	p := newPaths(root)
+	if err := os.MkdirAll(p.stateDir, 0o755); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", p.stateDir, err)
 	}
-	return db.Open(ctx, app.paths.dbPath)
+	return db.Open(ctx, p.dbPath)
 }
 
 // printf writes a formatted line to the command's standard output.

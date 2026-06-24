@@ -18,6 +18,7 @@ const (
 	TypeInstall       = "peipkg.install"
 	TypeUpgrade       = "peipkg.upgrade"
 	TypeUninstall     = "peipkg.uninstall"
+	TypeClaim         = "peipkg.claim"
 	TypeRefresh       = "peipkg.refresh"
 	TypeTxnFailed     = "peipkg.transaction-failed"
 	TypeRecovery      = "peipkg.recovery"

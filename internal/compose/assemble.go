@@ -7,48 +7,96 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/peios/peipkg/internal/archive"
+	"github.com/peios/peipkg/internal/claims"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
 )
 
-// assemble builds a populated peipkg root from a manifest's repository
-// configuration and the fetched packages. It is the third stage of a
-// compose build — Resolve produces the lock, fetchAll fetches and
-// verifies it, assemble installs the result into a fresh root.
+// assemble builds a populated peipkg image from a manifest and the
+// fetched packages. It is the third stage of a compose build — Resolve
+// produces the lock, fetchAll fetches and verifies it, assemble installs
+// the result. A multi-root image is several roots nested under one output
+// directory (initramfs at <out>/boot/initramfs), so the whole image is
+// still one tree the caller renames into place atomically; compose needs
+// none of the consumer's cross-root transaction machinery.
 //
-// root must be writable; assemble creates it if it does not exist.
-// The caller is responsible for the staging-and-rename atomicity at
-// the directory level (the build calls assemble on a staging dir and
-// renames it to the final output on success).
-func assemble(ctx context.Context, root string, m Manifest, fetched []fetchedPackage) error {
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return fmt.Errorf("peipkg/compose: creating output root: %w", err)
+// out must be writable; assemble creates it if it does not exist. Each
+// package is assembled into the root its lock entry names (relative to
+// out, "" being out itself). The named roots are registered in the
+// anchor's database so the booted system resolves `--root <name>`.
+func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPackage) error {
+	byRoot := map[string][]fetchedPackage{}
+	for _, fp := range fetched {
+		byRoot[fp.Locked.Root] = append(byRoot[fp.Locked.Root], fp)
+	}
+	// The anchor always exists even with no direct packages: it carries
+	// the named-root registry and the repository configuration.
+	if _, ok := byRoot[""]; !ok {
+		byRoot[""] = nil
 	}
 
-	if err := seedDatabase(ctx, root, m, fetched); err != nil {
+	rels := make([]string, 0, len(byRoot))
+	for rel := range byRoot {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+
+	for _, rel := range rels {
+		var register []Root // only the anchor seeds the registry
+		if rel == "" {
+			register = m.Roots
+		}
+		if err := assembleRoot(ctx, filepath.Join(out, rel), m, byRoot[rel], register); err != nil {
+			return err
+		}
+	}
+	// Repositories are anchor-level (the consumer's anchor-fetch model):
+	// a composed sub-root receives its packages through the build, not its
+	// own repositories.
+	return writeRepositoryConfig(out, m.Repositories)
+}
+
+// assembleRoot installs one root's packages into rootDir: it resolves the
+// root's claims, seeds its database (registering register's named roots
+// when non-nil), extracts payloads, and materialises claim links.
+func assembleRoot(ctx context.Context, rootDir string, m Manifest,
+	fetched []fetchedPackage, register []Root) error {
+
+	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+		return fmt.Errorf("peipkg/compose: creating root %s: %w", rootDir, err)
+	}
+	// Resolve claims (§4.4 / §7.7) over this root's closed package set: the
+	// holders and links are recorded in the seed transaction alongside the
+	// packages, and the symlinks are materialised after extraction.
+	holders, links, err := composeClaims(fetched)
+	if err != nil {
+		return err
+	}
+	if err := seedDatabase(ctx, rootDir, m, fetched, holders, links, register); err != nil {
 		return err
 	}
 	// Payloads are extracted only after the database has accepted the
 	// closure, so a cross-package path collision is caught by the
 	// package_file UNIQUE constraint before any file is written.
 	for _, fp := range fetched {
-		if err := extractPayload(root, fp); err != nil {
+		if err := extractPayload(rootDir, fp); err != nil {
 			return err
 		}
 	}
-	if err := writeRepositoryConfig(root, m.Repositories); err != nil {
-		return err
-	}
-	return nil
+	// Claim symlinks land after payloads so a claim contending with a real
+	// payload file fails on the already-present path rather than overwriting.
+	return materializeClaims(rootDir, links)
 }
 
 // seedDatabase creates the root's package database and populates it
 // with the meta primary_arch row and one package + its package_file
 // rows for every fetched package. The whole seed runs in one SQLite
 // transaction so a collision-induced abort leaves nothing committed.
-func seedDatabase(ctx context.Context, root string, m Manifest, fetched []fetchedPackage) error {
+func seedDatabase(ctx context.Context, root string, m Manifest, fetched []fetchedPackage,
+	holders map[string]string, links []claims.Link, register []Root) error {
 	stateDir := filepath.Join(root, "var/lib/peipkg")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return fmt.Errorf("peipkg/compose: creating state directory: %w", err)
@@ -82,6 +130,17 @@ func seedDatabase(ctx context.Context, root string, m Manifest, fetched []fetche
 			}
 			if err := tx.InsertPackageFiles(ctx, packageFilesOf(fp)); err != nil {
 				return fmt.Errorf("peipkg/compose: seeding %s files: %w", fp.Locked.Name, err)
+			}
+		}
+		if err := seedClaims(ctx, tx, holders, links); err != nil {
+			return err
+		}
+		// Seed the named-root registry so the booted image resolves
+		// `--root <name>` and cascades upgrades into it. Paths are stored
+		// relative to this (anchor) root, matching the registry convention.
+		for _, r := range register {
+			if err := tx.SetNamedRoot(ctx, r.Name, r.Path); err != nil {
+				return fmt.Errorf("peipkg/compose: registering root %q: %w", r.Name, err)
 			}
 		}
 		return nil

@@ -218,10 +218,9 @@ func writeLock(path string, lock Lock) error {
 	return nil
 }
 
-// ensureLockMatches confirms a stored lock describes the same build as
-// the current manifest: same architecture, same source_date. A mismatch
-// means the manifest moved on without the lock — the operator must
-// regenerate it.
+// ensureLockMatches confirms a stored lock describes the same build
+// intent as the current manifest. A mismatch means the manifest moved
+// on without the lock — the operator must regenerate it.
 func ensureLockMatches(lock Lock, m Manifest) error {
 	if lock.Arch != m.Arch {
 		return fmt.Errorf("peipkg/compose: lock arch %q does not match manifest arch %q",
@@ -231,6 +230,13 @@ func ensureLockMatches(lock Lock, m Manifest) error {
 		return fmt.Errorf("peipkg/compose: lock source_date %s does not match manifest %s",
 			lock.SourceDate.UTC().Format(time.RFC3339),
 			m.SourceDate.UTC().Format(time.RFC3339))
+	}
+	if lock.ManifestDigest == "" {
+		return fmt.Errorf("peipkg/compose: lock does not record a manifest_digest")
+	}
+	if want := manifestDigest(m); lock.ManifestDigest != want {
+		return fmt.Errorf("peipkg/compose: lock manifest_digest %s does not match manifest %s",
+			lock.ManifestDigest, want)
 	}
 	return nil
 }

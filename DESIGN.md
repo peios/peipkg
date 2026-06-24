@@ -1,7 +1,8 @@
 # peipkg — Consumer Design
 
-Status: design complete, no code yet. Settled across a design pass on
-2026-05-17 — 2026-05-18.
+Status: implemented. Initial design settled across a design pass on
+2026-05-17 — 2026-05-18; implementation slices are complete as recorded
+in README.md.
 
 Normative format reference: PSD-009 v0.22 at
 `learn/specs/psd-009--peipkg/v0.22/`. Section numbers below (§x.y) cite

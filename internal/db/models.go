@@ -92,6 +92,11 @@ type Txn struct {
 	// so a different peipkg can tell whether it can recover it.
 	StartedByVersion     string
 	JournalSchemaVersion int
+	// CrossRootID groups the per-root txn rows of one cross-root
+	// transaction (DESIGN-named-roots.md). It is empty for an ordinary
+	// single-root transaction — the common case — and a shared identifier
+	// across the participating roots otherwise.
+	CrossRootID string
 }
 
 // OpAction is what a transaction does to one package.
@@ -102,6 +107,10 @@ const (
 	OpUpgrade   OpAction = "upgrade"
 	OpDowngrade OpAction = "downgrade"
 	OpRemove    OpAction = "remove"
+	// OpClaim is a standalone grant or revoke of a role's holder (§7.7):
+	// it changes a holder pointer and the role's claim symlinks, not any
+	// package's version, so it carries no from/to version.
+	OpClaim OpAction = "claim"
 )
 
 // TxnOp is one row of the txn_op table: a transaction's operation on a
@@ -148,4 +157,44 @@ type TxnFile struct {
 	// pure create.
 	StagedPath string
 	BackupPath string
+}
+
+// TxnDir is one directory the transaction may create during staging.
+// Recovery removes these in reverse order after reversing txn_file rows.
+type TxnDir struct {
+	TxnID int64
+	Seq   int
+	Path  string
+}
+
+// ClaimHolder is one row of the claim_holder table: the package that
+// currently holds a role (§4.4). Deleting the holder package clears the
+// row by cascade, leaving the role unheld.
+type ClaimHolder struct {
+	Role   string
+	Holder string
+}
+
+// NamedRoot is one row of the named_root table: a name in this root's
+// registry mapped to a path relative to this root (DESIGN-named-roots.md).
+// The registry is per-root state, so the same name may map differently in
+// two roots; resolution of a dotted reference chains these flat lookups.
+type NamedRoot struct {
+	Name string
+	// Path is relative to the root that owns the registry, keeping the
+	// root tree relocatable.
+	Path      string
+	CreatedAt time.Time
+}
+
+// ClaimLink is one row of the claim_link table: a materialised claim
+// symlink the package manager owns (§4.4.4). Path is the link location,
+// Target the holder file it points at, Slot the role channel it serves.
+// These rows are the claim layer's "database reflects disk" invariant,
+// the counterpart of [PackageFile] for package-owned files.
+type ClaimLink struct {
+	Path   string
+	Role   string
+	Slot   string
+	Target string
 }

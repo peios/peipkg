@@ -255,13 +255,23 @@ func TestClean(t *testing.T) {
 	if err := os.MkdirAll(app.paths.cacheDir, 0o755); err != nil {
 		t.Fatalf("mkdir cache: %v", err)
 	}
+	officialLive := "official.active." + strings.Repeat("c", 64) + ".json"
+	officialStale := "official.active." + strings.Repeat("d", 64) + ".json"
 	for _, f := range []string{
 		"official.active.json", "official.active.json.sig",
+		officialLive, officialStale,
 		"gone.active.json", "gone.active.json.sig",
+		"gone.active." + strings.Repeat("a", 64) + ".json",
+		"gone.active." + strings.Repeat("b", 64) + ".sig",
 	} {
 		if err := os.WriteFile(filepath.Join(app.paths.cacheDir, f), []byte("{}"), 0o644); err != nil {
 			t.Fatalf("write cache file: %v", err)
 		}
+	}
+	pointer := repositoryCachePointerPrefix + `{"index":"` + officialLive + `"}` + "\n"
+	if err := os.WriteFile(filepath.Join(app.paths.cacheDir, "official.active.json"),
+		[]byte(pointer), 0o644); err != nil {
+		t.Fatalf("write cache pointer: %v", err)
 	}
 	// Only "official" is a configured repository.
 	if err := os.MkdirAll(app.paths.configDir, 0o755); err != nil {
@@ -280,8 +290,18 @@ func TestClean(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(app.paths.cacheDir, "gone.active.json")); !os.IsNotExist(err) {
 		t.Error("the orphaned cache file was not removed")
 	}
+	if _, err := os.Lstat(filepath.Join(app.paths.cacheDir,
+		"gone.active."+strings.Repeat("a", 64)+".json")); !os.IsNotExist(err) {
+		t.Error("the orphaned cache object was not removed")
+	}
 	if _, err := os.Lstat(filepath.Join(app.paths.cacheDir, "official.active.json")); err != nil {
 		t.Error("the configured repository's cache file was removed")
+	}
+	if _, err := os.Lstat(filepath.Join(app.paths.cacheDir, officialLive)); err != nil {
+		t.Error("the configured repository's live cache object was removed")
+	}
+	if _, err := os.Lstat(filepath.Join(app.paths.cacheDir, officialStale)); !os.IsNotExist(err) {
+		t.Error("the configured repository's stale cache object was not removed")
 	}
 }
 

@@ -14,7 +14,9 @@ import (
 func writeJournal(ctx context.Context, store *db.DB, txnID int64, staged []stagedOp) error {
 	ops := make([]db.TxnOp, 0, len(staged))
 	var files []db.TxnFile
-	seq := 0
+	var dirs []db.TxnDir
+	fileSeq := 0
+	dirSeq := 0
 	for i, s := range staged {
 		ops = append(ops, db.TxnOp{
 			Seq:         i,
@@ -26,20 +28,27 @@ func writeJournal(ctx context.Context, store *db.DB, txnID int64, staged []stage
 		})
 		for _, fo := range s.fileOps {
 			files = append(files, db.TxnFile{
-				Seq:         seq,
+				Seq:         fileSeq,
 				PackageName: s.op.Name,
 				FinalPath:   fo.finalPath,
 				Action:      txnFileAction(fo.action),
 				StagedPath:  fo.stagedPath,
 				BackupPath:  fo.backupPath,
 			})
-			seq++
+			fileSeq++
+		}
+		for _, dir := range s.createdDirs {
+			dirs = append(dirs, db.TxnDir{Seq: dirSeq, Path: dir})
+			dirSeq++
 		}
 	}
 	if err := store.InsertTxnOps(ctx, txnID, ops); err != nil {
 		return err
 	}
-	return store.InsertTxnFiles(ctx, txnID, files)
+	if err := store.InsertTxnFiles(ctx, txnID, files); err != nil {
+		return err
+	}
+	return store.InsertTxnDirs(ctx, txnID, dirs)
 }
 
 // applyMetadata records the post-transaction package state. It runs
@@ -92,14 +101,17 @@ func operationSummary(plan resolver.Plan) string {
 		counts[op.Kind]++
 	}
 	var parts []string
-	for kind, label := range map[resolver.OpKind]string{
-		resolver.OpInstall:   "installed",
-		resolver.OpUpgrade:   "upgraded",
-		resolver.OpDowngrade: "downgraded",
-		resolver.OpRemove:    "removed",
+	for _, item := range []struct {
+		kind  resolver.OpKind
+		label string
+	}{
+		{resolver.OpInstall, "installed"},
+		{resolver.OpUpgrade, "upgraded"},
+		{resolver.OpDowngrade, "downgraded"},
+		{resolver.OpRemove, "removed"},
 	} {
-		if counts[kind] > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[kind], label))
+		if counts[item.kind] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[item.kind], item.label))
 		}
 	}
 	if len(parts) == 0 {

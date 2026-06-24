@@ -26,6 +26,10 @@ const etcNewMarker = ".peipkg-new"
 type stagedOp struct {
 	op      resolver.Operation
 	fileOps []fileOp
+	// createdDirs are directories this transaction may create while
+	// staging, ordered parent before child so rollback can remove them
+	// in reverse after file operations have been undone.
+	createdDirs []string
 	// pkg and files are the package-database rows for an install,
 	// upgrade, or downgrade; both are nil for a removal.
 	pkg   *db.Package
@@ -35,29 +39,31 @@ type stagedOp struct {
 	// warnings are non-fatal divergences the operator should see —
 	// chiefly §7.2.2 modified /etc files preserved across an upgrade.
 	warnings []string
+	// stagedAt maps payload logical paths to their incoming staged
+	// sibling. It is staging-only state; the journal gets fileOps.
+	stagedAt map[string]string
 }
 
-// stageOperation stages one plan operation. On failure it returns the
-// partially-staged result so the caller can roll back the file
-// operations it did create.
-func stageOperation(ctx context.Context, env Env, txnID int64, op resolver.Operation,
-	provided map[string]ProvidedPackage) (stagedOp, error) {
+// prepareOperation computes one plan operation's journal rows and
+// package-database changes without touching the filesystem.
+func prepareOperation(ctx context.Context, env Env, txnID int64, op resolver.Operation,
+	provided map[string]ProvidedPackage, plannedDirs map[string]bool) (stagedOp, error) {
 	if op.Kind == resolver.OpRemove {
 		return stageRemoval(ctx, env, txnID, op)
 	}
-	return stagePackage(ctx, env, txnID, op, provided[op.Name])
+	return preparePackage(ctx, env, txnID, op, provided[op.Name], plannedDirs)
 }
 
-// stagePackage extracts a package's verified payload into staging and
-// computes the file operations and database rows for installing it.
+// preparePackage computes the file operations and database rows for
+// installing a package. No payload bytes are written here: the journal
+// is written first, then materializePackage creates the staged siblings.
 //
-// Content comes from archive.Extract; the per-file metadata — type and
-// the verified SHA-256 — comes from the verified payload list, the
-// authority for what the package owns.
-func stagePackage(ctx context.Context, env Env, txnID int64, op resolver.Operation,
-	pp ProvidedPackage) (stagedOp, error) {
+// Per-file metadata — type and the verified SHA-256 — comes from the
+// verified payload list, the authority for what the package owns.
+func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Operation,
+	pp ProvidedPackage, plannedDirs map[string]bool) (stagedOp, error) {
 
-	s := stagedOp{op: op}
+	s := stagedOp{op: op, stagedAt: map[string]string{}}
 
 	// The files the package's previous version owns — empty for a fresh
 	// install — diffed against the new payload to find removed files.
@@ -73,41 +79,6 @@ func stagePackage(ctx context.Context, env Env, txnID int64, op resolver.Operati
 		existingByPath[f.Path] = f
 	}
 
-	// Extract: write each payload file's content, each symlink, and each
-	// directory into staging. Files and symlinks are staged as siblings;
-	// directories are created in place — they are idempotent and shared
-	// between packages (§3.4.10).
-	stagedAt := map[string]string{} // logical path -> staged sibling path
-	err := archive.Extract(pp.Archive, func(entry archive.PayloadEntry, content io.Reader) error {
-		physical := filepath.Join(env.Root, entry.Path)
-		switch entry.Type {
-		case archive.EntryDir:
-			return os.MkdirAll(physical, 0o755)
-		case archive.EntryFile:
-			staged := tempPath(physical, stagedMarker, txnID)
-			if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
-				return err
-			}
-			if err := writeStagedFile(staged, content); err != nil {
-				return err
-			}
-			stagedAt["/"+entry.Path] = staged
-		case archive.EntrySymlink:
-			staged := tempPath(physical, stagedMarker, txnID)
-			if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
-				return err
-			}
-			if err := os.Symlink(entry.LinkTarget, staged); err != nil {
-				return err
-			}
-			stagedAt["/"+entry.Path] = staged
-		}
-		return nil
-	})
-	if err != nil {
-		return s, fmt.Errorf("peipkg/install: staging %s: %w", op.Name, err)
-	}
-
 	// Build the file operations and database rows from the verified
 	// payload list.
 	newPaths := map[string]bool{}
@@ -118,6 +89,7 @@ func stagePackage(ctx context.Context, env Env, txnID int64, op resolver.Operati
 
 		switch entry.Type {
 		case archive.EntryDir:
+			rememberCreatedDirs(env.Root, physical, plannedDirs, &s.createdDirs)
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeDir})
 		case archive.EntryFile:
@@ -139,11 +111,17 @@ func stagePackage(ctx context.Context, env Env, txnID int64, op resolver.Operati
 							"default was written to %s%s", logical, logical, etcNewMarker))
 				}
 			}
-			s.fileOps = append(s.fileOps, plannedOp(dest, stagedAt[logical], txnID))
+			staged := tempPath(dest, stagedMarker, txnID)
+			rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
+			s.stagedAt[logical] = staged
+			s.fileOps = append(s.fileOps, plannedOp(dest, staged, txnID))
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeFile, Hash: entry.Hash})
 		case archive.EntrySymlink:
-			s.fileOps = append(s.fileOps, plannedOp(physical, stagedAt[logical], txnID))
+			staged := tempPath(physical, stagedMarker, txnID)
+			rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
+			s.stagedAt[logical] = staged
+			s.fileOps = append(s.fileOps, plannedOp(physical, staged, txnID))
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeSymlink,
 				SymlinkTarget: entry.LinkTarget})
@@ -174,6 +152,45 @@ func stagePackage(ctx context.Context, env Env, txnID int64, op resolver.Operati
 		s.sideEffects = append(s.sideEffects, string(e))
 	}
 	return s, nil
+}
+
+// materializePackage writes the package payload to the already-journalled
+// staged siblings and creates any directories needed for those siblings.
+func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
+	err := archive.Extract(pp.Archive, func(entry archive.PayloadEntry, content io.Reader) error {
+		physical := filepath.Join(env.Root, entry.Path)
+		switch entry.Type {
+		case archive.EntryDir:
+			return os.MkdirAll(physical, 0o755)
+		case archive.EntryFile:
+			staged := s.stagedAt["/"+entry.Path]
+			if staged == "" {
+				return fmt.Errorf("no staged path planned for %s", entry.Path)
+			}
+			if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+				return err
+			}
+			if err := writeStagedFile(staged, content); err != nil {
+				return err
+			}
+		case archive.EntrySymlink:
+			staged := s.stagedAt["/"+entry.Path]
+			if staged == "" {
+				return fmt.Errorf("no staged path planned for %s", entry.Path)
+			}
+			if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+				return err
+			}
+			if err := os.Symlink(entry.LinkTarget, staged); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("peipkg/install: staging %s: %w", s.op.Name, err)
+	}
+	return nil
 }
 
 // stageRemoval computes the file operations that remove a package.
@@ -232,6 +249,31 @@ func plannedOp(physical, staged string, txnID int64) fileOp {
 		op.action = actionCreate
 	}
 	return op
+}
+
+// rememberCreatedDirs records the missing directories from root down to
+// dir. The transaction may create them during staging; rollback removes
+// them in reverse if they are still empty. planned de-duplicates across
+// all operations in the transaction before any of them touch disk.
+func rememberCreatedDirs(root, dir string, planned map[string]bool, out *[]string) {
+	root = filepath.Clean(root)
+	dir = filepath.Clean(dir)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return
+	}
+	cur := root
+	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		if planned[cur] || exists(cur) {
+			continue
+		}
+		planned[cur] = true
+		*out = append(*out, cur)
+	}
 }
 
 // originRepo is the repository a forward operation's package came from,

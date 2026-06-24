@@ -13,7 +13,8 @@ import (
 )
 
 // lockSchema is the lock schema version peipkg-compose writes and reads.
-const lockSchema = 1
+// Bumped to 3 for multi-root: a locked package may carry a target root.
+const lockSchema = 3
 
 // LocalSource is the [LockedPackage.Source] value of a package supplied
 // as a local .peipkg file rather than fetched from a repository.
@@ -33,6 +34,10 @@ type Lock struct {
 	// Manifest is the filename of the manifest this lock was resolved
 	// from — provenance for a reader; the build does not consult it.
 	Manifest string
+	// ManifestDigest is the sha256 digest of the decoded manifest intent
+	// this lock was resolved from. A build refuses a lock whose digest no
+	// longer matches the current manifest.
+	ManifestDigest string
 	// Packages is the resolved closure, sorted by name.
 	Packages []LockedPackage
 }
@@ -42,6 +47,11 @@ type LockedPackage struct {
 	Name         string
 	Version      string
 	Architecture string
+	// Root is the path, relative to the output root, of the root this
+	// package is installed into; empty for the output (anchor) root. A
+	// package name may appear in more than one root (identity is the
+	// (name, root) pair), so a lock is keyed by both.
+	Root string
 	// Source is the name of the repository the package resolves from,
 	// or [LocalSource] for a package supplied as a local .peipkg file.
 	Source string
@@ -57,11 +67,12 @@ type LockedPackage struct {
 // pointers so a missing required key is reported precisely on decode;
 // [Lock.Encode] sets every one.
 type wireLock struct {
-	Schema     *int                `toml:"schema"`
-	Arch       *string             `toml:"arch"`
-	SourceDate *string             `toml:"source_date"`
-	Manifest   string              `toml:"manifest,omitempty"`
-	Packages   []wireLockedPackage `toml:"package"`
+	Schema         *int                `toml:"schema"`
+	Arch           *string             `toml:"arch"`
+	SourceDate     *string             `toml:"source_date"`
+	Manifest       string              `toml:"manifest,omitempty"`
+	ManifestDigest *string             `toml:"manifest_digest,omitempty"`
+	Packages       []wireLockedPackage `toml:"package"`
 }
 
 type wireLockedPackage struct {
@@ -71,6 +82,7 @@ type wireLockedPackage struct {
 	Source       *string `toml:"source"`
 	URL          *string `toml:"url"`
 	Hash         *string `toml:"hash"`
+	Root         string  `toml:"root,omitempty"`
 }
 
 // LockPath derives a lock's path from its manifest's path: the manifest
@@ -105,14 +117,19 @@ func DecodeLock(data []byte) (Lock, error) {
 	switch {
 	case w.Schema == nil:
 		return Lock{}, missingKey("schema")
-	case w.Arch == nil:
-		return Lock{}, missingKey("arch")
-	case w.SourceDate == nil:
-		return Lock{}, missingKey("source_date")
 	}
 	if *w.Schema != lockSchema {
 		return Lock{}, fmt.Errorf("peipkg/compose: lock schema is %d, want %d",
 			*w.Schema, lockSchema)
+	}
+
+	switch {
+	case w.Arch == nil:
+		return Lock{}, missingKey("arch")
+	case w.SourceDate == nil:
+		return Lock{}, missingKey("source_date")
+	case w.ManifestDigest == nil:
+		return Lock{}, missingKey("manifest_digest")
 	}
 	sourceDate, err := time.Parse(time.RFC3339, *w.SourceDate)
 	if err != nil {
@@ -120,18 +137,26 @@ func DecodeLock(data []byte) (Lock, error) {
 			"timestamp: %w", *w.SourceDate, err)
 	}
 
-	l := Lock{Arch: *w.Arch, SourceDate: sourceDate, Manifest: w.Manifest}
+	l := Lock{
+		Arch: *w.Arch, SourceDate: sourceDate,
+		Manifest: w.Manifest, ManifestDigest: *w.ManifestDigest,
+	}
+	if err := validateHash(l.ManifestDigest); err != nil {
+		return Lock{}, fmt.Errorf("peipkg/compose: lock manifest_digest: %w", err)
+	}
 	seen := map[string]bool{}
 	for i, wp := range w.Packages {
 		p, err := decodeLockedPackage(wp)
 		if err != nil {
 			return Lock{}, fmt.Errorf("peipkg/compose: lock package %d: %w", i, err)
 		}
-		if seen[p.Name] {
-			return Lock{}, fmt.Errorf("peipkg/compose: lock has the package %q more than once",
-				p.Name)
+		// Identity is (name, root): the same name may appear in two roots.
+		key := p.Root + "\x00" + p.Name
+		if seen[key] {
+			return Lock{}, fmt.Errorf("peipkg/compose: lock has the package %q in root %q more "+
+				"than once", p.Name, p.Root)
 		}
-		seen[p.Name] = true
+		seen[key] = true
 		l.Packages = append(l.Packages, p)
 	}
 	if len(l.Packages) == 0 {
@@ -164,26 +189,35 @@ func decodeLockedPackage(w wireLockedPackage) (LockedPackage, error) {
 	}
 	return LockedPackage{
 		Name: *w.Name, Version: *w.Version, Architecture: *w.Architecture,
-		Source: *w.Source, URL: *w.URL, Hash: *w.Hash,
+		Source: *w.Source, URL: *w.URL, Hash: *w.Hash, Root: w.Root,
 	}, nil
 }
 
 // Encode renders the lock as TOML. Packages are sorted by name so the
 // output is deterministic and a lock diff is clean.
 func (l Lock) Encode() ([]byte, error) {
+	if err := validateHash(l.ManifestDigest); err != nil {
+		return nil, fmt.Errorf("peipkg/compose: lock manifest_digest: %w", err)
+	}
 	pkgs := append([]LockedPackage(nil), l.Packages...)
-	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].Name < pkgs[j].Name })
+	sort.Slice(pkgs, func(i, j int) bool {
+		if pkgs[i].Root != pkgs[j].Root {
+			return pkgs[i].Root < pkgs[j].Root
+		}
+		return pkgs[i].Name < pkgs[j].Name
+	})
 
 	w := wireLock{
-		Schema:     ptr(lockSchema),
-		Arch:       ptr(l.Arch),
-		SourceDate: ptr(l.SourceDate.UTC().Format(time.RFC3339)),
-		Manifest:   l.Manifest,
+		Schema:         ptr(lockSchema),
+		Arch:           ptr(l.Arch),
+		SourceDate:     ptr(l.SourceDate.UTC().Format(time.RFC3339)),
+		Manifest:       l.Manifest,
+		ManifestDigest: ptr(l.ManifestDigest),
 	}
 	for _, p := range pkgs {
 		w.Packages = append(w.Packages, wireLockedPackage{
 			Name: ptr(p.Name), Version: ptr(p.Version), Architecture: ptr(p.Architecture),
-			Source: ptr(p.Source), URL: ptr(p.URL), Hash: ptr(p.Hash),
+			Source: ptr(p.Source), URL: ptr(p.URL), Hash: ptr(p.Hash), Root: p.Root,
 		})
 	}
 

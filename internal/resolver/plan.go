@@ -7,18 +7,29 @@ import (
 	"github.com/peios/peipkg/internal/version"
 )
 
+// removedPkg is one installed package the plan removes, tagged with the
+// root it is removed from.
+type removedPkg struct {
+	root string
+	inst Installed
+}
+
 // buildPlan diffs the resolved world against the installed set and
 // orders the resulting operations: removals first — dependents before
 // their dependencies — then installs, upgrades, and downgrades —
-// dependencies before their dependents (§4.2.1).
-func buildPlan(world map[string]*worldPkg, installed []Installed) (Plan, error) {
+// dependencies before their dependents (§4.2.1). Operations carry their
+// target root; dependency ordering follows edges across roots, so a
+// cross-root dependency is sequenced before the dependent that needs it.
+func buildPlan(world map[string]*worldPkg, installedByRoot map[string][]Installed,
+	refToPath map[string]string) (Plan, error) {
+
 	var forward []Operation
-	for _, name := range sortedNames(world) {
-		p := world[name]
+	for _, key := range sortedKeys(world) {
+		p := world[key]
 		if p.candidate == nil {
 			continue // installed and unchanged
 		}
-		op := Operation{Name: name, ToVersion: p.candidate.Version, Candidate: p.candidate}
+		op := Operation{Root: p.root, Name: p.name, ToVersion: p.candidate.Version, Candidate: p.candidate}
 		if p.installedVersion == nil {
 			op.Kind = OpInstall
 		} else {
@@ -35,18 +46,20 @@ func buildPlan(world map[string]*worldPkg, installed []Installed) (Plan, error) 
 		forward = append(forward, op)
 	}
 
-	var removed []Installed
-	for _, inst := range installed {
-		if _, present := world[inst.Name]; !present {
-			removed = append(removed, inst)
+	var removed []removedPkg
+	for root, insts := range installedByRoot {
+		for _, inst := range insts {
+			if _, present := world[worldKey(root, inst.Name)]; !present {
+				removed = append(removed, removedPkg{root: root, inst: inst})
+			}
 		}
 	}
 
-	removeOps, err := orderRemovals(removed)
+	removeOps, err := orderRemovals(removed, refToPath)
 	if err != nil {
 		return Plan{}, err
 	}
-	forwardOps, err := orderForward(forward, world)
+	forwardOps, err := orderForward(forward, world, refToPath)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -54,40 +67,42 @@ func buildPlan(world map[string]*worldPkg, installed []Installed) (Plan, error) 
 }
 
 // orderForward sorts install/upgrade/downgrade operations so each
-// package follows the in-plan packages it depends on.
-func orderForward(ops []Operation, world map[string]*worldPkg) ([]Operation, error) {
-	byName := make(map[string]Operation, len(ops))
+// package follows the in-plan packages it depends on, across roots.
+func orderForward(ops []Operation, world map[string]*worldPkg, refToPath map[string]string) ([]Operation, error) {
+	byKey := make(map[string]Operation, len(ops))
 	inPlan := make(map[string]bool, len(ops))
-	names := make([]string, 0, len(ops))
+	keys := make([]string, 0, len(ops))
 	for _, op := range ops {
-		byName[op.Name] = op
-		inPlan[op.Name] = true
-		names = append(names, op.Name)
+		k := worldKey(op.Root, op.Name)
+		byKey[k] = op
+		inPlan[k] = true
+		keys = append(keys, k)
 	}
-	ordered, err := topoSort(names, func(name string) []string {
-		return planDependencies(name, world, inPlan)
+	ordered, err := topoSort(keys, func(key string) []string {
+		return planDependencies(key, world, inPlan, refToPath)
 	})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Operation, len(ordered))
-	for i, name := range ordered {
-		out[i] = byName[name]
+	for i, key := range ordered {
+		out[i] = byKey[key]
 	}
 	return out, nil
 }
 
 // orderRemovals sorts removal operations so each package precedes the
-// packages it depended on (§4.2.1).
-func orderRemovals(removed []Installed) ([]Operation, error) {
-	byName := make(map[string]Installed, len(removed))
-	names := make([]string, 0, len(removed))
-	for _, inst := range removed {
-		byName[inst.Name] = inst
-		names = append(names, inst.Name)
+// packages it depended on (§4.2.1), across roots.
+func orderRemovals(removed []removedPkg, refToPath map[string]string) ([]Operation, error) {
+	byKey := make(map[string]removedPkg, len(removed))
+	keys := make([]string, 0, len(removed))
+	for _, rp := range removed {
+		k := worldKey(rp.root, rp.inst.Name)
+		byKey[k] = rp
+		keys = append(keys, k)
 	}
-	ordered, err := topoSort(names, func(name string) []string {
-		return removedDependencies(byName[name], byName)
+	ordered, err := topoSort(keys, func(key string) []string {
+		return removedDependencies(byKey[key], byKey, refToPath)
 	})
 	if err != nil {
 		return nil, err
@@ -96,27 +111,38 @@ func orderRemovals(removed []Installed) ([]Operation, error) {
 	// reverse, so a dependent is removed before what it depended on.
 	out := make([]Operation, 0, len(ordered))
 	for i := len(ordered) - 1; i >= 0; i-- {
-		inst := byName[ordered[i]]
-		out = append(out, Operation{Kind: OpRemove, Name: inst.Name, FromVersion: inst.Version})
+		rp := byKey[ordered[i]]
+		out = append(out, Operation{Kind: OpRemove, Root: rp.root, Name: rp.inst.Name,
+			FromVersion: rp.inst.Version})
 	}
 	return out, nil
 }
 
-// planDependencies returns the names of the in-plan packages that name's
-// resolved package depends on.
-func planDependencies(name string, world map[string]*worldPkg, inPlan map[string]bool) []string {
-	p := world[name]
+// planDependencies returns the world keys of the in-plan packages that
+// key's package depends on, routing each dependency to its target root so
+// a cross-root edge orders correctly.
+func planDependencies(key string, world map[string]*worldPkg, inPlan map[string]bool,
+	refToPath map[string]string) []string {
+
+	p := world[key]
 	if p == nil {
 		return nil
 	}
 	seen := map[string]bool{}
 	var deps []string
 	for _, dep := range p.dependencies {
-		for _, other := range sortedNames(world) {
-			if other == name || !inPlan[other] || seen[other] {
+		targetRoot, ok := routeRoot(dep, p.root, refToPath)
+		if !ok {
+			continue
+		}
+		for _, other := range sortedKeys(world) {
+			if other == key || !inPlan[other] || seen[other] {
 				continue
 			}
 			s := world[other]
+			if s.root != targetRoot {
+				continue
+			}
 			if satisfies(s.name, s.version, s.architecture, s.provides, dep, p.architecture) {
 				seen[other] = true
 				deps = append(deps, other)
@@ -127,24 +153,35 @@ func planDependencies(name string, world map[string]*worldPkg, inPlan map[string
 	return deps
 }
 
-// removedDependencies returns, among the removed packages, the ones inst
-// depended on.
-func removedDependencies(inst Installed, removed map[string]Installed) []string {
+// removedDependencies returns, among the removed packages, the keys inst
+// depended on, routing each dependency to its target root.
+func removedDependencies(rp removedPkg, removed map[string]removedPkg,
+	refToPath map[string]string) []string {
+
 	others := make([]string, 0, len(removed))
-	for name := range removed {
-		others = append(others, name)
+	for key := range removed {
+		others = append(others, key)
 	}
 	sort.Strings(others)
 
+	selfKey := worldKey(rp.root, rp.inst.Name)
 	seen := map[string]bool{}
 	var deps []string
-	for _, dep := range inst.Dependencies {
+	for _, dep := range rp.inst.Dependencies {
+		targetRoot, ok := routeRoot(dep, rp.root, refToPath)
+		if !ok {
+			continue
+		}
 		for _, other := range others {
-			if other == inst.Name || seen[other] {
+			if other == selfKey || seen[other] {
 				continue
 			}
 			o := removed[other]
-			if satisfies(o.Name, o.Version, o.Architecture, o.Provides, dep, inst.Architecture) {
+			if o.root != targetRoot {
+				continue
+			}
+			if satisfies(o.inst.Name, o.inst.Version, o.inst.Architecture, o.inst.Provides,
+				dep, rp.inst.Architecture) {
 				seen[other] = true
 				deps = append(deps, other)
 			}
@@ -174,7 +211,7 @@ func topoSort(names []string, depsOf func(string) []string) ([]string, error) {
 			return nil
 		case active:
 			return &Rejection{Reason: ReasonCycle,
-				Detail: fmt.Sprintf("dependency cycle through %q cannot be ordered", n)}
+				Detail: fmt.Sprintf("dependency cycle through %q cannot be ordered", nameOf(n))}
 		}
 		state[n] = active
 		for _, d := range depsOf(n) {

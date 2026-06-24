@@ -16,6 +16,8 @@ const (
 	maxReplaces     = 1_000
 	maxSDOverrides  = 100_000
 	maxSDOverride   = 64 * 1024 // decoded length of one sd_overrides entry
+	maxClaimSlots   = 64        // slots per claims field (§3.2 resource limits)
+	maxClaimPath    = 4096      // a claim target or path, in UTF-8 bytes (§3.2)
 )
 
 // The wire* types mirror the manifest's JSON shape for decoding. A
@@ -30,6 +32,7 @@ type wireManifest struct {
 	Description          string            `json:"description"`
 	License              string            `json:"license"`
 	Homepage             string            `json:"homepage"`
+	DefaultRoot          string            `json:"default_root"`
 	Dependencies         *[]wireDependency `json:"dependencies"`
 	OptionalDependencies []wireDependency  `json:"optional_dependencies"`
 	Conflicts            *[]wireDependency `json:"conflicts"`
@@ -42,14 +45,22 @@ type wireManifest struct {
 }
 
 type wireDependency struct {
-	Name       *string `json:"name"`
-	Constraint string  `json:"constraint"`
-	Arch       string  `json:"arch"`
+	Name       *string                  `json:"name"`
+	Constraint string                   `json:"constraint"`
+	Arch       string                   `json:"arch"`
+	Root       string                   `json:"root"`
+	Claims     map[string]wireClaimSlot `json:"claims"`
 }
 
 type wireProvides struct {
-	Name    *string `json:"name"`
-	Version string  `json:"version"`
+	Name    *string                  `json:"name"`
+	Version string                   `json:"version"`
+	Claims  map[string]wireClaimSlot `json:"claims"`
+}
+
+type wireClaimSlot struct {
+	Path   string `json:"path"`
+	Target string `json:"target"`
 }
 
 type wireReplaces struct {
@@ -93,8 +104,10 @@ func missingField(name string) error {
 // decodes to an empty result.
 
 // DecodeDependencyArray decodes a dependencies-shaped array (§4.1.1).
-// field names the array in any error.
-func DecodeDependencyArray(field string, data []byte) ([]Dependency, error) {
+// field names the array in any error. claimsAllowed selects whether
+// entries may carry a claims field (§4.4.2): true for dependencies and
+// optional_dependencies, false for conflicts.
+func DecodeDependencyArray(field string, data []byte, claimsAllowed bool) ([]Dependency, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
@@ -102,7 +115,7 @@ func DecodeDependencyArray(field string, data []byte) ([]Dependency, error) {
 	if err := json.Unmarshal(data, &wires); err != nil {
 		return nil, fmt.Errorf("peipkg/manifest: decoding %s: %w", field, err)
 	}
-	return validateDependencies(field, wires)
+	return validateDependencies(field, wires, claimsAllowed)
 }
 
 // DecodeProvidesArray decodes a provides array (§4.1.4).

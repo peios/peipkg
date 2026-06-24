@@ -45,6 +45,13 @@ type Request struct {
 	Name string
 	// Version is the target version of a Downgrade request.
 	Version version.Version
+	// Root is the resolved root this request targets, as an opaque key
+	// (a resolved filesystem path in multi-root resolution). The empty
+	// string is the single root of [Resolve]; multi-root callers
+	// (DESIGN-named-roots.md) set it per request. A dependency closure
+	// then flows into the root its depender occupies unless an edge names
+	// another (see [Candidate]/[manifest.Dependency] Root).
+	Root string
 }
 
 // Candidate is one installable package version: a repository index
@@ -62,6 +69,13 @@ type Candidate struct {
 	// RepoPriority orders repositories; a lower number is higher
 	// priority (§6.5.5).
 	RepoPriority int
+
+	// DefaultRoot is the package's top-level placement preference
+	// (§3.3.6, DESIGN-named-roots.md), carried from the index entry so the
+	// CLI can route a top-level install to the named root. "" when the
+	// package expresses no preference. The resolver itself does not act on
+	// it — placement is a CLI concern, not a resolution one.
+	DefaultRoot string
 
 	URL            string
 	Hash           string
@@ -114,6 +128,12 @@ const (
 type Operation struct {
 	Kind OpKind
 	Name string
+	// Root is the resolved root this operation applies to, the same
+	// opaque key space as [Request].Root. It is the empty string for
+	// every operation of a single-root [Resolve] plan — which is why
+	// existing single-root callers can ignore it — and the per-operation
+	// target root in a multi-root plan (DESIGN-named-roots.md).
+	Root string
 	// FromVersion is the pre-operation version, set for Upgrade,
 	// Downgrade, and Remove.
 	FromVersion version.Version

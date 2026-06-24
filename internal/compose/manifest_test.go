@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,13 @@ func TestDecodeManifest(t *testing.T) {
 	}
 	if len(m.LocalPackages) != 1 {
 		t.Errorf("LocalPackages = %v, want one entry", m.LocalPackages)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if m.LocalPackageBaseDir != cwd {
+		t.Errorf("LocalPackageBaseDir = %q, want %q", m.LocalPackageBaseDir, cwd)
 	}
 
 	if len(m.Packages) != 3 {
@@ -140,4 +148,79 @@ func mustVersion(t *testing.T, s string) version.Version {
 		t.Fatalf("version.Parse(%q): %v", s, err)
 	}
 	return v
+}
+
+// TestDecodeManifestRoots checks [[root]] declarations and per-package
+// root targeting (DESIGN-named-roots.md) decode, and that a package
+// targeting an undeclared root is rejected.
+func TestDecodeManifestRoots(t *testing.T) {
+	const m = `
+schema      = 1
+arch        = "x86_64"
+source_date = "2026-06-01T00:00:00Z"
+
+[[root]]
+name = "initramfs"
+path = "boot/initramfs"
+
+[[package]]
+name = "base"
+
+[[package]]
+name = "live-boot-irf"
+root = "initramfs"
+`
+	got, err := DecodeManifest([]byte(m))
+	if err != nil {
+		t.Fatalf("DecodeManifest: %v", err)
+	}
+	if len(got.Roots) != 1 || got.Roots[0].Name != "initramfs" || got.Roots[0].Path != "boot/initramfs" {
+		t.Fatalf("Roots = %+v", got.Roots)
+	}
+	if got.rootRefs()["initramfs"] != "boot/initramfs" {
+		t.Errorf("rootRefs = %v", got.rootRefs())
+	}
+	// base → anchor (no root); live-boot-irf → initramfs.
+	byName := map[string]string{}
+	for _, p := range got.Packages {
+		byName[p.Name] = p.Root
+	}
+	if byName["base"] != "" || byName["live-boot-irf"] != "initramfs" {
+		t.Errorf("package roots = %v", byName)
+	}
+}
+
+func TestDecodeManifestRejectsUndeclaredPackageRoot(t *testing.T) {
+	const m = `
+schema      = 1
+arch        = "x86_64"
+source_date = "2026-06-01T00:00:00Z"
+
+[[package]]
+name = "live-boot-irf"
+root = "initramfs"
+`
+	if _, err := DecodeManifest([]byte(m)); err == nil ||
+		!strings.Contains(err.Error(), "no [[root]] declares") {
+		t.Errorf("a package targeting an undeclared root should be rejected, got %v", err)
+	}
+}
+
+func TestDecodeManifestRejectsEscapingRootPath(t *testing.T) {
+	const m = `
+schema      = 1
+arch        = "x86_64"
+source_date = "2026-06-01T00:00:00Z"
+
+[[root]]
+name = "evil"
+path = "../outside"
+
+[[package]]
+name = "base"
+`
+	if _, err := DecodeManifest([]byte(m)); err == nil ||
+		!strings.Contains(err.Error(), "escapes the output root") {
+		t.Errorf("an escaping root path should be rejected, got %v", err)
+	}
 }

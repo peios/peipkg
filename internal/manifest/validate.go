@@ -4,11 +4,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/peios/peipkg/internal/capability"
 	"github.com/peios/peipkg/internal/version"
 )
 
@@ -68,20 +70,32 @@ func (wm wireManifest) validate() (Manifest, error) {
 	m.Homepage = wm.Homepage
 	m.License = wm.License // not validated — §3.3.6 leaves license strings unchecked
 
+	// §3.3.6: default_root, when present, is a root reference — a named
+	// reference, never a filesystem path.
+	if wm.DefaultRoot != "" {
+		if err = ValidateRootRef(wm.DefaultRoot); err != nil {
+			return Manifest{}, fmt.Errorf("peipkg/manifest: default_root: %w", err)
+		}
+		m.DefaultRoot = wm.DefaultRoot
+	}
+
 	if *wm.SizeInstalled < 0 {
 		return Manifest{}, fmt.Errorf(
 			"peipkg/manifest: size_installed is negative (%d)", *wm.SizeInstalled)
 	}
 	m.SizeInstalled = *wm.SizeInstalled
 
-	if m.Dependencies, err = validateDependencies("dependencies", *wm.Dependencies); err != nil {
+	if m.Dependencies, err = validateDependencies(
+		"dependencies", *wm.Dependencies, true); err != nil {
 		return Manifest{}, err
 	}
 	if m.OptionalDependencies, err = validateDependencies(
-		"optional_dependencies", wm.OptionalDependencies); err != nil {
+		"optional_dependencies", wm.OptionalDependencies, true); err != nil {
 		return Manifest{}, err
 	}
-	if m.Conflicts, err = validateDependencies("conflicts", *wm.Conflicts); err != nil {
+	// §4.4.2: claims are permitted on dependencies and
+	// optional_dependencies, never conflicts.
+	if m.Conflicts, err = validateDependencies("conflicts", *wm.Conflicts, false); err != nil {
 		return Manifest{}, err
 	}
 	if m.Provides, err = validateProvides(wm.Provides); err != nil {
@@ -112,12 +126,45 @@ func validateName(s string) error {
 			return fmt.Errorf("%q contains the invalid character %q", s, c)
 		}
 	}
-	if !isLowerOrDigit(s[0]) || (!isLowerOrDigit(s[len(s)-1]) && s[len(s)-1] != '+') {
-		return fmt.Errorf("%q must start with a lowercase letter or digit and end with one or a plus sign", s)
+	if !isLowerOrDigit(s[0]) {
+		return fmt.Errorf("%q must start with a lowercase letter or digit", s)
+	}
+	// A name may end with a plus sign so that C++-style names like
+	// `libstdc++` and `g++` are valid (§2.1, and its own informative
+	// example).
+	if last := s[len(s)-1]; !isLowerOrDigit(last) && last != '+' {
+		return fmt.Errorf("%q must end with a lowercase letter, digit, or '+'", s)
 	}
 	for i := 1; i < len(s); i++ {
 		if isNameSeparator(s[i]) && isNameSeparator(s[i-1]) {
 			return fmt.Errorf("%q has consecutive separator characters", s)
+		}
+	}
+	return nil
+}
+
+// ValidateRootRef checks a root reference against the §3.3.6 grammar: one
+// or more dot-separated segments, each [a-z0-9][a-z0-9_-]*. A root
+// reference is a named reference and MUST NOT be a filesystem path, so a
+// '/' — the very thing that marks a literal path — is rejected here, as is
+// an empty segment. The reference's *existence* is a consumer concern
+// (§7); this checks only that it is syntactically a name.
+func ValidateRootRef(s string) error {
+	if strings.ContainsRune(s, '/') {
+		return fmt.Errorf("%q must be a named reference, not a filesystem path", s)
+	}
+	for _, seg := range strings.Split(s, ".") {
+		if seg == "" {
+			return fmt.Errorf("%q has an empty segment", s)
+		}
+		for i := 0; i < len(seg); i++ {
+			c := seg[i]
+			switch {
+			case isLowerOrDigit(c):
+			case (c == '-' || c == '_') && i > 0:
+			default:
+				return fmt.Errorf("%q has an invalid segment %q", s, seg)
+			}
 		}
 	}
 	return nil
@@ -182,7 +229,10 @@ func validateHomepage(s string) error {
 // validateDependencies validates a dependencies-shaped array — used for
 // dependencies, optional_dependencies, and conflicts, which share the
 // §4.1.1 object schema. field names the array for error messages.
-func validateDependencies(field string, wires []wireDependency) ([]Dependency, error) {
+// claimsAllowed permits a claims field (§4.4.2): true for dependencies
+// and optional_dependencies, false for conflicts, where a claims field
+// is rejected.
+func validateDependencies(field string, wires []wireDependency, claimsAllowed bool) ([]Dependency, error) {
 	if len(wires) > maxDependencies {
 		return nil, fmt.Errorf("peipkg/manifest: %s has %d entries, the limit is %d",
 			field, len(wires), maxDependencies)
@@ -192,8 +242,14 @@ func validateDependencies(field string, wires []wireDependency) ([]Dependency, e
 		if w.Name == nil {
 			return nil, fmt.Errorf("peipkg/manifest: %s[%d]: missing field %q", field, i, "name")
 		}
-		if err := validateName(*w.Name); err != nil {
-			return nil, fmt.Errorf("peipkg/manifest: %s[%d]: name: %w", field, i, err)
+		// §4.1.1: dependencies and optional_dependencies may target a
+		// virtual (capability) name; conflicts target a real package name.
+		nameErr := capability.ValidateName(*w.Name)
+		if field == "conflicts" {
+			nameErr = validateName(*w.Name)
+		}
+		if nameErr != nil {
+			return nil, fmt.Errorf("peipkg/manifest: %s[%d]: name: %w", field, i, nameErr)
 		}
 		// §4.1.3: the only architecture qualifier permitted in v0.22 is
 		// "any" (the default when the field is absent).
@@ -206,12 +262,127 @@ func validateDependencies(field string, wires []wireDependency) ([]Dependency, e
 		if err != nil {
 			return nil, fmt.Errorf("peipkg/manifest: %s[%d]: constraint: %w", field, i, err)
 		}
-		deps = append(deps, Dependency{Name: *w.Name, Constraint: constraint})
+		dep := Dependency{Name: *w.Name, Constraint: constraint}
+		// §4.1.1: the placement `root` field is a root reference, carried
+		// on dependencies and optional_dependencies only — never conflicts,
+		// whose object schema (§4.1.2) has no root and which stay root-local.
+		if w.Root != "" {
+			if !claimsAllowed { // claimsAllowed is false exactly for conflicts
+				return nil, fmt.Errorf(
+					"peipkg/manifest: %s[%d]: a root field is not permitted on %s entries",
+					field, i, field)
+			}
+			if err := ValidateRootRef(w.Root); err != nil {
+				return nil, fmt.Errorf("peipkg/manifest: %s[%d]: root: %w", field, i, err)
+			}
+			dep.Root = w.Root
+		}
+		if len(w.Claims) > 0 {
+			if !claimsAllowed {
+				return nil, fmt.Errorf(
+					"peipkg/manifest: %s[%d]: claims are not permitted on %s entries",
+					field, i, field)
+			}
+			claims, err := validateClaims(
+				fmt.Sprintf("%s[%d]", field, i), w.Claims, consumerClaims)
+			if err != nil {
+				return nil, err
+			}
+			dep.Claims = claims
+		}
+		deps = append(deps, dep)
 	}
 	if err := checkSortedUnique(field, dependencyNames(deps)); err != nil {
 		return nil, err
 	}
 	return deps, nil
+}
+
+// claimSide selects which slot fields a claims entry may carry (§4.4.2):
+// a consumer slot (on a dependency) carries path only; a provider slot
+// (on a provides entry) carries target and an optional default path.
+type claimSide int
+
+const (
+	consumerClaims claimSide = iota
+	providerClaims
+)
+
+// validateClaims validates one claims field (§4.4.2). label names the
+// enclosing entry for error messages; side selects the permitted slot
+// fields. An empty or absent claims field yields a nil map.
+func validateClaims(label string, wires map[string]wireClaimSlot, side claimSide) (
+	map[string]ClaimSlot, error) {
+
+	if len(wires) > maxClaimSlots {
+		return nil, fmt.Errorf("peipkg/manifest: %s: claims has %d slots, the limit is %d",
+			label, len(wires), maxClaimSlots)
+	}
+	claims := make(map[string]ClaimSlot, len(wires))
+	for slot, w := range wires {
+		// §4.4.2: a slot name conforms to §2.1.
+		if err := validateName(slot); err != nil {
+			return nil, fmt.Errorf("peipkg/manifest: %s: claims slot name %w", label, err)
+		}
+		switch side {
+		case consumerClaims:
+			if w.Target != "" {
+				return nil, fmt.Errorf("peipkg/manifest: %s: claims slot %q sets target, "+
+					"which only a provides entry may set", label, slot)
+			}
+			if w.Path == "" {
+				return nil, fmt.Errorf(
+					"peipkg/manifest: %s: claims slot %q is missing path", label, slot)
+			}
+			if err := validateClaimPath(w.Path); err != nil {
+				return nil, fmt.Errorf(
+					"peipkg/manifest: %s: claims slot %q: path: %w", label, slot, err)
+			}
+		case providerClaims:
+			if w.Target == "" {
+				return nil, fmt.Errorf(
+					"peipkg/manifest: %s: claims slot %q is missing target", label, slot)
+			}
+			if err := validateClaimPath(w.Target); err != nil {
+				return nil, fmt.Errorf(
+					"peipkg/manifest: %s: claims slot %q: target: %w", label, slot, err)
+			}
+			if w.Path != "" {
+				if err := validateClaimPath(w.Path); err != nil {
+					return nil, fmt.Errorf(
+						"peipkg/manifest: %s: claims slot %q: path: %w", label, slot, err)
+				}
+			}
+		}
+		claims[slot] = ClaimSlot{Path: w.Path, Target: w.Target}
+	}
+	if len(claims) == 0 {
+		return nil, nil
+	}
+	return claims, nil
+}
+
+// validateClaimPath checks a claim target or path is a clean absolute
+// path. Claims deliberately bypass the install-path subdirectory rules
+// (§3.4): materialising a link or naming a payload file outside the
+// normal layout — e.g. the kernel-mandated /init at the root of an
+// initramfs — is a core reason claims exist. So only the structural
+// invariants are enforced here: absolute, bounded, clean, non-empty.
+func validateClaimPath(p string) error {
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%q must be an absolute path", p)
+	}
+	if len(p) > maxClaimPath {
+		return fmt.Errorf("%q is %d bytes, the limit is %d", p, len(p), maxClaimPath)
+	}
+	if path.Clean(p) != p {
+		return fmt.Errorf("%q is not a clean path", p)
+	}
+	top, _, _ := strings.Cut(strings.TrimPrefix(p, "/"), "/")
+	if top == "" {
+		return fmt.Errorf("%q has no path component", p)
+	}
+	return nil
 }
 
 // validateProvides validates the provides array (§4.1.4).
@@ -225,16 +396,29 @@ func validateProvides(wires []wireProvides) ([]Provides, error) {
 		if w.Name == nil {
 			return nil, fmt.Errorf("peipkg/manifest: provides[%d]: missing field %q", i, "name")
 		}
-		if err := validateName(*w.Name); err != nil {
+		// §4.1.4: a provides name is a virtual (capability) name.
+		if err := capability.ValidateName(*w.Name); err != nil {
 			return nil, fmt.Errorf("peipkg/manifest: provides[%d]: name: %w", i, err)
 		}
 		p := Provides{Name: *w.Name}
 		if w.Version != "" {
-			v, err := version.Parse(w.Version)
+			// §4.1.4: a provides version expresses a capability level, not
+			// a packaging iteration, so the Peios revision may be omitted
+			// (e.g. "3.0"). Parse it revision-relaxed, like a constraint
+			// operand.
+			v, err := version.ParseRelaxed(w.Version)
 			if err != nil {
 				return nil, fmt.Errorf("peipkg/manifest: provides[%d]: version: %w", i, err)
 			}
 			p.Version = &v
+		}
+		if len(w.Claims) > 0 {
+			claims, err := validateClaims(
+				fmt.Sprintf("provides[%d]", i), w.Claims, providerClaims)
+			if err != nil {
+				return nil, err
+			}
+			p.Claims = claims
 		}
 		provides = append(provides, p)
 	}
@@ -398,9 +582,9 @@ func isLowerOrDigit(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }
 
-// A plus sign is a regular name character, not a separator: it is intrinsic to
-// names like "libstdc++" / "g++" (it may repeat and may end a name), unlike the
-// hyphen and dot that join components and may not be adjacent or sit at an edge.
+// isNameSeparator reports whether c is a §2.1 separator. The plus sign is
+// deliberately NOT a separator but a regular name character (it is intrinsic
+// to names like libstdc++ and g++), so it may repeat and may end a name.
 func isNameSeparator(c byte) bool { return c == '-' || c == '.' }
 
 func isNameChar(c byte) bool { return isLowerOrDigit(c) || isNameSeparator(c) || c == '+' }

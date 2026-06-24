@@ -42,6 +42,12 @@ type Manifest struct {
 	License      string
 	Homepage     string
 
+	// DefaultRoot is the package's top-level placement preference — the
+	// named root a top-level install lands in (§3.3.6,
+	// DESIGN-named-roots.md). Empty for a package with no preference. It
+	// is a root reference (a named reference, never a path).
+	DefaultRoot string
+
 	Dependencies         []Dependency
 	OptionalDependencies []Dependency
 	Conflicts            []Dependency
@@ -67,12 +73,32 @@ type Dependency struct {
 	Name       string
 	Constraint string // e.g. ">= 1.2", empty = any version
 	Arch       string // empty = any architecture
+	// Root places this dependency in a named root other than the
+	// depender's (§4.1.1, DESIGN-named-roots.md). Empty means the
+	// depender's own root (the default). A root reference, never a path.
+	Root string
+	// Claims attaches consumer claim slots to this dependency (§4.4.2),
+	// keyed by slot name; each descriptor carries a Path. Empty for a
+	// dependency that declares no claim.
+	Claims map[string]ClaimSlot
 }
 
 // Provides is one entry in the provides array (§4.1.4).
 type Provides struct {
 	Name    string
 	Version string
+	// Claims attaches provider claim slots to this provides entry
+	// (§4.4.2), keyed by slot name; each descriptor carries a Target and
+	// an optional default Path. Empty for a provides with no claim.
+	Claims map[string]ClaimSlot
+}
+
+// ClaimSlot is one slot of a claims field (§4.4.2): a filesystem Path
+// (the claim location, set by a consumer or as a provider default) and a
+// Target (the holder file the link points at, set by a provider).
+type ClaimSlot struct {
+	Path   string
+	Target string
 }
 
 // Replaces is one entry in the replaces array (§4.1.5).
@@ -204,7 +230,8 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 			return internalmanifest.Manifest{}, fmt.Errorf("provides: duplicate name %q", v.Name)
 		}
 		seenProv[v.Name] = struct{}{}
-		provides = append(provides, internalmanifest.Provides{Name: v.Name, Version: v.Version})
+		provides = append(provides, internalmanifest.Provides{
+			Name: v.Name, Version: v.Version, Claims: convertClaims(v.Claims)})
 	}
 	sort.Slice(provides, func(i, j int) bool { return provides[i].Name < provides[j].Name })
 
@@ -241,6 +268,7 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 		Description:          m.Description,
 		License:              m.License,
 		Homepage:             m.Homepage,
+		DefaultRoot:          m.DefaultRoot,
 		Dependencies:         deps,
 		OptionalDependencies: optDeps,
 		Conflicts:            conflicts,
@@ -292,8 +320,24 @@ func convertDeps(in []Dependency, field string) ([]internalmanifest.Dependency, 
 			Name:       d.Name,
 			Constraint: d.Constraint,
 			Arch:       d.Arch,
+			Root:       d.Root,
+			Claims:     convertClaims(d.Claims),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// convertClaims adapts the public claim-slot map to the encoder's. It
+// returns nil for an empty map, so an entry without claims emits no
+// claims key.
+func convertClaims(in map[string]ClaimSlot) map[string]internalmanifest.ClaimSlot {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]internalmanifest.ClaimSlot, len(in))
+	for slot, s := range in {
+		out[slot] = internalmanifest.ClaimSlot{Path: s.Path, Target: s.Target}
+	}
+	return out
 }

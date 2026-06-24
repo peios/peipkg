@@ -8,45 +8,55 @@ import (
 )
 
 // applyRemovals removes the requested packages and — under the cascade
-// policy — their now-broken dependents from the world (§4.2.6).
-func applyRemovals(world map[string]*worldPkg, roots []string, opts Options) error {
-	if len(roots) == 0 {
+// policy — their now-broken dependents from the world (§4.2.6). targets
+// are world keys (root, name); a removal names one package in one root.
+func applyRemovals(world map[string]*worldPkg, targets []string,
+	refToPath map[string]string, opts Options) error {
+
+	if len(targets) == 0 {
 		return nil
 	}
-	for _, name := range roots {
-		if _, ok := world[name]; !ok {
+	for _, key := range targets {
+		if _, ok := world[key]; !ok {
 			return &Rejection{Reason: ReasonRemovalBlocked,
-				Detail: fmt.Sprintf("cannot remove %q: it is not installed", name)}
+				Detail: fmt.Sprintf("cannot remove %q: it is not installed", nameOf(key))}
 		}
-		delete(world, name)
+		delete(world, key)
 	}
 	// A removal can leave a remaining package's dependency unsatisfied.
 	// Such a package is itself removed (cascade) or the removal refused.
 	for {
-		broken, dep := firstBroken(world)
-		if broken == "" {
+		brokenKey, dep := firstBroken(world, refToPath)
+		if brokenKey == "" {
 			return nil
 		}
 		if !opts.CascadeRemovals {
 			return &Rejection{Reason: ReasonRemovalBlocked,
 				Detail: fmt.Sprintf("removal would leave %q without its dependency %q; "+
-					"cascade was not authorised", broken, dep)}
+					"cascade was not authorised", nameOf(brokenKey), dep)}
 		}
-		delete(world, broken)
+		delete(world, brokenKey)
 	}
 }
 
 // firstBroken returns the lexicographically-first package in the world
-// with a dependency no remaining package satisfies, and that
-// dependency's name; it returns empty strings when the world is whole.
-func firstBroken(world map[string]*worldPkg) (pkg, dep string) {
-	for _, name := range sortedNames(world) {
-		p := world[name]
+// with a dependency no remaining package in that dependency's root
+// satisfies, and that dependency's name; it returns empty strings when
+// the world is whole. A dependency routed to a root not represented in
+// the world (an unregistered reference) is skipped — it is not this
+// world's concern to satisfy.
+func firstBroken(world map[string]*worldPkg, refToPath map[string]string) (key, dep string) {
+	for _, k := range sortedKeys(world) {
+		p := world[k]
 		deps := append([]manifest.Dependency(nil), p.dependencies...)
 		sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
 		for _, d := range deps {
-			if !worldSatisfies(world, d, p.architecture) {
-				return name, d.Name
+			targetRoot, ok := routeRoot(d, p.root, refToPath)
+			if !ok {
+				continue
+			}
+			if !worldSatisfiesInRoot(world, d, p.architecture, targetRoot) {
+				return k, d.Name
 			}
 		}
 	}

@@ -1,4 +1,4 @@
-outDir = "out"
+out_dir= "out"
 
 # Two binaries: the peipkg client ships to the target root; peipkg-compose
 # is a build-host image-assembly tool (dist gets it via `go install`),
@@ -10,6 +10,9 @@ command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $PEKIT_OUT/peipkg .
 
 [build.compose]
 command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $PEKIT_OUT/peipkg-compose ./cmd/peipkg-compose"
+
+[install.compose]
+command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install ./cmd/peipkg-compose"
 
 [test]
 command = "go test ./..."

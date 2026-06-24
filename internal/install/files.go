@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 )
 
 // Temporary-file markers (DESIGN.md "Temporary file naming"). The names
@@ -174,4 +175,22 @@ func removeIfExists(path string) error {
 		return fmt.Errorf("peipkg/install: removing %s: %w", path, err)
 	}
 	return nil
+}
+
+// removeCreatedDirs removes transaction-created directories in reverse
+// order. Non-empty directories are left alone: another package or an
+// operator may have populated them after the transaction began.
+func removeCreatedDirs(dirs []string) error {
+	var errs []error
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := os.Remove(dirs[i]); err != nil {
+			if os.IsNotExist(err) || errors.Is(err, syscall.ENOTEMPTY) ||
+				errors.Is(err, syscall.EEXIST) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("peipkg/install: removing directory %s: %w",
+				dirs[i], err))
+		}
+	}
+	return errors.Join(errs...)
 }

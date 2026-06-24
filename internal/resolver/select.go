@@ -35,7 +35,8 @@ func bestForDependency(idx candidateIndex, dep manifest.Dependency,
 	var matching []Candidate
 	seen := map[string]bool{}
 	consider := func(c Candidate) {
-		key := c.Name + "\x00" + c.Version.String()
+		key := c.Name + "\x00" + c.Version.String() + "\x00" + c.Architecture +
+			"\x00" + c.Repo + "\x00" + c.URL + "\x00" + c.Hash
 		if seen[key] {
 			return
 		}

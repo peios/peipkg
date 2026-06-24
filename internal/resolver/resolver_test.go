@@ -143,6 +143,32 @@ func TestInstallSharedDependencyAppearsOnce(t *testing.T) {
 	}
 }
 
+func TestDependencySelectionKeepsSameVersionRepositoryPriority(t *testing.T) {
+	app := cand(t, "app", "1.0-1", dep(t, "libfoo", ""))
+	low := cand(t, "libfoo", "1.0-1")
+	low.Repo, low.RepoPriority, low.URL = "extra", 50, "/extra/libfoo"
+	high := cand(t, "libfoo", "1.0-1")
+	high.Repo, high.RepoPriority, high.URL = "official", 10, "/official/libfoo"
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "app"}},
+		nil,
+		[]resolver.Candidate{app, low, high},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, op := range plan.Operations {
+		if op.Name == "libfoo" {
+			if op.Candidate == nil || op.Candidate.Repo != "official" {
+				t.Fatalf("libfoo candidate = %+v, want official", op.Candidate)
+			}
+			return
+		}
+	}
+	t.Fatalf("plan did not install libfoo: %+v", plan.Operations)
+}
+
 func TestInstallUsesSatisfyingInstalledDependency(t *testing.T) {
 	plan, err := resolver.Resolve(
 		[]resolver.Request{{Kind: resolver.Install, Name: "nginx"}},
@@ -487,6 +513,35 @@ func TestForeignReplacesRaisesAuthorization(t *testing.T) {
 		[]resolver.Request{{Kind: resolver.Install, Name: "nginx"}},
 		[]resolver.Installed{core},
 		[]resolver.Candidate{nginx},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(plan.Authorizations) != 1 ||
+		plan.Authorizations[0].Kind != resolver.AuthForeignReplaces {
+		t.Fatalf("expected one AuthForeignReplaces, got %#v", plan.Authorizations)
+	}
+}
+
+func TestForeignReplacesStillRaisedAfterVictimUpgradeSelection(t *testing.T) {
+	// A mixed transaction can first select an upgrade candidate for the
+	// victim, then later supersede it via `replaces`. The installed
+	// repository provenance must survive that candidate placement so the
+	// foreign-replaces gate still sees the original higher-priority source.
+	nginx := cand(t, "nginx", "1.26-1")
+	nginx.Repo, nginx.RepoPriority = "extra", 50
+	nginx.Replaces = []manifest.Replaces{{Name: "nginx-core"}}
+	coreUpgrade := cand(t, "nginx-core", "1.21-1")
+	core := inst(t, "nginx-core", "1.20-1")
+	core.Repo, core.RepoPriority = "official", 10
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{
+			{Kind: resolver.Upgrade},
+			{Kind: resolver.Install, Name: "nginx"},
+		},
+		[]resolver.Installed{core},
+		[]resolver.Candidate{coreUpgrade, nginx},
 		defaultOptions())
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)

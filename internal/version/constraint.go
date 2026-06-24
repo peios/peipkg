@@ -93,6 +93,26 @@ func (c Constraint) Matches(v Version) bool {
 	return true
 }
 
+// Any reports whether c is the zero constraint, matching every version.
+func (c Constraint) Any() bool {
+	return len(c.exprs) == 0
+}
+
+// MayNeedHistoricalVersions reports whether c can require a version
+// older than the active repository index's current package version.
+// Lower-bound-only constraints can be satisfied from current-version
+// metadata; exact, upper-bound, and exclusion constraints may need the
+// archive index.
+func (c Constraint) MayNeedHistoricalVersions() bool {
+	for _, e := range c.exprs {
+		switch e.op {
+		case OpEqual, OpLess, OpLessEqual, OpNotEqual:
+			return true
+		}
+	}
+	return false
+}
+
 // matches reports whether v satisfies one expression. When the operand
 // omitted its revision, the revision is not part of the comparison.
 func (e expression) matches(v Version) bool {

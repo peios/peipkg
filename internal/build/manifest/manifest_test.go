@@ -4,7 +4,44 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	consumer "github.com/peios/peipkg/internal/manifest"
 )
+
+// TestEncodeClaimsRoundTrip proves the producer's claims encoding is
+// exactly what the consumer's decoder accepts (§4.4.2): a manifest
+// emitted with provider and consumer claims decodes back with those
+// claims intact.
+func TestEncodeClaimsRoundTrip(t *testing.T) {
+	m := Manifest{
+		SchemaVersion: SchemaVersion,
+		Name:          "loregd",
+		Version:       "1.0.0-1",
+		Architecture:  "x86_64",
+		Dependencies: []Dependency{{Name: "logsink",
+			Claims: map[string]ClaimSlot{"sink": {Path: "/run/logsink.sock"}}}},
+		Provides: []Provides{{Name: "registryd", Claims: map[string]ClaimSlot{
+			"binary": {Target: "/usr/bin/loregd", Path: "/usr/bin/registryd"}}}},
+		SizeInstalled: 1,
+		Build:         Build{Timestamp: "2026-05-19T00:00:00Z", FarmID: "f", SourceRef: "s"},
+	}
+	data, err := Encode(m)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	cm, err := consumer.Decode(data)
+	if err != nil {
+		t.Fatalf("consumer.Decode rejected the emitted manifest: %v", err)
+	}
+	if got := cm.Provides[0].Claims["binary"]; got.Target != "/usr/bin/loregd" ||
+		got.Path != "/usr/bin/registryd" {
+		t.Errorf("provider claim round-trip: got %+v", got)
+	}
+	if got := cm.Dependencies[0].Claims["sink"]; got.Path != "/run/logsink.sock" ||
+		got.Target != "" {
+		t.Errorf("consumer claim round-trip: got %+v", got)
+	}
+}
 
 func TestEncodeMinimal(t *testing.T) {
 	m := Manifest{

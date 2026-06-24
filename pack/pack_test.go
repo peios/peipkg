@@ -88,7 +88,7 @@ func TestPackSortsArrays(t *testing.T) {
 	}
 	m.Provides = []pack.Provides{
 		{Name: "hello-impl"},
-		{Name: "greeter", Version: "1.0"},
+		{Name: "greeter", Version: "1.0-1"},
 	}
 
 	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
@@ -118,6 +118,56 @@ func TestPackSortsArrays(t *testing.T) {
 	}
 	if manifest.Provides[0].Name != "greeter" || manifest.Provides[1].Name != "hello-impl" {
 		t.Errorf("provides not sorted: %+v", manifest.Provides)
+	}
+}
+
+// TestPackDefaultRootAndDependencyRoot verifies the named-roots fields
+// reach the wire: a manifest's default_root and a dependency's placement
+// root (§3.3.6, §4.1.1, DESIGN-named-roots.md).
+func TestPackDefaultRootAndDependencyRoot(t *testing.T) {
+	m := helloNoarchManifest()
+	m.DefaultRoot = "initramfs"
+	m.Dependencies = []pack.Dependency{
+		{Name: "libc"},
+		{Name: "peiosutils", Root: "initramfs"},
+	}
+
+	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
+	var buf bytes.Buffer
+	if err := pack.Pack(pack.PackOptions{
+		Manifest:   m,
+		StagedRoot: filepath.Join(caseDir, "staged"),
+		Out:        &buf,
+	}); err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+
+	var manifest struct {
+		DefaultRoot  string `json:"default_root"`
+		Dependencies []struct {
+			Name string `json:"name"`
+			Root string `json:"root"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(extractEntry(t, buf.Bytes(), ".peipkg/manifest.json"), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DefaultRoot != "initramfs" {
+		t.Errorf("default_root: got %q, want %q", manifest.DefaultRoot, "initramfs")
+	}
+	// dependencies sort by name: libc (no root), peiosutils (root set).
+	if manifest.Dependencies[0].Root != "" {
+		t.Errorf("libc root: got %q, want empty", manifest.Dependencies[0].Root)
+	}
+	if manifest.Dependencies[1].Name != "peiosutils" || manifest.Dependencies[1].Root != "initramfs" {
+		t.Errorf("peiosutils placement: got %+v", manifest.Dependencies[1])
+	}
+
+	// A dependency without a root must not emit a root key at all
+	// (omitempty preserves byte-compatibility with pre-cross-root manifests).
+	raw := extractEntry(t, buf.Bytes(), ".peipkg/manifest.json")
+	if !bytes.Contains(raw, []byte(`{"name":"libc"}`)) {
+		t.Errorf("a rootless dependency should emit no root key:\n%s", raw)
 	}
 }
 
@@ -208,6 +258,21 @@ func TestPackRejectsDuplicateNames(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Errorf("expected duplicate-name rejection, got %v", err)
+	}
+}
+
+func TestPackRejectsInvalidManifestSemantics(t *testing.T) {
+	m := helloNoarchManifest()
+	m.Name = "Bad_Name"
+
+	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
+	err := pack.Pack(pack.PackOptions{
+		Manifest:   m,
+		StagedRoot: filepath.Join(caseDir, "staged"),
+		Out:        io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "validate manifest") {
+		t.Errorf("expected manifest validation rejection, got %v", err)
 	}
 }
 

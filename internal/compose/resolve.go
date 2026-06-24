@@ -56,11 +56,12 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 	defer store.Close()
 	client := repository.NewClient(fetcher, store, filepath.Join(scratch, "cache"))
 
-	candidates, err := repositoryCandidates(ctx, client, m.Repositories, warnings)
+	candidates, err := repositoryCandidates(ctx, client, m.Repositories,
+		manifestNeedsArchive(m.Packages), warnings)
 	if err != nil {
 		return Lock{}, err
 	}
-	locals, err := localCandidates(m.LocalPackages)
+	locals, err := localCandidates(m.LocalPackages, localPackageBaseDir(m))
 	if err != nil {
 		return Lock{}, err
 	}
@@ -74,11 +75,21 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 		return Lock{}, err
 	}
 
+	// Each [[package]] is evaluated like its own `peipkg install` (with an
+	// optional --root), so requests may target different roots; the
+	// multi-root resolver routes each closure and any cross-root `IN`
+	// dependencies. A fresh build has no installed set in any root.
+	refToPath := m.rootRefs()
 	reqs := make([]resolver.Request, len(m.Packages))
 	for i, p := range m.Packages {
-		reqs[i] = resolver.Request{Kind: resolver.Install, Name: p.Name}
+		rootKey, err := packageRootKey(p, candidates, refToPath)
+		if err != nil {
+			return Lock{}, err
+		}
+		reqs[i] = resolver.Request{Kind: resolver.Install, Name: p.Name, Root: rootKey}
 	}
-	plan, err := resolver.Resolve(reqs, nil, candidates, resolver.Options{PrimaryArch: m.Arch})
+	plan, err := resolver.ResolveMultiRoot(reqs, map[string][]resolver.Installed{}, candidates,
+		refToPath, resolver.Options{PrimaryArch: m.Arch})
 	if err != nil {
 		return Lock{}, fmt.Errorf("peipkg/compose: resolution failed: %w", err)
 	}
@@ -89,7 +100,10 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 			a.Detail)
 	}
 
-	lock := Lock{Arch: m.Arch, SourceDate: m.SourceDate, Manifest: manifestName}
+	lock := Lock{
+		Arch: m.Arch, SourceDate: m.SourceDate,
+		Manifest: manifestName, ManifestDigest: manifestDigest(m),
+	}
 	for _, op := range plan.Operations {
 		if op.Candidate == nil {
 			return Lock{}, fmt.Errorf("peipkg/compose: resolved operation for %q carries no "+
@@ -106,12 +120,52 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 			Source:       source,
 			URL:          op.Candidate.URL,
 			Hash:         op.Candidate.Hash,
+			Root:         op.Root,
 		})
 	}
 	sort.Slice(lock.Packages, func(i, j int) bool {
+		if lock.Packages[i].Root != lock.Packages[j].Root {
+			return lock.Packages[i].Root < lock.Packages[j].Root
+		}
 		return lock.Packages[i].Name < lock.Packages[j].Name
 	})
 	return lock, nil
+}
+
+// packageRootKey resolves the root a top-level [[package]] is installed
+// into, as a path relative to the output root ("" = the anchor). It
+// mirrors `peipkg install`: an explicit Root wins (like --root), else the
+// package's own default_root, else the anchor.
+func packageRootKey(p PackageRequest, candidates []resolver.Candidate,
+	refToPath map[string]string) (string, error) {
+
+	if p.Root != "" {
+		// The manifest decode already checked Root names a declared [[root]].
+		return refToPath[p.Root], nil
+	}
+	switch dr := candidateDefaultRoot(p.Name, candidates); dr {
+	case "":
+		return "", nil // no preference → the anchor (output) root
+	default:
+		path, ok := refToPath[dr]
+		if !ok {
+			return "", fmt.Errorf("peipkg/compose: package %q has default_root %q, which the "+
+				"manifest declares no [[root]] for", p.Name, dr)
+		}
+		return path, nil
+	}
+}
+
+// candidateDefaultRoot returns the default_root a package declares, read
+// from its candidate (the index entry carries it, §6.2.4). default_root is
+// a per-package fact, identical across versions, so the first match wins.
+func candidateDefaultRoot(name string, candidates []resolver.Candidate) string {
+	for _, c := range candidates {
+		if c.Name == name {
+			return c.DefaultRoot
+		}
+	}
+	return ""
 }
 
 // repositoryCandidates adds each manifest repository through the trust
@@ -120,7 +174,7 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 // must resolve against every source it declares — but a repository that
 // serves no archive index is not.
 func repositoryCandidates(ctx context.Context, client *repository.Client,
-	repos []config.RepoConfig, warnings io.Writer) ([]resolver.Candidate, error) {
+	repos []config.RepoConfig, needArchive bool, warnings io.Writer) ([]resolver.Candidate, error) {
 
 	var candidates []resolver.Candidate
 	for _, cfg := range repos {
@@ -133,8 +187,12 @@ func repositoryCandidates(ctx context.Context, client *repository.Client,
 		}
 		candidates = append(candidates, indexCandidates(cfg, active, warnings)...)
 
-		// The archive index carries historical versions, needed only
-		// when a manifest pins one. A repository need not serve it.
+		if !needArchive {
+			continue
+		}
+		// The archive index carries historical versions. It is fetched
+		// only when a manifest constraint can need non-current metadata.
+		// A repository need not serve it.
 		archived, err := client.ArchiveIndex(ctx, cfg)
 		if err != nil {
 			fmt.Fprintf(warnings, "peipkg-compose: warning: archive index of %q unavailable: %v\n",
@@ -144,6 +202,15 @@ func repositoryCandidates(ctx context.Context, client *repository.Client,
 		candidates = append(candidates, indexCandidates(cfg, archived, warnings)...)
 	}
 	return candidates, nil
+}
+
+func manifestNeedsArchive(reqs []PackageRequest) bool {
+	for _, r := range reqs {
+		if r.Constraint.MayNeedHistoricalVersions() {
+			return true
+		}
+	}
+	return false
 }
 
 // indexCandidates converts a repository index's entries to resolver
@@ -162,17 +229,18 @@ func indexCandidates(cfg config.RepoConfig, idx repository.Index,
 			continue
 		}
 		out = append(out, resolver.Candidate{
-			Name:         e.Name,
-			Version:      e.Version,
-			Architecture: e.Architecture,
-			Dependencies: e.Dependencies,
-			Conflicts:    e.Conflicts,
-			Provides:     e.Provides,
-			Replaces:     e.Replaces,
-			Repo:         cfg.Name,
-			RepoPriority: cfg.Priority,
-			URL:          abs,
-			Hash:         e.Hash,
+			Name:           e.Name,
+			Version:        e.Version,
+			Architecture:   e.Architecture,
+			DefaultRoot:    e.DefaultRoot,
+			Dependencies:   e.Dependencies,
+			Conflicts:      e.Conflicts,
+			Provides:       e.Provides,
+			Replaces:       e.Replaces,
+			Repo:           cfg.Name,
+			RepoPriority:   cfg.Priority,
+			URL:            abs,
+			Hash:           e.Hash,
 			SizeCompressed: e.SizeCompressed,
 			SizeInstalled:  e.SizeInstalled,
 		})
@@ -183,11 +251,15 @@ func indexCandidates(cfg config.RepoConfig, idx repository.Index,
 // localCandidates reads the manifest's local .peipkg files and returns a
 // resolver candidate for each. A glob matching nothing is not an error;
 // a file that fails format verification is.
-func localCandidates(patterns []string) ([]resolver.Candidate, error) {
+func localCandidates(patterns []string, baseDir string) ([]resolver.Candidate, error) {
 	var candidates []resolver.Candidate
 	seen := map[string]bool{}
 	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
+		resolved := pattern
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(baseDir, resolved)
+		}
+		matches, err := filepath.Glob(resolved)
 		if err != nil {
 			return nil, fmt.Errorf("peipkg/compose: local package pattern %q: %w", pattern, err)
 		}
@@ -229,6 +301,7 @@ func localCandidate(abs string) (resolver.Candidate, error) {
 		Name:          m.Name,
 		Version:       m.Version,
 		Architecture:  m.Architecture,
+		DefaultRoot:   m.DefaultRoot,
 		Dependencies:  m.Dependencies,
 		Conflicts:     m.Conflicts,
 		Provides:      m.Provides,

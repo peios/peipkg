@@ -117,10 +117,11 @@ func LockManifest(ctx context.Context, opts LockOptions) (LockResult, error) {
 
 // Lock is a resolved package closure.
 type Lock struct {
-	Arch       string
-	SourceDate time.Time
-	Manifest   string
-	Packages   []LockedPackage
+	Arch           string
+	SourceDate     time.Time
+	Manifest       string
+	ManifestDigest string
+	Packages       []LockedPackage
 }
 
 // LockedPackage is one package in a resolved closure.
@@ -174,10 +175,11 @@ func fetcherOrDefault(fetcher Fetcher) repository.Fetcher {
 
 func fromInternalLock(lock internalcompose.Lock) Lock {
 	out := Lock{
-		Arch:       lock.Arch,
-		SourceDate: lock.SourceDate,
-		Manifest:   lock.Manifest,
-		Packages:   make([]LockedPackage, 0, len(lock.Packages)),
+		Arch:           lock.Arch,
+		SourceDate:     lock.SourceDate,
+		Manifest:       lock.Manifest,
+		ManifestDigest: lock.ManifestDigest,
+		Packages:       make([]LockedPackage, 0, len(lock.Packages)),
 	}
 	for _, p := range lock.Packages {
 		out.Packages = append(out.Packages, LockedPackage{
@@ -194,10 +196,11 @@ func fromInternalLock(lock internalcompose.Lock) Lock {
 
 func toInternalLock(lock Lock) internalcompose.Lock {
 	out := internalcompose.Lock{
-		Arch:       lock.Arch,
-		SourceDate: lock.SourceDate,
-		Manifest:   lock.Manifest,
-		Packages:   make([]internalcompose.LockedPackage, 0, len(lock.Packages)),
+		Arch:           lock.Arch,
+		SourceDate:     lock.SourceDate,
+		Manifest:       lock.Manifest,
+		ManifestDigest: lock.ManifestDigest,
+		Packages:       make([]internalcompose.LockedPackage, 0, len(lock.Packages)),
 	}
 	for _, p := range lock.Packages {
 		out.Packages = append(out.Packages, internalcompose.LockedPackage{

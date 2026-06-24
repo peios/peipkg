@@ -32,6 +32,12 @@ type Manifest struct {
 	Description          string       `json:"description"`
 	License              string       `json:"license"`
 	Homepage             string       `json:"homepage"`
+	// DefaultRoot is the top-level placement preference (§3.3.6). Unlike
+	// the other optional fields it uses omitempty: it post-dates the
+	// format, so a package that declares none must emit bytes identical to
+	// a pre-default_root manifest. Declared before dependencies to match
+	// the normative field order.
+	DefaultRoot          string       `json:"default_root,omitempty"`
 	Dependencies         []Dependency `json:"dependencies"`
 	OptionalDependencies []Dependency `json:"optional_dependencies"`
 	Conflicts            []Dependency `json:"conflicts"`
@@ -48,15 +54,30 @@ type Manifest struct {
 // emits the canonical {"name":"..."} form regardless of whether the recipe
 // supplied the empty defaults explicitly.
 type Dependency struct {
-	Name       string `json:"name"`
-	Constraint string `json:"constraint,omitempty"`
-	Arch       string `json:"arch,omitempty"`
+	Name       string               `json:"name"`
+	Constraint string               `json:"constraint,omitempty"`
+	Arch       string               `json:"arch,omitempty"`
+	// Root is the dependency's placement root (§4.1.1); omitempty so a
+	// same-root dependency stays byte-identical to a pre-cross-root one.
+	Root       string               `json:"root,omitempty"`
+	Claims     map[string]ClaimSlot `json:"claims,omitempty"`
 }
 
 // Provides is one entry in the provides array (§4.1.4).
 type Provides struct {
-	Name    string `json:"name"`
-	Version string `json:"version,omitempty"`
+	Name    string               `json:"name"`
+	Version string               `json:"version,omitempty"`
+	Claims  map[string]ClaimSlot `json:"claims,omitempty"`
+}
+
+// ClaimSlot is one slot of a claims field (§4.4.2): a consumer entry's
+// descriptor carries Path; a provider entry's carries Target and an
+// optional default Path. Both use omitempty so a slot emits only the
+// keys it sets, and a manifest with no claims is byte-identical to one
+// from before claims existed.
+type ClaimSlot struct {
+	Path   string `json:"path,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 // Replaces is one entry in the replaces array (§4.1.5).

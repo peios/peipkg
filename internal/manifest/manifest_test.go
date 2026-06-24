@@ -129,6 +129,44 @@ func TestDecodeOptionalFields(t *testing.T) {
 	}
 }
 
+func TestDefaultRootAndDependencyRoot(t *testing.T) {
+	m := baseManifest()
+	m["default_root"] = "initramfs"
+	m["dependencies"] = []any{
+		map[string]any{"name": "libc", "constraint": ">= 2.39-1"},
+		// A cross-root placement: peiosutils is required in the initramfs root.
+		map[string]any{"name": "peiosutils", "root": "initramfs.sub"},
+	}
+	got := mustDecode(t, m)
+	if got.DefaultRoot != "initramfs" {
+		t.Errorf("DefaultRoot: got %q, want %q", got.DefaultRoot, "initramfs")
+	}
+	// dependencies is sorted by name: libc, peiosutils.
+	if len(got.Dependencies) != 2 {
+		t.Fatalf("Dependencies: got %+v", got.Dependencies)
+	}
+	if got.Dependencies[0].Root != "" {
+		t.Errorf("libc Root: got %q, want empty (depender's root)", got.Dependencies[0].Root)
+	}
+	if got.Dependencies[1].Name != "peiosutils" || got.Dependencies[1].Root != "initramfs.sub" {
+		t.Errorf("peiosutils placement: got %+v", got.Dependencies[1])
+	}
+}
+
+func TestDefaultRootRejectsPath(t *testing.T) {
+	m := baseManifest()
+	m["default_root"] = "./boot/initramfs" // a path, not a named reference
+	wantReject(t, m)
+}
+
+func TestDependencyRootRejectedOnConflicts(t *testing.T) {
+	m := baseManifest()
+	m["conflicts"] = []any{
+		map[string]any{"name": "apache", "root": "initramfs"},
+	}
+	wantReject(t, m)
+}
+
 func TestUnknownFieldsIgnored(t *testing.T) {
 	m := baseManifest()
 	m["future_field"] = "from a newer spec version"
@@ -180,10 +218,16 @@ func TestInvalidName(t *testing.T) {
 	}
 }
 
-func TestValidNameWithPlus(t *testing.T) {
-	// A plus sign is a regular name character, not a separator: it is intrinsic
-	// to names like libstdc++ / g++, so it may repeat and may end a name. §2.1.
-	for _, name := range []string{"libstdc++", "g++", "c++", "libstdc++-devel"} {
+func TestValidName(t *testing.T) {
+	for _, name := range []string{
+		"nginx",           // ordinary
+		"lib32-foo",       // hyphenated
+		"python3.example", // dotted
+		"libstdc++",       // trailing repeated plus (§2.1 informative example)
+		"g++",             // trailing plus
+		"c++",             // short trailing plus
+		"gtk+-3.0",        // plus is not a separator, so +- is allowed
+	} {
 		t.Run(name, func(t *testing.T) {
 			m := baseManifest()
 			m["name"] = name
@@ -258,7 +302,7 @@ func TestDependencyRules(t *testing.T) {
 			map[string]any{"constraint": ">= 1.0-1"},
 		},
 		"invalid name": {
-			map[string]any{"name": "BadName"},
+			map[string]any{"name": "bad name"},
 		},
 		"invalid constraint": {
 			map[string]any{"name": "libc", "constraint": "?? 1.0"},
@@ -287,7 +331,9 @@ func TestDependencyRules(t *testing.T) {
 func TestProvidesRules(t *testing.T) {
 	cases := map[string][]any{
 		"invalid provides version": {
-			map[string]any{"name": "smtp-server", "version": "not-a-version"},
+			// A space is an invalid upstream character even when the
+			// revision is relaxed away (§4.1.4).
+			map[string]any{"name": "smtp-server", "version": "not a version"},
 		},
 		"not sorted": {
 			map[string]any{"name": "web-server"},
@@ -300,6 +346,17 @@ func TestProvidesRules(t *testing.T) {
 			m["provides"] = provides
 			wantReject(t, m)
 		})
+	}
+}
+
+func TestProvidesVersionRevisionOptional(t *testing.T) {
+	// §4.1.4: a provides version expresses a capability level, so the
+	// Peios revision may be omitted (e.g. the spec's own "3.0" example).
+	m := baseManifest()
+	m["provides"] = []any{map[string]any{"name": "smtp-server", "version": "3.0"}}
+	got := mustDecode(t, m)
+	if got.Provides[0].Version == nil || got.Provides[0].Version.String() != "3.0" {
+		t.Errorf("Provides[0].Version: got %v, want 3.0", got.Provides[0].Version)
 	}
 }
 

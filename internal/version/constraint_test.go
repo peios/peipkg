@@ -87,6 +87,38 @@ func TestZeroConstraintMatchesEverything(t *testing.T) {
 	}
 }
 
+func TestConstraintMayNeedHistoricalVersions(t *testing.T) {
+	cases := []struct {
+		constraint string
+		want       bool
+	}{
+		{"", false},
+		{">= 1.0", false},
+		{"> 1.0-1", false},
+		{"1.0-1", true},
+		{"= 1.0", true},
+		{"< 2.0", true},
+		{"<= 2.0-1", true},
+		{">= 1.0, < 2.0", true},
+		{"!= 1.0-1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.constraint, func(t *testing.T) {
+			var c version.Constraint
+			var err error
+			if tc.constraint != "" {
+				c, err = version.ParseConstraint(tc.constraint)
+				if err != nil {
+					t.Fatalf("ParseConstraint(%q): %v", tc.constraint, err)
+				}
+			}
+			if got := c.MayNeedHistoricalVersions(); got != tc.want {
+				t.Errorf("MayNeedHistoricalVersions() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConstraintString(t *testing.T) {
 	c, err := version.ParseConstraint(">=3.0-1,<4.0-1")
 	if err != nil {

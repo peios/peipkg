@@ -9,9 +9,10 @@ import (
 
 func sampleLock() Lock {
 	return Lock{
-		Arch:       "x86_64",
-		SourceDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-		Manifest:   "peipkg-manifest-2026-6-1.toml",
+		Arch:           "x86_64",
+		SourceDate:     time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		Manifest:       "peipkg-manifest-2026-6-1.toml",
+		ManifestDigest: strings.Repeat("c", 64),
 		Packages: []LockedPackage{
 			{Name: "nginx", Version: "1.27.5-1", Architecture: "x86_64", Source: "official",
 				URL: "https://pkgs.peios.org/pool/nginx-1.27.5.peipkg", Hash: strings.Repeat("a", 64)},
@@ -31,7 +32,8 @@ func TestLockRoundTrip(t *testing.T) {
 		t.Fatalf("DecodeLock: %v", err)
 	}
 
-	if got.Arch != "x86_64" || got.Manifest != "peipkg-manifest-2026-6-1.toml" {
+	if got.Arch != "x86_64" || got.Manifest != "peipkg-manifest-2026-6-1.toml" ||
+		got.ManifestDigest != strings.Repeat("c", 64) {
 		t.Errorf("decoded lock = %+v", got)
 	}
 	if !got.SourceDate.Equal(sampleLock().SourceDate) {
@@ -66,9 +68,9 @@ func TestLockEncodeDeterministic(t *testing.T) {
 
 func TestLockPath(t *testing.T) {
 	cases := map[string]string{
-		"peipkg-manifest-2026-6-1.toml":     "peipkg-manifest-2026-6-1.lock.toml",
-		"build/peimanifest.toml":            "build/peimanifest.lock.toml",
-		"manifest":                          "manifest.lock.toml",
+		"peipkg-manifest-2026-6-1.toml": "peipkg-manifest-2026-6-1.lock.toml",
+		"build/peimanifest.toml":        "build/peimanifest.lock.toml",
+		"manifest":                      "manifest.lock.toml",
 	}
 	for in, want := range cases {
 		if got := LockPath(in); got != want {
@@ -78,13 +80,17 @@ func TestLockPath(t *testing.T) {
 }
 
 func TestDecodeLockErrors(t *testing.T) {
-	const hdr = "schema = 1\narch = \"x86_64\"\nsource_date = \"2026-06-01T00:00:00Z\"\n"
+	const digest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	const hdr = "schema = 3\narch = \"x86_64\"\nsource_date = \"2026-06-01T00:00:00Z\"\n" +
+		"manifest_digest = \"" + digest + "\"\n"
 	const okPkg = "[[package]]\nname=\"a\"\nversion=\"1.0-1\"\narchitecture=\"x86_64\"\n" +
 		"source=\"official\"\nurl=\"https://x/a.peipkg\"\nhash=\"" +
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
 	cases := map[string]struct{ toml, want string }{
-		"wrong schema": {"schema = 2\narch=\"x\"\nsource_date=\"2026-06-01T00:00:00Z\"\n" + okPkg,
-			`schema is 2, want 1`},
+		"wrong schema": {"schema = 1\narch=\"x\"\nsource_date=\"2026-06-01T00:00:00Z\"\n" +
+			"manifest_digest = \"" + digest + "\"\n" + okPkg, `schema is 1, want 3`},
+		"missing manifest digest": {"schema = 3\narch=\"x\"\nsource_date=\"2026-06-01T00:00:00Z\"\n" +
+			okPkg, `missing required key "manifest_digest"`},
 		"no packages":   {hdr, `contains no packages`},
 		"missing field": {hdr + "[[package]]\nname=\"a\"\nversion=\"1.0-1\"\n", `missing "architecture"`},
 		"bad hash": {hdr + "[[package]]\nname=\"a\"\nversion=\"1.0-1\"\narchitecture=\"x86_64\"\n" +

@@ -23,9 +23,10 @@ func TestBuildRejectsFlagConflict(t *testing.T) {
 
 func TestLockRoundTrip(t *testing.T) {
 	lock := Lock{
-		Arch:       "x86_64",
-		SourceDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-		Manifest:   "peipkg.toml",
+		Arch:           "x86_64",
+		SourceDate:     time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		Manifest:       "peipkg.toml",
+		ManifestDigest: strings.Repeat("c", 64),
 		Packages: []LockedPackage{{
 			Name:         "base",
 			Version:      "1.0-1",
@@ -45,7 +46,8 @@ func TestLockRoundTrip(t *testing.T) {
 		t.Fatalf("DecodeLock: %v", err)
 	}
 	if decoded.Arch != lock.Arch || decoded.Manifest != lock.Manifest ||
-		len(decoded.Packages) != 1 || decoded.Packages[0].Name != "base" {
+		decoded.ManifestDigest != lock.ManifestDigest || len(decoded.Packages) != 1 ||
+		decoded.Packages[0].Name != "base" {
 		t.Fatalf("decoded lock = %+v, want %+v", decoded, lock)
 	}
 

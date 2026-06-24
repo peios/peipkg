@@ -47,6 +47,15 @@ func Parse(s string) (Version, error) {
 	return parse(s, false)
 }
 
+// ParseRelaxed parses a version whose Peios revision may be omitted — the
+// `provides.version` case (§4.1.4), which expresses a capability level
+// rather than a packaging iteration, so `3.0` is well-formed. A revision,
+// when present, is still parsed; when absent it is left as 0. The upstream
+// version is validated exactly as for [Parse].
+func ParseRelaxed(s string) (Version, error) {
+	return parse(s, true)
+}
+
 // parse is the shared parser. When revisionOptional is true — the
 // constraint-operand case (§2.2.8), where `>= 3.0` is well-formed — a
 // string with no trailing `-revision` is accepted and the revision is

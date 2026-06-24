@@ -1,8 +1,12 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -29,6 +33,13 @@ type Client struct {
 	fetcher  Fetcher
 	store    *db.DB
 	cacheDir string
+}
+
+const cachePointerPrefix = "peipkg-cache-v1\n"
+
+type cachePointer struct {
+	Index     string `json:"index"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // NewClient returns a Client that fetches through fetcher, records
@@ -212,7 +223,34 @@ func (c *Client) ActiveIndex(ctx context.Context, repoName string) (Index, error
 			return Index{}, fmt.Errorf("peipkg/repository: cached index for %q: %w", repoName, err)
 		}
 	}
-	return DecodeIndex(idxBytes)
+	idx, err := DecodeIndex(idxBytes)
+	if err != nil {
+		return Index{}, err
+	}
+	if err := validateCachedActiveIndex(repoName, row, idx); err != nil {
+		return Index{}, err
+	}
+	return idx, nil
+}
+
+func validateCachedActiveIndex(repoName string, row db.Repository, idx Index) error {
+	if idx.Kind != IndexActive {
+		return fmt.Errorf("peipkg/repository: cached index for %q has kind %q, want %q",
+			repoName, idx.Kind, IndexActive)
+	}
+	if idx.RepoName != repoName {
+		return fmt.Errorf("peipkg/repository: cached index for %q names repository %q",
+			repoName, idx.RepoName)
+	}
+	if idx.IndexVersion != row.HighestIndexVersion {
+		return fmt.Errorf("peipkg/repository: cached index for %q has version %d but recorded trust state has version %d",
+			repoName, idx.IndexVersion, row.HighestIndexVersion)
+	}
+	if idx.GeneratedAt.Unix() != row.GeneratedAtFloor {
+		return fmt.Errorf("peipkg/repository: cached index for %q was generated at %d but recorded trust state has %d",
+			repoName, idx.GeneratedAt.Unix(), row.GeneratedAtFloor)
+	}
+	return nil
 }
 
 // addUnsigned performs the first-add of a repository in unsigned mode
@@ -516,34 +554,88 @@ func (c *Client) fetchArchiveIndex(ctx context.Context, cfg config.RepoConfig, d
 // record persists a repository's updated state: the database row and
 // the cached active index.
 func (c *Client) record(ctx context.Context, row db.Repository, idxBytes, idxSig []byte) error {
-	if err := c.store.UpsertRepository(ctx, row); err != nil {
+	if err := c.cacheIndex(row.Name, idxBytes, idxSig); err != nil {
 		return err
 	}
-	return c.cacheIndex(row.Name, idxBytes, idxSig)
+	return c.store.UpsertRepository(ctx, row)
 }
 
 // cacheIndex writes a repository's active index and its signature to the
-// on-disk cache.
+// on-disk cache. The index/signature bytes are content-addressed first;
+// a small pointer file is the single publish step for the pair.
 func (c *Client) cacheIndex(repoName string, idxBytes, idxSig []byte) error {
 	if err := os.MkdirAll(c.cacheDir, 0o755); err != nil {
 		return fmt.Errorf("peipkg/repository: creating cache directory: %w", err)
 	}
 	idxPath := filepath.Join(c.cacheDir, repoName+".active.json")
-	if err := os.WriteFile(idxPath, idxBytes, 0o644); err != nil {
+	idxName := cacheObjectName(repoName, "json", idxBytes)
+	if err := writeFileAtomically(filepath.Join(c.cacheDir, idxName), idxBytes, 0o644); err != nil {
 		return fmt.Errorf("peipkg/repository: caching index for %q: %w", repoName, err)
 	}
-	sigPath := idxPath + ".sig"
-	if idxSig == nil {
-		// Unsigned-mode repository: drop any signature left from an
-		// earlier signed state so it cannot be verified against later.
-		if err := os.Remove(sigPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("peipkg/repository: clearing index signature for %q: %w",
-				repoName, err)
+
+	ptr := cachePointer{Index: idxName}
+	if idxSig != nil {
+		sigName := cacheObjectName(repoName, "sig", idxSig)
+		if err := writeFileAtomically(filepath.Join(c.cacheDir, sigName), idxSig, 0o644); err != nil {
+			return fmt.Errorf("peipkg/repository: caching index signature for %q: %w", repoName, err)
 		}
-		return nil
+		ptr.Signature = sigName
 	}
-	if err := os.WriteFile(sigPath, idxSig, 0o644); err != nil {
+	ptrBytes, err := encodeCachePointer(ptr)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomically(idxPath, ptrBytes, 0o644); err != nil {
+		return fmt.Errorf("peipkg/repository: caching index pointer for %q: %w", repoName, err)
+	}
+	if err := os.Remove(idxPath + ".sig"); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("peipkg/repository: caching index signature for %q: %w", repoName, err)
+	}
+	return nil
+}
+
+func cacheObjectName(repoName, suffix string, data []byte) string {
+	sum := sha256.Sum256(data)
+	return repoName + ".active." + hex.EncodeToString(sum[:]) + "." + suffix
+}
+
+func encodeCachePointer(ptr cachePointer) ([]byte, error) {
+	data, err := json.Marshal(ptr)
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/repository: encoding cache pointer: %w", err)
+	}
+	out := append([]byte(cachePointerPrefix), data...)
+	out = append(out, '\n')
+	return out, nil
+}
+
+// writeFileAtomically writes data to a temporary sibling and then
+// renames it over path, so a failed write does not leave a truncated
+// cache file behind.
+func writeFileAtomically(path string, data []byte, perm fs.FileMode) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmpName, path); err != nil {
+		return err
 	}
 	return nil
 }
@@ -556,6 +648,9 @@ func (c *Client) loadCachedIndex(repoName string) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("peipkg/repository: reading cached index for %q: %w",
 			repoName, err)
 	}
+	if bytes.HasPrefix(idxBytes, []byte(cachePointerPrefix)) {
+		return c.loadCachedIndexPointer(repoName, idxBytes[len(cachePointerPrefix):])
+	}
 	idxSig, err := os.ReadFile(idxPath + ".sig")
 	if errors.Is(err, fs.ErrNotExist) {
 		return idxBytes, nil, nil // an unsigned-mode repository caches no signature
@@ -565,6 +660,39 @@ func (c *Client) loadCachedIndex(repoName string) ([]byte, []byte, error) {
 			repoName, err)
 	}
 	return idxBytes, idxSig, nil
+}
+
+func (c *Client) loadCachedIndexPointer(repoName string, data []byte) ([]byte, []byte, error) {
+	var ptr cachePointer
+	if err := json.Unmarshal(data, &ptr); err != nil {
+		return nil, nil, fmt.Errorf("peipkg/repository: reading cached index pointer for %q: %w",
+			repoName, err)
+	}
+	idxBytes, err := c.readCacheObject(repoName, ptr.Index)
+	if err != nil {
+		return nil, nil, err
+	}
+	if ptr.Signature == "" {
+		return idxBytes, nil, nil
+	}
+	idxSig, err := c.readCacheObject(repoName, ptr.Signature)
+	if err != nil {
+		return nil, nil, err
+	}
+	return idxBytes, idxSig, nil
+}
+
+func (c *Client) readCacheObject(repoName, name string) ([]byte, error) {
+	if name == "" || filepath.Base(name) != name {
+		return nil, fmt.Errorf("peipkg/repository: cached index pointer for %q names invalid object %q",
+			repoName, name)
+	}
+	data, err := os.ReadFile(filepath.Join(c.cacheDir, name))
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/repository: reading cached index object %q for %q: %w",
+			name, repoName, err)
+	}
+	return data, nil
 }
 
 // keysMatchingAnchors returns the public keys whose fingerprint appears

@@ -25,12 +25,21 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/peios/peipkg/internal/build/files"
 	"github.com/peios/peipkg/internal/build/manifest"
 	"github.com/peios/peipkg/internal/build/signature"
+	consumermanifest "github.com/peios/peipkg/internal/manifest"
+)
+
+const (
+	maxArchivePathComponent = 255
+	maxArchivePathLength    = 4096
+	maxArchivePathDepth     = 256
 )
 
 // Input is everything Pack needs to emit one .peipkg.
@@ -138,6 +147,9 @@ func Pack(in Input) error {
 	if err != nil {
 		return fmt.Errorf("pack: encode manifest: %w", err)
 	}
+	if _, err := consumermanifest.Decode(manifestBytes); err != nil {
+		return fmt.Errorf("pack: validate manifest: %w", err)
+	}
 	filesBytes, err := files.Encode(integrity)
 	if err != nil {
 		return fmt.Errorf("pack: encode integrity manifest: %w", err)
@@ -221,6 +233,9 @@ func walkLeaves(stagedRoot string) ([]entry, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if err := checkMapDest(rel); err != nil {
+			return err
+		}
 
 		switch {
 		case d.IsDir():
@@ -292,22 +307,49 @@ func mapLeaves(files map[string]string) ([]entry, error) {
 	return leaves, nil
 }
 
-// checkMapDest enforces that a mapped archive path is a clean relative
-// slash-path: the forms the staged-tree walk produces by construction.
+// checkMapDest enforces that an archive path is a clean relative
+// slash-path satisfying the consumer's payload path constraints.
 func checkMapDest(dest string) error {
 	switch {
 	case dest == "" || dest == ".":
 		return fmt.Errorf("empty archive path in file map")
+	case len(dest) > maxArchivePathLength:
+		return fmt.Errorf("archive path %q is %d bytes, the limit is %d",
+			dest, len(dest), maxArchivePathLength)
 	case strings.HasPrefix(dest, "/"):
 		return fmt.Errorf("archive path %q is absolute; paths must be relative", dest)
+	case dest == ".peipkg" || strings.HasPrefix(dest, ".peipkg/"):
+		return fmt.Errorf("archive path %q uses the reserved .peipkg prefix", dest)
 	case strings.HasSuffix(dest, "/"):
 		return fmt.Errorf("archive path %q has a trailing slash; the entry type comes from the source, not the path", dest)
-	case strings.ContainsAny(dest, "\\\x00"):
+	case !utf8.ValidString(dest):
+		return fmt.Errorf("archive path %q is not valid UTF-8", dest)
+	case !norm.NFC.IsNormalString(dest):
+		return fmt.Errorf("archive path %q is not in Unicode NFC", dest)
+	case strings.Contains(dest, "\\"):
+		return fmt.Errorf("archive path %q contains a backslash", dest)
+	case strings.Contains(dest, "\x00"):
 		return fmt.Errorf("archive path %q contains forbidden bytes", dest)
 	case path.Clean(dest) != dest:
 		return fmt.Errorf("archive path %q is not clean (want %q)", dest, path.Clean(dest))
 	case dest == ".." || strings.HasPrefix(dest, "../"):
 		return fmt.Errorf("archive path %q escapes the package root", dest)
+	}
+	components := strings.Split(dest, "/")
+	if len(components) > maxArchivePathDepth {
+		return fmt.Errorf("archive path %q has %d components, the limit is %d",
+			dest, len(components), maxArchivePathDepth)
+	}
+	for _, c := range components {
+		if len(c) > maxArchivePathComponent {
+			return fmt.Errorf("archive path component %q is %d bytes, the limit is %d",
+				c, len(c), maxArchivePathComponent)
+		}
+		for i := 0; i < len(c); i++ {
+			if b := c[i]; b < 0x20 || b == 0x7f {
+				return fmt.Errorf("archive path %q contains the control byte %#x", dest, b)
+			}
+		}
 	}
 	return nil
 }

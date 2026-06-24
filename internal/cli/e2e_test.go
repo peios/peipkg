@@ -3,6 +3,7 @@ package cli
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -19,8 +20,12 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/audit"
+	"github.com/peios/peipkg/internal/manifest"
+	"github.com/peios/peipkg/internal/resolver"
 	"github.com/peios/peipkg/internal/signature"
+	"github.com/peios/peipkg/internal/version"
 )
 
 // detachedSig builds a detached-signature .sig body: a signature envelope
@@ -49,6 +54,13 @@ func mustMarshal(t *testing.T, v any) []byte {
 // payload is the given files (payload path -> content).
 func buildSignedPackage(t *testing.T, priv ed25519.PrivateKey, pub ed25519.PublicKey,
 	name, ver string, files map[string]string) (data []byte, sizeInstalled int64) {
+	return buildSignedPackageEx(t, priv, pub, name, ver, files, nil)
+}
+
+// buildSignedPackageEx is buildSignedPackage with extra manifest fields
+// merged in (e.g. default_root) — for tests that exercise optional fields.
+func buildSignedPackageEx(t *testing.T, priv ed25519.PrivateKey, pub ed25519.PublicKey,
+	name, ver string, files map[string]string, extra map[string]any) (data []byte, sizeInstalled int64) {
 	t.Helper()
 
 	type fileEntry struct {
@@ -66,12 +78,16 @@ func buildSignedPackage(t *testing.T, priv ed25519.PrivateKey, pub ed25519.Publi
 
 	filesJSON := mustMarshal(t, map[string]any{
 		"schema_version": 1, "algorithm": "sha256", "entries": entries})
-	manifestJSON := mustMarshal(t, map[string]any{
+	manifestMap := map[string]any{
 		"schema_version": 1, "name": name, "version": ver, "architecture": "x86_64",
 		"dependencies": []any{}, "conflicts": []any{}, "size_installed": sizeInstalled,
 		"build": map[string]any{
 			"timestamp": "2026-05-19T00:00:00Z", "farm_id": "test", "source_ref": "test"},
-	})
+	}
+	for k, v := range extra {
+		manifestMap[k] = v
+	}
+	manifestJSON := mustMarshal(t, manifestMap)
 
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
@@ -261,6 +277,53 @@ func TestEndToEndLocalInstall(t *testing.T) {
 	}
 }
 
+func TestLocalInstallRejectsPackageChangedAfterPlanning(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	first, _ := buildSignedPackage(t, priv, pub, "tool", "2.0-1",
+		map[string]string{"usr/bin/tool": "planned"})
+	second, _ := buildSignedPackage(t, priv, pub, "tool", "2.0-1",
+		map[string]string{"usr/bin/tool": "changed"})
+
+	pkgPath := filepath.Join(t.TempDir(), "tool_2.0-1_x86_64.peipkg")
+	if err := os.WriteFile(pkgPath, first, 0o644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+	cand, err := readLocalPackage(pkgPath)
+	if err != nil {
+		t.Fatalf("readLocalPackage: %v", err)
+	}
+	if err := os.WriteFile(pkgPath, second, 0o644); err != nil {
+		t.Fatalf("replace package: %v", err)
+	}
+
+	_, err = provideLocal(cand)
+	if err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("provideLocal after file replacement error = %v, want hash mismatch", err)
+	}
+}
+
+func TestVerifyCandidatePackageRejectsIdentityMismatch(t *testing.T) {
+	plannedVersion, err := version.Parse("1.0-1")
+	if err != nil {
+		t.Fatalf("Parse planned version: %v", err)
+	}
+	actualVersion, err := version.Parse("2.0-1")
+	if err != nil {
+		t.Fatalf("Parse actual version: %v", err)
+	}
+	cand := resolver.Candidate{Name: "tool", Version: plannedVersion, Architecture: "x86_64"}
+	pkg := &archive.Package{Manifest: manifest.Manifest{
+		Name: "tool", Version: actualVersion, Architecture: "x86_64",
+	}}
+	err = verifyCandidatePackage(cand, pkg, "repository package https://repo/tool.peipkg")
+	if err == nil || !strings.Contains(err.Error(), "planned 1.0-1") {
+		t.Fatalf("verifyCandidatePackage error = %v, want planned-version mismatch", err)
+	}
+}
+
 // TestAuditLocalInstallEmitsEvent confirms a successful install emits a
 // §7.6 peipkg.install audit event.
 func TestAuditLocalInstallEmitsEvent(t *testing.T) {
@@ -399,5 +462,167 @@ func TestEndToEndDowngradeUndo(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(widgetPath); string(got) != "widget v2" {
 		t.Errorf("after undo: content %q, want widget v2", got)
+	}
+}
+
+// installLiveBootCrossRoot stands up a repository serving live-boot
+// (which declares a dependency placed `IN initramfs`) and peiosutils,
+// registers the initramfs root, and installs live-boot through the whole
+// stack. It returns the app and the anchor and initramfs paths, ready for
+// an install or undo assertion. The repository server is closed before it
+// returns — the index is cached and the packages are fetched, so a
+// follow-on undo (removals) needs no network.
+func installLiveBootCrossRoot(t *testing.T) (app *App, anchor, initramfs string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	fp := signature.Fingerprint(pub)
+
+	liveBytes, liveSize := buildSignedPackageEx(t, priv, pub, "live-boot", "1.0-1",
+		map[string]string{"usr/bin/live-boot": "live-boot"},
+		map[string]any{"dependencies": []any{
+			map[string]any{"name": "peiosutils", "root": "initramfs"}}})
+	puBytes, puSize := buildSignedPackage(t, priv, pub, "peiosutils", "1.0-1",
+		map[string]string{"bin/peiosutils": "peiosutils"})
+	liveSum, puSum := sha256.Sum256(liveBytes), sha256.Sum256(puBytes)
+	liveURL := "/p/live-boot/1.0-1/live-boot_1.0-1_x86_64.peipkg"
+	puURL := "/p/peiosutils/1.0-1/peiosutils_1.0-1_x86_64.peipkg"
+
+	descriptor := mustMarshal(t, map[string]any{
+		"schema_version": 1,
+		"repo": map[string]any{"name": "test", "signing": map[string]any{
+			"algorithm": "ed25519",
+			"keys": []any{map[string]any{
+				"fingerprint": fp, "url": "/keys/" + fp + ".pub", "status": "active"}}}},
+		"indexes": map[string]any{
+			"active": map[string]any{
+				"url": "/index/active.json", "signature_url": "/index/active.json.sig"},
+			"archive": map[string]any{
+				"url": "/index/archive.json", "signature_url": "/index/archive.json.sig"}},
+	})
+	// Entries are sorted by name: live-boot, peiosutils.
+	index := mustMarshal(t, map[string]any{
+		"schema_version": 1, "repo": "test", "kind": "active",
+		"index_version": 1, "generated_at": "2026-05-19T00:00:00Z",
+		"packages": []any{
+			map[string]any{
+				"name": "live-boot", "version": "1.0-1", "architecture": "x86_64",
+				"dependencies": []any{map[string]any{"name": "peiosutils", "root": "initramfs"}},
+				"conflicts":       []any{},
+				"size_compressed": len(liveBytes), "size_installed": liveSize,
+				"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(liveSum[:])},
+				"url":  liveURL},
+			map[string]any{
+				"name": "peiosutils", "version": "1.0-1", "architecture": "x86_64",
+				"dependencies": []any{}, "conflicts": []any{},
+				"size_compressed": len(puBytes), "size_installed": puSize,
+				"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(puSum[:])},
+				"url":  puURL},
+		},
+	})
+	sign := func(b []byte) []byte { return detachedSig(priv, b) }
+	served := map[string][]byte{
+		"/repo.json": descriptor, "/repo.json.sig": sign(descriptor),
+		"/keys/" + fp + ".pub":   []byte(pub),
+		"/index/active.json":     index,
+		"/index/active.json.sig": sign(index),
+		liveURL:                  liveBytes,
+		puURL:                    puBytes,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := served[r.URL.Path]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	app, _ = testApp(t)
+	anchor = app.paths.root
+	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure"}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+	// Register the initramfs root the dependency is placed into.
+	if err := cmdRoot(app, []string{"add", "initramfs", "boot/initramfs"}); err != nil {
+		t.Fatalf("root add: %v", err)
+	}
+	if err := cmdInstall(app, []string{"live-boot", "--yes"}); err != nil {
+		t.Fatalf("cross-root install: %v", err)
+	}
+	return app, anchor, filepath.Join(anchor, "boot/initramfs")
+}
+
+// TestCrossRootInstallEndToEnd installs live-boot, whose dependency is
+// placed `IN initramfs`: live-boot must land in the anchor root and
+// peiosutils in the registered initramfs root, recorded in each root's own
+// database under a shared cross-root id.
+func TestCrossRootInstallEndToEnd(t *testing.T) {
+	app, anchor, initramfs := installLiveBootCrossRoot(t)
+
+	if b, err := os.ReadFile(filepath.Join(anchor, "usr/bin/live-boot")); err != nil || string(b) != "live-boot" {
+		t.Errorf("live-boot in anchor: %q err %v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(initramfs, "bin/peiosutils")); err != nil || string(b) != "peiosutils" {
+		t.Errorf("peiosutils in initramfs: %q err %v", b, err)
+	}
+	// peiosutils must NOT have been installed into the anchor.
+	if _, err := os.Stat(filepath.Join(anchor, "bin/peiosutils")); !os.IsNotExist(err) {
+		t.Errorf("peiosutils should not be in the anchor root: %v", err)
+	}
+
+	// Each root's database records its own package, sharing one cross-root id.
+	ctx := context.Background()
+	anchorDB, _ := app.openDBAt(ctx, anchor)
+	defer anchorDB.Close()
+	irfDB, _ := app.openDBAt(ctx, initramfs)
+	defer irfDB.Close()
+	if _, found, _ := anchorDB.GetPackage(ctx, "live-boot"); !found {
+		t.Error("anchor database missing live-boot")
+	}
+	if _, found, _ := irfDB.GetPackage(ctx, "peiosutils"); !found {
+		t.Error("initramfs database missing peiosutils")
+	}
+	anchorTxns, _ := anchorDB.ListTxns(ctx, 0)
+	irfTxns, _ := irfDB.ListTxns(ctx, 0)
+	if len(anchorTxns) != 1 || len(irfTxns) != 1 {
+		t.Fatalf("expected one txn per root, got anchor=%d irf=%d", len(anchorTxns), len(irfTxns))
+	}
+	if anchorTxns[0].CrossRootID == "" || anchorTxns[0].CrossRootID != irfTxns[0].CrossRootID {
+		t.Errorf("roots should share one cross-root id: anchor=%q irf=%q",
+			anchorTxns[0].CrossRootID, irfTxns[0].CrossRootID)
+	}
+}
+
+// TestCrossRootUndoEndToEnd undoes a cross-root install as a unit: undoing
+// live-boot must remove it from the anchor AND remove peiosutils from the
+// initramfs root — never leave the other root's packages orphaned.
+func TestCrossRootUndoEndToEnd(t *testing.T) {
+	app, anchor, initramfs := installLiveBootCrossRoot(t)
+
+	if err := cmdUndo(app, []string{"--yes"}); err != nil {
+		t.Fatalf("cross-root undo: %v", err)
+	}
+
+	// Both payloads are gone from both roots.
+	if _, err := os.Stat(filepath.Join(anchor, "usr/bin/live-boot")); !os.IsNotExist(err) {
+		t.Errorf("live-boot should be removed from the anchor: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(initramfs, "bin/peiosutils")); !os.IsNotExist(err) {
+		t.Errorf("peiosutils should be removed from the initramfs root: %v", err)
+	}
+	// Both databases no longer record the packages.
+	ctx := context.Background()
+	anchorDB, _ := app.openDBAt(ctx, anchor)
+	defer anchorDB.Close()
+	irfDB, _ := app.openDBAt(ctx, initramfs)
+	defer irfDB.Close()
+	if _, found, _ := anchorDB.GetPackage(ctx, "live-boot"); found {
+		t.Error("live-boot still recorded in the anchor after undo")
+	}
+	if _, found, _ := irfDB.GetPackage(ctx, "peiosutils"); found {
+		t.Error("peiosutils still recorded in the initramfs root after undo")
 	}
 }

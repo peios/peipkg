@@ -14,6 +14,7 @@ import (
 	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/resolver"
 )
 
 // TestFetchAndAssemble runs the fetch and assemble stages end to end
@@ -137,6 +138,88 @@ func TestFetchAndAssemble(t *testing.T) {
 	}
 }
 
+// TestAssembleMaterializesClaims composes a root from a single claim-holding
+// package (a prelude-shaped provider of the `init` role) and verifies the
+// claim is reconciled: the holder and link rows are recorded, and the symlink
+// is materialised in the root. peipkg-compose has no prior state, so the
+// holder is auto-claimed and the provider's default path becomes the link.
+func TestAssembleMaterializesClaims(t *testing.T) {
+	bin := []byte("\x7fELF prelude\n")
+	entries := []testEntry{
+		{Path: "usr", IsDir: true},
+		{Path: "usr/sbin", IsDir: true},
+		{Path: "usr/sbin/prelude", Content: bin},
+	}
+	manifestJSON := providerManifestJSON(t, "prelude", "0.0.1-1", "x86_64",
+		int64(len(bin)), "init", "bin", "/usr/sbin/prelude", "/init")
+	raw := buildPeipkg(t, manifestJSON, entries)
+	if _, err := archive.VerifyFormat(bytes.NewReader(raw)); err != nil {
+		t.Fatalf("archive.VerifyFormat rejected the test .peipkg: %v", err)
+	}
+
+	sum := sha256.Sum256(raw)
+	hash := hex.EncodeToString(sum[:])
+	sourceDate := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	pkgURL := "https://pkgs.peios.org/pool/prelude.peipkg"
+
+	m := Manifest{Arch: "x86_64", SourceDate: sourceDate, Packages: []PackageRequest{{Name: "prelude"}}}
+	lock := Lock{
+		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Packages: []LockedPackage{{
+			Name: "prelude", Version: "0.0.1-1", Architecture: "x86_64",
+			Source: "official", URL: pkgURL, Hash: hash,
+		}},
+	}
+	ctx := context.Background()
+	fetched, err := fetchAll(ctx, lock, fakeFetcher{pkgURL: raw})
+	if err != nil {
+		t.Fatalf("fetchAll: %v", err)
+	}
+
+	root := filepath.Join(t.TempDir(), "root")
+	if err := assemble(ctx, root, m, fetched); err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+
+	// The claim symlink /init -> /usr/sbin/prelude is materialised.
+	info, err := os.Lstat(filepath.Join(root, "init"))
+	if err != nil {
+		t.Fatalf("/init not materialised: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("/init is not a symlink (mode %v)", info.Mode())
+	}
+	// The on-disk link is relative (self-contained root); the DB keeps the
+	// absolute logical target (asserted below).
+	if target, err := os.Readlink(filepath.Join(root, "init")); err != nil {
+		t.Errorf("readlink /init: %v", err)
+	} else if target != "usr/sbin/prelude" {
+		t.Errorf("/init -> %q, want usr/sbin/prelude", target)
+	}
+
+	// The holder and link rows were recorded in the seed transaction.
+	store, err := db.Open(ctx, filepath.Join(root, "var/lib/peipkg/db.sqlite"))
+	if err != nil {
+		t.Fatalf("opening seeded db: %v", err)
+	}
+	defer store.Close()
+
+	holders, err := store.ClaimHolders(ctx)
+	if err != nil {
+		t.Fatalf("claim holders: %v", err)
+	}
+	if len(holders) != 1 || holders[0].Role != "init" || holders[0].Holder != "prelude" {
+		t.Errorf("claim holders = %+v, want init -> prelude", holders)
+	}
+	links, err := store.ClaimLinks(ctx)
+	if err != nil {
+		t.Fatalf("claim links: %v", err)
+	}
+	if len(links) != 1 || links[0].Path != "/init" || links[0].Target != "/usr/sbin/prelude" {
+		t.Errorf("claim links = %+v, want /init -> /usr/sbin/prelude", links)
+	}
+}
+
 // TestFetchHashMismatch confirms the fetch stage rejects a package whose
 // bytes do not hash to the lock's recorded value.
 func TestFetchHashMismatch(t *testing.T) {
@@ -169,6 +252,65 @@ func TestBuildFlagConflict(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("got %v, want a mutual-exclusion error", err)
+	}
+}
+
+func TestEnsureLockMatchesManifestDigest(t *testing.T) {
+	sourceDate := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	first := Manifest{
+		Arch: "x86_64", SourceDate: sourceDate,
+		Packages: []PackageRequest{{Name: "foo"}},
+	}
+	second := first
+	second.Packages = []PackageRequest{{Name: "bar"}}
+	lock := Lock{
+		Arch: first.Arch, SourceDate: first.SourceDate,
+		ManifestDigest: manifestDigest(first),
+		Packages: []LockedPackage{{
+			Name: "foo", Version: "1.0-1", Architecture: "x86_64",
+			Source: LocalSource, URL: "/tmp/foo.peipkg", Hash: strings.Repeat("a", 64),
+		}},
+	}
+	if err := ensureLockMatches(lock, first); err != nil {
+		t.Fatalf("ensureLockMatches(first): %v", err)
+	}
+	if err := ensureLockMatches(lock, second); err == nil ||
+		!strings.Contains(err.Error(), "manifest_digest") {
+		t.Fatalf("ensureLockMatches(second) = %v, want manifest_digest mismatch", err)
+	}
+}
+
+func TestLocalCandidatesResolveRelativeToManifestDir(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "pkgs")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir pkgs: %v", err)
+	}
+	payload := []byte("x")
+	raw := buildPeipkg(t,
+		minimalManifestJSON(t, "foo", "1.0-1", "x86_64", int64(len(payload))),
+		[]testEntry{{Path: "usr/bin/foo", Content: payload}})
+	pkgPath := filepath.Join(pkgDir, "foo.peipkg")
+	if err := os.WriteFile(pkgPath, raw, 0o644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	other := t.TempDir()
+	if err := os.Chdir(other); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+
+	candidates, err := localCandidates([]string{"pkgs/*.peipkg"}, dir)
+	if err != nil {
+		t.Fatalf("localCandidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].URL != pkgPath {
+		t.Fatalf("candidates = %+v, want one candidate at %s", candidates, pkgPath)
 	}
 }
 
@@ -212,6 +354,11 @@ name = "foo"
 			Hash:         hex.EncodeToString(sum[:]),
 		}},
 	}
+	m, err := LoadManifest(manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	lock.ManifestDigest = manifestDigest(m)
 	encoded, err := lock.Encode()
 	if err != nil {
 		t.Fatalf("encoding lock: %v", err)
@@ -235,5 +382,126 @@ name = "foo"
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "var/lib/peipkg/db.sqlite")); err != nil {
 		t.Fatalf("seeded database missing: %v", err)
+	}
+}
+
+// TestAssembleMultiRoot builds an image spanning two roots: foo into the
+// anchor and bar into a declared initramfs root. Each package must land in
+// its own root with its own seeded database, and the anchor's database
+// must carry the named-root registry so the booted image resolves
+// `--root initramfs`.
+func TestAssembleMultiRoot(t *testing.T) {
+	ctx := context.Background()
+	sourceDate := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	fooRaw := buildPeipkg(t, minimalManifestJSON(t, "foo", "1.0-1", "x86_64", 4),
+		[]testEntry{{Path: "usr", IsDir: true}, {Path: "usr/bin", IsDir: true},
+			{Path: "usr/bin/foo", Content: []byte("fooo")}})
+	barRaw := buildPeipkg(t, minimalManifestJSON(t, "bar", "1.0-1", "x86_64", 4),
+		[]testEntry{{Path: "bin", IsDir: true}, {Path: "bin/bar", Content: []byte("barr")}})
+	fooSum, barSum := sha256.Sum256(fooRaw), sha256.Sum256(barRaw)
+	fooURL, barURL := "https://r/foo.peipkg", "https://r/bar.peipkg"
+
+	m := Manifest{
+		Arch: "x86_64", SourceDate: sourceDate,
+		Repositories: []config.RepoConfig{{
+			Name: "official", BaseURL: "https://r", Priority: 10,
+			SignaturePolicy: config.PolicyRequired, TrustAnchors: []string{strings.Repeat("a", 64)},
+		}},
+		Roots:    []Root{{Name: "initramfs", Path: "boot/initramfs"}},
+		Packages: []PackageRequest{{Name: "foo"}, {Name: "bar", Root: "initramfs"}},
+	}
+	lock := Lock{
+		Arch: m.Arch, SourceDate: sourceDate,
+		Packages: []LockedPackage{
+			{Name: "foo", Version: "1.0-1", Architecture: "x86_64", Source: "official",
+				URL: fooURL, Hash: hex.EncodeToString(fooSum[:])}, // Root "" → anchor
+			{Name: "bar", Version: "1.0-1", Architecture: "x86_64", Source: "official",
+				URL: barURL, Hash: hex.EncodeToString(barSum[:]), Root: "boot/initramfs"},
+		},
+	}
+	fetched, err := fetchAll(ctx, lock, fakeFetcher{fooURL: fooRaw, barURL: barRaw})
+	if err != nil {
+		t.Fatalf("fetchAll: %v", err)
+	}
+
+	out := filepath.Join(t.TempDir(), "image")
+	if err := assemble(ctx, out, m, fetched); err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+
+	irf := filepath.Join(out, "boot/initramfs")
+	// Payloads landed in their respective roots, and nowhere else.
+	if _, err := os.Stat(filepath.Join(out, "usr/bin/foo")); err != nil {
+		t.Errorf("foo not in anchor: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(irf, "bin/bar")); err != nil {
+		t.Errorf("bar not in initramfs: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "bin/bar")); !os.IsNotExist(err) {
+		t.Errorf("bar should not be in the anchor: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(irf, "usr/bin/foo")); !os.IsNotExist(err) {
+		t.Errorf("foo should not be in the initramfs: %v", err)
+	}
+
+	// Anchor DB: records foo and the named-root registry entry.
+	anchorDB, err := db.Open(ctx, filepath.Join(out, "var/lib/peipkg/db.sqlite"))
+	if err != nil {
+		t.Fatalf("open anchor db: %v", err)
+	}
+	defer anchorDB.Close()
+	if _, found, _ := anchorDB.GetPackage(ctx, "foo"); !found {
+		t.Error("anchor db missing foo")
+	}
+	if _, found, _ := anchorDB.GetPackage(ctx, "bar"); found {
+		t.Error("anchor db should not record bar")
+	}
+	if path, found, _ := anchorDB.NamedRoot(ctx, "initramfs"); !found || path != "boot/initramfs" {
+		t.Errorf("anchor registry: got %q found=%v, want boot/initramfs", path, found)
+	}
+
+	// Initramfs DB: records bar, with its own state directory.
+	irfDB, err := db.Open(ctx, filepath.Join(irf, "var/lib/peipkg/db.sqlite"))
+	if err != nil {
+		t.Fatalf("open initramfs db: %v", err)
+	}
+	defer irfDB.Close()
+	if _, found, _ := irfDB.GetPackage(ctx, "bar"); !found {
+		t.Error("initramfs db missing bar")
+	}
+}
+
+// TestPackageRootKey covers the placement precedence a top-level
+// [[package]] inherits from `peipkg install`: explicit root wins, else
+// default_root, else the anchor; an undeclared default_root is an error.
+func TestPackageRootKey(t *testing.T) {
+	refs := map[string]string{"initramfs": "boot/initramfs"}
+	cands := []resolver.Candidate{
+		{Name: "live-boot", DefaultRoot: "initramfs"},
+		{Name: "ordinary"},
+		{Name: "stray", DefaultRoot: "ghost"},
+	}
+	cases := []struct {
+		req  PackageRequest
+		want string
+		err  bool
+	}{
+		{PackageRequest{Name: "ordinary", Root: "initramfs"}, "boot/initramfs", false}, // explicit wins
+		{PackageRequest{Name: "live-boot"}, "boot/initramfs", false},                   // default_root
+		{PackageRequest{Name: "ordinary"}, "", false},                                  // anchor
+		{PackageRequest{Name: "stray"}, "", true},                                      // undeclared default_root
+	}
+	for _, tc := range cases {
+		got, err := packageRootKey(tc.req, cands, refs)
+		if tc.err {
+			if err == nil {
+				t.Errorf("%+v: expected an error", tc.req)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("%+v: got %q err %v, want %q", tc.req, got, err, tc.want)
+		}
 	}
 }

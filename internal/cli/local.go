@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,17 +49,22 @@ func readLocalPackage(path string) (resolver.Candidate, error) {
 	if err != nil {
 		return resolver.Candidate{}, fmt.Errorf("install: %s: %w", path, err)
 	}
+	sum := sha256.Sum256(raw)
 	m := pkg.Manifest
 	return resolver.Candidate{
-		Name:         m.Name,
-		Version:      m.Version,
-		Architecture: m.Architecture,
-		Dependencies: m.Dependencies,
-		Conflicts:    m.Conflicts,
-		Provides:     m.Provides,
-		Replaces:     m.Replaces,
-		Repo:         "", // an empty Repo marks a local-file candidate
-		RepoPriority: 0,  // an explicit local file outranks repo versions
-		URL:          abs,
+		Name:           m.Name,
+		Version:        m.Version,
+		Architecture:   m.Architecture,
+		Dependencies:   m.Dependencies,
+		Conflicts:      m.Conflicts,
+		Provides:       m.Provides,
+		Replaces:       m.Replaces,
+		Repo:           "", // an empty Repo marks a local-file candidate
+		RepoPriority:   0,  // an explicit local file outranks repo versions
+		DefaultRoot:    m.DefaultRoot,
+		URL:            abs,
+		Hash:           hex.EncodeToString(sum[:]),
+		SizeCompressed: int64(len(raw)),
+		SizeInstalled:  m.SizeInstalled,
 	}, nil
 }

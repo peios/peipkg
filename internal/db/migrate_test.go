@@ -14,8 +14,8 @@ func TestOpenFreshDatabaseReachesLatestSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 1 {
-		t.Errorf("schema version of a fresh database: got %d, want 1", v)
+	if v != 6 {
+		t.Errorf("schema version of a fresh database: got %d, want 6", v)
 	}
 }
 
@@ -40,8 +40,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 	}
 	defer second.Close()
 
-	if v, err := second.SchemaVersion(ctx); err != nil || v != 1 {
-		t.Errorf("schema version after reopen: got %d (err %v), want 1", v, err)
+	if v, err := second.SchemaVersion(ctx); err != nil || v != 6 {
+		t.Errorf("schema version after reopen: got %d (err %v), want 6", v, err)
 	}
 	if _, found, err := second.GetPackage(ctx, "persisted"); err != nil || !found {
 		t.Errorf("data did not survive reopen: found=%v err=%v", found, err)
@@ -82,6 +82,7 @@ func TestSchemaShape(t *testing.T) {
 
 	for _, table := range []string{
 		"meta", "package", "package_file", "repository", "txn", "txn_op", "txn_file",
+		"txn_dir", "named_root",
 	} {
 		if !objectExists(t, raw, "table", table) {
 			t.Errorf("expected table %q to exist", table)
@@ -89,6 +90,7 @@ func TestSchemaShape(t *testing.T) {
 	}
 	for _, index := range []string{
 		"idx_package_file_collision", "idx_package_file_path", "idx_txn_one_pending",
+		"idx_txn_cross_root",
 	} {
 		if !objectExists(t, raw, "index", index) {
 			t.Errorf("expected index %q to exist", index)

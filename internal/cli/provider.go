@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 
@@ -31,7 +33,7 @@ func (p *repoProvider) Provide(ctx context.Context, op resolver.Operation) (inst
 	// is a filesystem path, read and format-validated rather than
 	// fetched and verified against a repository (§ local install).
 	if op.Candidate.Repo == "" {
-		return provideLocal(op.Candidate.URL)
+		return provideLocal(*op.Candidate)
 	}
 	cfg, ok := p.configs[op.Candidate.Repo]
 	if !ok {
@@ -43,20 +45,48 @@ func (p *repoProvider) Provide(ctx context.Context, op resolver.Operation) (inst
 	if err != nil {
 		return install.ProvidedPackage{}, err
 	}
+	if err := verifyCandidatePackage(*op.Candidate, pkg, "repository package "+op.Candidate.URL); err != nil {
+		return install.ProvidedPackage{}, err
+	}
 	return install.ProvidedPackage{Pkg: pkg, Archive: bytes.NewReader(raw)}, nil
 }
 
 // provideLocal reads and format-validates a local .peipkg for a raw
 // install. The file is re-read here, at staging time, so a change
 // between planning and staging is caught by the format checks.
-func provideLocal(path string) (install.ProvidedPackage, error) {
+func provideLocal(c resolver.Candidate) (install.ProvidedPackage, error) {
+	path := c.URL
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return install.ProvidedPackage{}, fmt.Errorf("reading local package %s: %w", path, err)
+	}
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != c.Hash {
+		return install.ProvidedPackage{}, fmt.Errorf(
+			"local package %s hash mismatch (got %s, want %s)", path, got, c.Hash)
 	}
 	pkg, err := archive.VerifyFormat(bytes.NewReader(raw))
 	if err != nil {
 		return install.ProvidedPackage{}, fmt.Errorf("local package %s: %w", path, err)
 	}
+	if err := verifyCandidatePackage(c, pkg, "local package "+path); err != nil {
+		return install.ProvidedPackage{}, err
+	}
 	return install.ProvidedPackage{Pkg: pkg, Archive: bytes.NewReader(raw)}, nil
+}
+
+func verifyCandidatePackage(c resolver.Candidate, pkg *archive.Package, label string) error {
+	if pkg.Manifest.Name != c.Name {
+		return fmt.Errorf("%s carries manifest for package %q, planned %q",
+			label, pkg.Manifest.Name, c.Name)
+	}
+	if !pkg.Manifest.Version.Equal(c.Version) {
+		return fmt.Errorf("%s carries manifest version %s, planned %s",
+			label, pkg.Manifest.Version, c.Version)
+	}
+	if pkg.Manifest.Architecture != c.Architecture {
+		return fmt.Errorf("%s carries architecture %q, planned %q",
+			label, pkg.Manifest.Architecture, c.Architecture)
+	}
+	return nil
 }

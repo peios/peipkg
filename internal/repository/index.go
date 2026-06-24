@@ -37,6 +37,10 @@ type IndexEntry struct {
 	Description  string
 	License      string
 	Homepage     string
+	// DefaultRoot is the package's top-level placement preference, carried
+	// in the index (§6.2.4) so a consumer can plan placement before
+	// fetching the package. "" when absent.
+	DefaultRoot string
 
 	Dependencies         []manifest.Dependency
 	OptionalDependencies []manifest.Dependency
@@ -82,6 +86,7 @@ type wireIndexEntry struct {
 	Description  string  `json:"description"`
 	License      string  `json:"license"`
 	Homepage     string  `json:"homepage"`
+	DefaultRoot  string  `json:"default_root"`
 
 	Dependencies         json.RawMessage `json:"dependencies"`
 	OptionalDependencies json.RawMessage `json:"optional_dependencies"`
@@ -194,7 +199,14 @@ func decodeIndexEntry(w wireIndexEntry) (IndexEntry, error) {
 		Description:  w.Description,
 		License:      w.License,
 		Homepage:     w.Homepage,
+		DefaultRoot:  w.DefaultRoot,
 		URL:          *w.URL,
+	}
+	// §6.2.4: default_root is a root reference (§3.3.6) when present.
+	if w.DefaultRoot != "" {
+		if err := manifest.ValidateRootRef(w.DefaultRoot); err != nil {
+			return IndexEntry{}, fmt.Errorf("default_root: %w", err)
+		}
 	}
 	ver, err := version.Parse(*w.Version)
 	if err != nil {
@@ -219,14 +231,16 @@ func decodeIndexEntry(w wireIndexEntry) (IndexEntry, error) {
 	}
 	entry.Hash = *w.Hash.Value
 
-	if entry.Dependencies, err = manifest.DecodeDependencyArray("dependencies", w.Dependencies); err != nil {
+	if entry.Dependencies, err = manifest.DecodeDependencyArray(
+		"dependencies", w.Dependencies, true); err != nil {
 		return IndexEntry{}, err
 	}
 	if entry.OptionalDependencies, err = manifest.DecodeDependencyArray(
-		"optional_dependencies", w.OptionalDependencies); err != nil {
+		"optional_dependencies", w.OptionalDependencies, true); err != nil {
 		return IndexEntry{}, err
 	}
-	if entry.Conflicts, err = manifest.DecodeDependencyArray("conflicts", w.Conflicts); err != nil {
+	if entry.Conflicts, err = manifest.DecodeDependencyArray(
+		"conflicts", w.Conflicts, false); err != nil {
 		return IndexEntry{}, err
 	}
 	if entry.Provides, err = manifest.DecodeProvidesArray(w.Provides); err != nil {

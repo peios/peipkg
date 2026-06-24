@@ -1,6 +1,7 @@
 format = "peipkg"
 
 [package]
+name = "peipkg"
 version      = "0.1.1-1"
 architecture = "x86_64"
 description  = "Peios package manager client (peipkg consumer; static, CGO-free)"

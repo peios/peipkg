@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/peios/peipkg/internal/audit"
@@ -17,17 +18,42 @@ func (app *App) presentPlan(plan resolver.Plan) {
 	}
 	app.printf("the following changes will be made:\n")
 	for _, op := range plan.Operations {
-		app.printf("  %s\n", describeOp(op))
+		app.printf("  %s\n", describeOp(op, app.paths.root))
 	}
 	for _, a := range plan.Authorizations {
 		app.printf("  ! elevated: %s\n", a.Detail)
 	}
+	// Loud cross-root plans (DESIGN-named-roots.md): if an operation
+	// touches a root other than the one invoked, say so prominently before
+	// the confirmation gate — installing "into a second filesystem image"
+	// is unfamiliar and must never be silent.
+	if others := otherRoots(plan, app.paths.root); len(others) > 0 {
+		app.printf("note: this also changes other roots: %s\n", strings.Join(others, ", "))
+	}
+}
+
+// otherRoots returns the distinct operation roots that are not the
+// anchor, sorted — the roots a cross-root plan reaches beyond the one the
+// operator invoked.
+func otherRoots(plan resolver.Plan, anchor string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, op := range plan.Operations {
+		if op.Root != "" && op.Root != anchor && !seen[op.Root] {
+			seen[op.Root] = true
+			out = append(out, op.Root)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // describeOp renders one planned operation. A package supplied as a
 // local file — recognised by an empty candidate Repo — is marked, so
-// the operator sees that the repository trust layer was skipped.
-func describeOp(op resolver.Operation) string {
+// the operator sees that the repository trust layer was skipped. An
+// operation whose target root differs from anchor is tagged with that
+// root, so a cross-root effect is visible per line.
+func describeOp(op resolver.Operation, anchor string) string {
 	var s string
 	switch op.Kind {
 	case resolver.OpInstall:
@@ -41,6 +67,9 @@ func describeOp(op resolver.Operation) string {
 	}
 	if op.Candidate != nil && op.Candidate.Repo == "" {
 		s += "  (local file)"
+	}
+	if op.Root != "" && op.Root != anchor {
+		s += "  -> " + op.Root
 	}
 	return s
 }

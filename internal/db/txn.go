@@ -17,10 +17,22 @@ import (
 // later (possibly different) peipkg can tell whether it understands a
 // crashed transaction well enough to recover it.
 func (x *queries) BeginTxn(ctx context.Context, startedByVersion string, journalSchemaVersion int) (int64, error) {
+	return x.BeginCrossRootTxn(ctx, startedByVersion, journalSchemaVersion, "")
+}
+
+// BeginCrossRootTxn opens a transaction like [queries.BeginTxn], tagging
+// it with a cross-root transaction id (DESIGN-named-roots.md). An empty
+// crossRootID stores SQL NULL — an ordinary single-root transaction, the
+// behaviour [queries.BeginTxn] gives. A non-empty id ties this root's row
+// to the other roots of one logical cross-root transaction, so recovery
+// can reconcile them as a unit.
+func (x *queries) BeginCrossRootTxn(ctx context.Context, startedByVersion string,
+	journalSchemaVersion int, crossRootID string) (int64, error) {
+
 	result, err := x.q.ExecContext(ctx,
-		`INSERT INTO txn (state, started_at, started_by_version, journal_schema_version)
-		 VALUES ('pending', ?, ?, ?)`,
-		time.Now().Unix(), startedByVersion, journalSchemaVersion)
+		`INSERT INTO txn (state, started_at, started_by_version, journal_schema_version, cross_root_id)
+		 VALUES ('pending', ?, ?, ?, ?)`,
+		time.Now().Unix(), startedByVersion, journalSchemaVersion, nullString(crossRootID))
 	if err != nil {
 		return 0, fmt.Errorf("peipkg/db: begin txn: %w", err)
 	}
@@ -121,6 +133,66 @@ func (x *queries) ListTxns(ctx context.Context, limit int) ([]Txn, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("peipkg/db: list txns: %w", err)
+	}
+	return txns, nil
+}
+
+// SetCommitPayload stores a transaction's forward-commit payload — the
+// JSON state a cross-root recovery replays to roll the transaction forward
+// (DESIGN-named-roots.md). It is written at prepare time, only for a
+// cross-root transaction.
+func (x *queries) SetCommitPayload(ctx context.Context, txnID int64, payload string) error {
+	if _, err := x.q.ExecContext(ctx,
+		"UPDATE txn SET commit_payload = ? WHERE id = ?", payload, txnID); err != nil {
+		return fmt.Errorf("peipkg/db: set commit payload for txn %d: %w", txnID, err)
+	}
+	return nil
+}
+
+// CommitPayload returns a transaction's forward-commit payload. found is
+// false when none was stored (every single-root transaction, and any
+// transaction predating the payload). The column is deliberately absent
+// from the shared txn-row queries: the blob is large and read only on the
+// recovery path.
+func (x *queries) CommitPayload(ctx context.Context, txnID int64) (payload string, found bool, err error) {
+	var raw sql.NullString
+	err = x.q.QueryRowContext(ctx,
+		"SELECT commit_payload FROM txn WHERE id = ?", txnID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("peipkg/db: read commit payload for txn %d: %w", txnID, err)
+	}
+	if !raw.Valid {
+		return "", false, nil
+	}
+	return raw.String, true, nil
+}
+
+// TxnsByCrossRootID returns this root's transactions tagged with the
+// given cross-root id, newest first. A cross-root transaction puts at most
+// one row per root, so in one root this is zero or one row — but recovery
+// queries every participating root to reconcile them as a unit
+// (DESIGN-named-roots.md).
+func (x *queries) TxnsByCrossRootID(ctx context.Context, crossRootID string) ([]Txn, error) {
+	rows, err := x.q.QueryContext(ctx,
+		selectTxn+" WHERE cross_root_id = ? ORDER BY id DESC", crossRootID)
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/db: list txns by cross-root id: %w", err)
+	}
+	defer rows.Close()
+
+	var txns []Txn
+	for rows.Next() {
+		txn, err := scanTxn(rows)
+		if err != nil {
+			return nil, fmt.Errorf("peipkg/db: list txns by cross-root id: %w", err)
+		}
+		txns = append(txns, txn)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("peipkg/db: list txns by cross-root id: %w", err)
 	}
 	return txns, nil
 }
@@ -250,26 +322,78 @@ func (x *queries) TxnFiles(ctx context.Context, txnID int64) ([]TxnFile, error) 
 	return files, nil
 }
 
+// InsertTxnDirs records directories a transaction may have created while
+// staging. The txn_id of each dir is taken from txnID; any TxnID set on
+// the structs is ignored.
+func (x *queries) InsertTxnDirs(ctx context.Context, txnID int64, dirs []TxnDir) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	stmt, err := x.q.PrepareContext(ctx,
+		`INSERT INTO txn_dir (txn_id, seq, path) VALUES (?, ?, ?)`)
+	if err != nil {
+		return fmt.Errorf("peipkg/db: prepare txn-dir insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, d := range dirs {
+		_, err := stmt.ExecContext(ctx, txnID, d.Seq, d.Path)
+		if err != nil {
+			return fmt.Errorf("peipkg/db: insert txn dir %q (txn %d): %w",
+				d.Path, txnID, err)
+		}
+	}
+	return nil
+}
+
+// TxnDirs returns a transaction's staging-created directories in
+// creation order. Recovery removes them in reverse order.
+func (x *queries) TxnDirs(ctx context.Context, txnID int64) ([]string, error) {
+	rows, err := x.q.QueryContext(ctx,
+		`SELECT path FROM txn_dir WHERE txn_id = ? ORDER BY seq`, txnID)
+	if err != nil {
+		return nil, fmt.Errorf("peipkg/db: list dirs of txn %d: %w", txnID, err)
+	}
+	defer rows.Close()
+
+	var dirs []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("peipkg/db: list dirs of txn %d: %w", txnID, err)
+		}
+		dirs = append(dirs, path)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("peipkg/db: list dirs of txn %d: %w", txnID, err)
+	}
+	return dirs, nil
+}
+
 // selectTxn is the column list shared by every txn-row query.
 const selectTxn = `SELECT id, state, started_at, finished_at, op_summary,
-	started_by_version, journal_schema_version FROM txn`
+	started_by_version, journal_schema_version, cross_root_id FROM txn`
 
 // scanTxn reads one txn row.
 func scanTxn(s scanner) (Txn, error) {
 	var (
-		txn        Txn
-		state      string
-		startedAt  int64
-		finishedAt sql.NullInt64
+		txn         Txn
+		state       string
+		startedAt   int64
+		finishedAt  sql.NullInt64
+		crossRootID sql.NullString
 	)
 	if err := s.Scan(&txn.ID, &state, &startedAt, &finishedAt, &txn.OpSummary,
-		&txn.StartedByVersion, &txn.JournalSchemaVersion); err != nil {
+		&txn.StartedByVersion, &txn.JournalSchemaVersion, &crossRootID); err != nil {
 		return Txn{}, err
 	}
 	txn.State = TxnState(state)
 	txn.StartedAt = time.Unix(startedAt, 0)
 	if finishedAt.Valid {
 		txn.FinishedAt = time.Unix(finishedAt.Int64, 0)
+	}
+	if crossRootID.Valid {
+		txn.CrossRootID = crossRootID.String
 	}
 	return txn, nil
 }

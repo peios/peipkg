@@ -10,12 +10,18 @@
 package compose
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/peios/peipkg/internal/config"
+	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/version"
 )
 
@@ -46,12 +52,45 @@ type Manifest struct {
 	// host that join the resolver's candidate set — the bootstrap path
 	// for packages not yet served by any repository.
 	LocalPackages []string
+	// LocalPackageBaseDir is the directory relative local package
+	// patterns are resolved against. LoadManifest sets it to the
+	// manifest's directory; DecodeManifest callers that leave it empty
+	// get the current working directory.
+	LocalPackageBaseDir string
+	// Roots are the named roots this image is composed of, beyond the
+	// output root itself (DESIGN-named-roots.md). Each is registered in
+	// the built image's anchor database, and a package may be placed into
+	// one. Empty for an ordinary single-root image.
+	Roots []Root
 	// Packages are the top-level package requests: what the operator
 	// asked for, by name and an optional version constraint.
 	Packages []PackageRequest
 }
 
-// PackageRequest is one top-level [[package]] entry of a manifest.
+// Root is one named root of a composed image: a name and a path relative
+// to the output root. Each [[root]] becomes a named_root registry entry
+// in the built image's anchor, so the booted system resolves `--root
+// <name>` and cascades into it.
+type Root struct {
+	Name string
+	Path string
+}
+
+// rootRefs maps each declared root name to its path relative to the
+// output root — the reference map the multi-root resolver routes a
+// dependency's `root` placement through.
+func (m Manifest) rootRefs() map[string]string {
+	refs := make(map[string]string, len(m.Roots))
+	for _, r := range m.Roots {
+		refs[r.Name] = r.Path
+	}
+	return refs
+}
+
+// PackageRequest is one top-level [[package]] entry of a manifest. Each is
+// evaluated exactly as `peipkg install <Name> [--root <Root>]` would be:
+// Root acts as an explicit --root, and a package that declares neither
+// Root nor a default_root lands in the output (anchor) root.
 type PackageRequest struct {
 	// Name is the package to install.
 	Name string
@@ -62,6 +101,10 @@ type PackageRequest struct {
 	// Repository, when set, pins the request to a single source
 	// repository; empty lets any configured repository satisfy it.
 	Repository string
+	// Root names the root this package is installed into, like a `--root`
+	// on a `peipkg install`. It must name a declared [[root]]. Empty means
+	// standard placement: the package's own default_root, else the anchor.
+	Root string
 }
 
 // wireManifest mirrors the manifest's TOML shape for decoding. A
@@ -72,8 +115,14 @@ type wireManifest struct {
 	Arch          *string          `toml:"arch"`
 	SourceDate    *string          `toml:"source_date"`
 	Repositories  []wireRepository `toml:"repository"`
+	Roots         []wireRoot       `toml:"root"`
 	LocalPackages []string         `toml:"local_packages"`
 	Packages      []wirePackage    `toml:"package"`
+}
+
+type wireRoot struct {
+	Name *string `toml:"name"`
+	Path *string `toml:"path"`
 }
 
 type wireRepository struct {
@@ -90,6 +139,7 @@ type wirePackage struct {
 	Name       *string `toml:"name"`
 	Version    string  `toml:"version"`
 	Repository string  `toml:"repository"`
+	Root       string  `toml:"root"`
 }
 
 // LoadManifest reads and decodes a manifest from a file.
@@ -98,7 +148,16 @@ func LoadManifest(path string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, fmt.Errorf("peipkg/compose: reading manifest: %w", err)
 	}
-	return DecodeManifest(data)
+	m, err := DecodeManifest(data)
+	if err != nil {
+		return Manifest{}, err
+	}
+	base, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("peipkg/compose: resolving manifest directory: %w", err)
+	}
+	m.LocalPackageBaseDir = base
+	return m, nil
 }
 
 // DecodeManifest parses and validates a manifest from its raw TOML
@@ -140,6 +199,10 @@ func DecodeManifest(data []byte) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	roots, err := decodeRoots(w.Roots)
+	if err != nil {
+		return Manifest{}, err
+	}
 	pkgs, err := decodePackageRequests(w.Packages, repos)
 	if err != nil {
 		return Manifest{}, err
@@ -147,13 +210,83 @@ func DecodeManifest(data []byte) (Manifest, error) {
 	if len(pkgs) == 0 {
 		return Manifest{}, fmt.Errorf("peipkg/compose: manifest requests no packages")
 	}
+	// A package's explicit root must name a declared [[root]] — the same
+	// "an unknown root is a hard error" stance the consumer takes.
+	declared := map[string]bool{}
+	for _, r := range roots {
+		declared[r.Name] = true
+	}
+	for _, p := range pkgs {
+		if p.Root != "" && !declared[p.Root] {
+			return Manifest{}, fmt.Errorf("peipkg/compose: package %q targets root %q, which no "+
+				"[[root]] declares", p.Name, p.Root)
+		}
+	}
+	base, err := os.Getwd()
+	if err != nil {
+		return Manifest{}, fmt.Errorf("peipkg/compose: resolving current directory: %w", err)
+	}
 	return Manifest{
-		Arch:          *w.Arch,
-		SourceDate:    sourceDate,
-		Repositories:  repos,
-		LocalPackages: w.LocalPackages,
-		Packages:      pkgs,
+		Arch:                *w.Arch,
+		SourceDate:          sourceDate,
+		Repositories:        repos,
+		Roots:               roots,
+		LocalPackages:       w.LocalPackages,
+		LocalPackageBaseDir: base,
+		Packages:            pkgs,
 	}, nil
+}
+
+// decodeRoots converts the manifest's [[root]] entries to named roots,
+// validating each name against the §3.3.6 grammar and each path as a
+// clean, relative, non-escaping path under the output root. Names are
+// flat (a nested root — a root with its own registry — is not declared
+// here); a duplicate name is an error.
+func decodeRoots(wires []wireRoot) ([]Root, error) {
+	roots := make([]Root, 0, len(wires))
+	seen := map[string]bool{}
+	for i, w := range wires {
+		if w.Name == nil || *w.Name == "" {
+			return nil, fmt.Errorf("peipkg/compose: root %d is missing %q", i, "name")
+		}
+		name := *w.Name
+		if w.Path == nil || *w.Path == "" {
+			return nil, fmt.Errorf("peipkg/compose: root %q is missing %q", name, "path")
+		}
+		if err := manifest.ValidateRootRef(name); err != nil {
+			return nil, fmt.Errorf("peipkg/compose: root name %w", err)
+		}
+		if strings.Contains(name, ".") {
+			return nil, fmt.Errorf("peipkg/compose: root name %q must be a single segment; "+
+				"nested roots are not declared with [[root]]", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("peipkg/compose: root %q is declared more than once", name)
+		}
+		seen[name] = true
+		clean, err := validateRootRelPath(*w.Path)
+		if err != nil {
+			return nil, fmt.Errorf("peipkg/compose: root %q: %w", name, err)
+		}
+		roots = append(roots, Root{Name: name, Path: clean})
+	}
+	return roots, nil
+}
+
+// validateRootRelPath checks a root path is relative to the output root,
+// clean, and does not escape it. It returns the cleaned path.
+func validateRootRelPath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return "", fmt.Errorf("path %q must be relative to the output root", p)
+	}
+	clean := filepath.Clean(p)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes the output root", p)
+	}
+	if clean == "." {
+		return "", fmt.Errorf("path %q is the output root itself", p)
+	}
+	return clean, nil
 }
 
 // decodeRepositories converts the manifest's [[repository]] entries to
@@ -209,12 +342,17 @@ func decodePackageRequests(wires []wirePackage, repos []config.RepoConfig) ([]Pa
 		if w.Name == nil || *w.Name == "" {
 			return nil, fmt.Errorf("peipkg/compose: package %d is missing %q", i, "name")
 		}
-		if seen[*w.Name] {
-			return nil, fmt.Errorf("peipkg/compose: package %q is requested more than once", *w.Name)
+		// Identity is (name, root): the same package may be requested in
+		// more than one root (a base library composed into both / and the
+		// initramfs), so a request is unique per (root, name).
+		key := w.Root + "\x00" + *w.Name
+		if seen[key] {
+			return nil, fmt.Errorf("peipkg/compose: package %q is requested more than once "+
+				"in root %q", *w.Name, w.Root)
 		}
-		seen[*w.Name] = true
+		seen[key] = true
 
-		req := PackageRequest{Name: *w.Name, Repository: w.Repository}
+		req := PackageRequest{Name: *w.Name, Repository: w.Repository, Root: w.Root}
 		// An omitted version, or the explicit `*`, is the zero
 		// constraint — any version, resolver's choice.
 		if w.Version != "" && w.Version != "*" {
@@ -251,3 +389,69 @@ func missingKey(key string) error {
 // ptr returns a pointer to v — a small helper for building the
 // pointer-typed wire structs when encoding.
 func ptr[T any](v T) *T { return &v }
+
+// manifestDigest returns a stable digest of the manifest fields that
+// influence resolution. It deliberately excludes the manifest filename,
+// which is lock provenance rather than build intent.
+func manifestDigest(m Manifest) string {
+	type repoDigest struct {
+		Name                   string   `json:"name"`
+		BaseURL                string   `json:"base_url"`
+		Priority               int      `json:"priority"`
+		SignaturePolicy        string   `json:"signature_policy"`
+		TrustAnchors           []string `json:"trust_anchors"`
+		AllowInsecureTransport bool     `json:"allow_insecure_transport"`
+		MinIndexVersion        int64    `json:"min_index_version"`
+	}
+	type packageDigest struct {
+		Name       string `json:"name"`
+		Constraint string `json:"constraint"`
+		Repository string `json:"repository"`
+	}
+	type digest struct {
+		Schema              int             `json:"schema"`
+		Arch                string          `json:"arch"`
+		SourceDate          string          `json:"source_date"`
+		Repositories        []repoDigest    `json:"repositories"`
+		LocalPackages       []string        `json:"local_packages"`
+		LocalPackageBaseDir string          `json:"local_package_base_dir"`
+		Packages            []packageDigest `json:"packages"`
+	}
+
+	d := digest{
+		Schema:              manifestSchema,
+		Arch:                m.Arch,
+		SourceDate:          m.SourceDate.UTC().Format(time.RFC3339),
+		LocalPackages:       append([]string(nil), m.LocalPackages...),
+		LocalPackageBaseDir: localPackageBaseDir(m),
+	}
+	for _, r := range m.Repositories {
+		d.Repositories = append(d.Repositories, repoDigest{
+			Name:                   r.Name,
+			BaseURL:                r.BaseURL,
+			Priority:               r.Priority,
+			SignaturePolicy:        string(r.SignaturePolicy),
+			TrustAnchors:           append([]string(nil), r.TrustAnchors...),
+			AllowInsecureTransport: r.AllowInsecureTransport,
+			MinIndexVersion:        r.MinIndexVersion,
+		})
+	}
+	for _, p := range m.Packages {
+		d.Packages = append(d.Packages, packageDigest{
+			Name: p.Name, Constraint: p.Constraint.String(), Repository: p.Repository,
+		})
+	}
+	raw, _ := json.Marshal(d) // d contains only JSON scalar and slice fields.
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func localPackageBaseDir(m Manifest) string {
+	if m.LocalPackageBaseDir != "" {
+		return m.LocalPackageBaseDir
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return "."
+}
