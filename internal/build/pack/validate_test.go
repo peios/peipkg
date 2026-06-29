@@ -96,6 +96,19 @@ func TestValidateRejectsBareUsrLib(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsOsRelease(t *testing.T) {
+	// /usr/lib/os-release is the freedesktop contract path: arch-independent and
+	// exempt from the triplet layout, so it is permitted directly under
+	// /usr/lib/ even in a noarch package, alongside the /etc compat symlink.
+	err := validateEntries("noarch", []entry{
+		{path: "usr/lib/os-release", kind: kindFile},
+		{path: "etc/os-release", kind: kindSymlink, linkTarget: "../usr/lib/os-release"},
+	})
+	if err != nil {
+		t.Errorf("expected accept of os-release + /etc symlink, got: %v", err)
+	}
+}
+
 func TestValidateAcceptsDebugTree(t *testing.T) {
 	// /usr/lib/debug/ holds separated debug information (§3.4.1) mirroring
 	// the install paths of the files it describes, plus the build-id index.

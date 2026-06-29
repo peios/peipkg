@@ -146,6 +146,14 @@ func validateLibPath(architecture, leafPath string) error {
 	rest := strings.TrimPrefix(leafPath, "usr/lib/")
 	first, _, ok := strings.Cut(rest, "/")
 	if !ok {
+		// freedesktop os-release: its location (/usr/lib/os-release) is a fixed
+		// external contract the ecosystem hard-codes, and the file is
+		// arch-independent — so it is exempt from the §3.4.2 triplet layout and
+		// permitted directly under /usr/lib/, including in a noarch package
+		// (e.g. peios-release-meta, which owns OS identity).
+		if rest == "os-release" {
+			return nil
+		}
 		return fmt.Errorf("%s sits directly under /usr/lib/ (§3.4.2 requires /usr/lib/<triplet>/<...>)", leafPath)
 	}
 
