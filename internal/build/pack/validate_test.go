@@ -12,6 +12,7 @@ func TestValidateAcceptsPermittedPaths(t *testing.T) {
 		{path: "usr/bin/foo", kind: kindFile},
 		{path: "usr/sbin/food", kind: kindFile},
 		{path: "usr/lib/x86_64-linux-peios/libfoo.so.1", kind: kindFile},
+		{path: "usr/libexec/peios/features.d/foo/install.sh", kind: kindFile},
 		{path: "usr/share/doc/foo/README", kind: kindFile},
 		{path: "usr/include/foo.h", kind: kindFile},
 		{path: "etc/foo/foo.conf", kind: kindFile},

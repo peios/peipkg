@@ -20,6 +20,7 @@ var permittedTopLevels = []string{
 	"usr/bin/",
 	"usr/sbin/", // system binaries (daemons, init/boot, service executables)
 	"usr/lib/",
+	"usr/libexec/", // arch-independent helper executables run by other programs, not on user PATH (e.g. feature lifecycle scripts); no triplet rule (that is scoped to usr/lib/)
 	"usr/share/",
 	"usr/include/",
 	"usr/src/debug/", // only the debug-source subtree of usr/src is a destination
