@@ -398,7 +398,8 @@ func TestAssembleMultiRoot(t *testing.T) {
 		[]testEntry{{Path: "usr", IsDir: true}, {Path: "usr/bin", IsDir: true},
 			{Path: "usr/bin/foo", Content: []byte("fooo")}})
 	barRaw := buildPeipkg(t, minimalManifestJSON(t, "bar", "1.0-1", "x86_64", 4),
-		[]testEntry{{Path: "bin", IsDir: true}, {Path: "bin/bar", Content: []byte("barr")}})
+		[]testEntry{{Path: "usr", IsDir: true}, {Path: "usr/bin", IsDir: true},
+			{Path: "usr/bin/bar", Content: []byte("barr")}})
 	fooSum, barSum := sha256.Sum256(fooRaw), sha256.Sum256(barRaw)
 	fooURL, barURL := "https://r/foo.peipkg", "https://r/bar.peipkg"
 
@@ -435,8 +436,21 @@ func TestAssembleMultiRoot(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, "usr/bin/foo")); err != nil {
 		t.Errorf("foo not in anchor: %v", err)
 	}
+	// bar's real payload is at usr/bin/bar; the compose-intrinsic usr-merge
+	// (/bin -> usr/bin, minted per-root) makes it resolve at the legacy path too.
 	if _, err := os.Stat(filepath.Join(irf, "bin/bar")); err != nil {
-		t.Errorf("bar not in initramfs: %v", err)
+		t.Errorf("bar not reachable via the initramfs usr-merge: %v", err)
+	}
+	// The merge is laid in every root, not just one: /bin is a symlink to usr/bin
+	// in both the anchor and the initramfs, and /lib64 points at the x86_64
+	// triplet dir so the ELF interpreter resolves.
+	for _, root := range []string{out, irf} {
+		if tgt, err := os.Readlink(filepath.Join(root, "bin")); err != nil || tgt != "usr/bin" {
+			t.Errorf("%s/bin -> %q (err %v), want usr/bin", root, tgt, err)
+		}
+		if tgt, err := os.Readlink(filepath.Join(root, "lib64")); err != nil || tgt != "usr/lib/x86_64-linux-peios" {
+			t.Errorf("%s/lib64 -> %q (err %v), want usr/lib/x86_64-linux-peios", root, tgt, err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(out, "bin/bar")); !os.IsNotExist(err) {
 		t.Errorf("bar should not be in the anchor: %v", err)
