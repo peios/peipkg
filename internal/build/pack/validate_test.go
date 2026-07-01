@@ -19,6 +19,7 @@ func TestValidateAcceptsPermittedPaths(t *testing.T) {
 		{path: "opt/foo/bin/foo", kind: kindFile},
 		{path: "system/boot/prelude/init", kind: kindFile},
 		{path: "hooks/mount-root.sh", kind: kindFile},
+		{path: "++/microcode/kernel/x86/microcode/GenuineIntel.bin", kind: kindFile},
 		{path: "var", kind: kindDir},
 		{path: "proc", kind: kindDir},
 		{path: "sys", kind: kindDir},

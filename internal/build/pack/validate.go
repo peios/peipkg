@@ -30,6 +30,7 @@ var permittedTopLevels = []string{
 	"boot/",
 	"system/",
 	"hooks/", // initramfs boot hooks — mkirf scans /hooks/ when packing the cpio
+	"++/",    // initramfs early-cpio segments — mkirf prepends /++/ uncompressed ahead of the main archive (CPU microcode, ACPI table overrides)
 }
 
 var permittedDirectoryOnlyRoots = map[string]bool{
