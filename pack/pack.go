@@ -133,6 +133,13 @@ type BuildInfo struct {
 	// SourcePackage names the corresponding-source package built from the
 	// same recipe and source, empty when none exists (§3.3.4).
 	SourcePackage string
+	// RecipeRef pins the recipe tree the build ran from — e.g.
+	// "git:<commit>", "+dirty"-suffixed for an uncommitted tree. Empty
+	// when the producer has no recipe identity to record (§3.3.4).
+	RecipeRef string
+	// Builder identifies the producing tool and its revision — e.g.
+	// "pekit/2f4c9a1b8d3e". Empty when unrecorded (§3.3.4).
+	Builder string
 }
 
 // PackOptions is everything Pack needs to emit one .peipkg. The payload
@@ -284,6 +291,8 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 			FarmID:        m.Build.FarmID,
 			SourceRef:     m.Build.SourceRef,
 			SourcePackage: m.Build.SourcePackage,
+			RecipeRef:     m.Build.RecipeRef,
+			Builder:       m.Build.Builder,
 		},
 	}, nil
 }

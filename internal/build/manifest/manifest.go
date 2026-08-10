@@ -104,6 +104,13 @@ type Build struct {
 	// format and uses omitempty: a package without one must emit bytes
 	// identical to a pre-source_package manifest.
 	SourcePackage string `json:"source_package,omitempty"`
+	// RecipeRef pins the recipe tree the build ran from (§3.3.4) — e.g.
+	// "git:<commit>", with "+dirty" when the tree had uncommitted
+	// changes. Optional, omitempty for the same byte-stability reason.
+	RecipeRef string `json:"recipe_ref,omitempty"`
+	// Builder identifies the producing tool and its own revision (§3.3.4)
+	// — e.g. "pekit/2f4c9a1b8d3e". Optional, omitempty likewise.
+	Builder string `json:"builder,omitempty"`
 }
 
 // ModTime parses Build.Timestamp into the time.Time used for every tar

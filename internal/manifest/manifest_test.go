@@ -437,3 +437,24 @@ func TestBuildSourcePackageAbsent(t *testing.T) {
 		t.Errorf("Build.SourcePackage: got %q, want empty for an absent field", got.Build.SourcePackage)
 	}
 }
+
+func TestBuildRecipeRefAndBuilder(t *testing.T) {
+	m := baseManifest()
+	build := m["build"].(map[string]any)
+	build["recipe_ref"] = "git:0123abcd+dirty"
+	build["builder"] = "pekit/2f4c9a1b8d3e"
+	got := mustDecode(t, m)
+	if got.Build.RecipeRef != "git:0123abcd+dirty" {
+		t.Errorf("Build.RecipeRef: got %q", got.Build.RecipeRef)
+	}
+	if got.Build.Builder != "pekit/2f4c9a1b8d3e" {
+		t.Errorf("Build.Builder: got %q", got.Build.Builder)
+	}
+
+	// Both are optional: absent decodes to empty.
+	got = mustDecode(t, baseManifest())
+	if got.Build.RecipeRef != "" || got.Build.Builder != "" {
+		t.Errorf("absent recipe_ref/builder: got %q / %q, want empty",
+			got.Build.RecipeRef, got.Build.Builder)
+	}
+}

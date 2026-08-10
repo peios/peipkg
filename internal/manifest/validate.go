@@ -541,10 +541,16 @@ func validateBuild(w wireBuild) (Build, error) {
 		return Build{}, fmt.Errorf("peipkg/manifest: build: timestamp: %w", err)
 	}
 	out := Build{Timestamp: ts, FarmID: *w.FarmID, SourceRef: *w.SourceRef}
-	// source_package is optional (§3.3.4): absent means the producer
-	// declared no corresponding-source package.
+	// source_package, recipe_ref, and builder are optional (§3.3.4):
+	// absent means the producer recorded nothing for them.
 	if w.SourcePackage != nil {
 		out.SourcePackage = *w.SourcePackage
+	}
+	if w.RecipeRef != nil {
+		out.RecipeRef = *w.RecipeRef
+	}
+	if w.Builder != nil {
+		out.Builder = *w.Builder
 	}
 	return out, nil
 }

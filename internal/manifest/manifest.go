@@ -134,4 +134,10 @@ type Build struct {
 	// SourcePackage names the corresponding-source package built from the
 	// same recipe and source; empty when the producer declared none.
 	SourcePackage string
+	// RecipeRef pins the recipe tree the build ran from; empty when the
+	// producer recorded none.
+	RecipeRef string
+	// Builder identifies the producing tool and its revision; empty when
+	// the producer recorded none.
+	Builder string
 }

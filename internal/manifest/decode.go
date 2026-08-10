@@ -78,6 +78,8 @@ type wireBuild struct {
 	FarmID        *string `json:"farm_id"`
 	SourceRef     *string `json:"source_ref"`
 	SourcePackage *string `json:"source_package"`
+	RecipeRef     *string `json:"recipe_ref"`
+	Builder       *string `json:"builder"`
 }
 
 // Decode parses and validates a package manifest from the raw bytes of

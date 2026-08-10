@@ -214,3 +214,38 @@ func TestEncodeSourcePackage(t *testing.T) {
 		t.Errorf("Encode missing source_package:\n got: %s\nwant substring: %s", got, want)
 	}
 }
+
+func TestEncodeRecipeRefAndBuilder(t *testing.T) {
+	m := Manifest{
+		SchemaVersion: SchemaVersion,
+		Name:          "x",
+		Version:       "0",
+		Architecture:  "noarch",
+		Build: Build{
+			Timestamp: "2026-01-01T00:00:00Z",
+			FarmID:    "f",
+			SourceRef: "r",
+			RecipeRef: "git:0123abcd",
+			Builder:   "pekit/2f4c9a1b8d3e",
+		},
+	}
+	got, err := Encode(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"build":{"timestamp":"2026-01-01T00:00:00Z","farm_id":"f","source_ref":"r","recipe_ref":"git:0123abcd","builder":"pekit/2f4c9a1b8d3e"}`
+	if !strings.Contains(string(got), want) {
+		t.Errorf("Encode missing recipe_ref/builder:\n got: %s\nwant substring: %s", got, want)
+	}
+
+	// Empty fields must vanish entirely — a manifest without them emits
+	// bytes identical to a pre-recipe_ref manifest.
+	m.Build.RecipeRef, m.Build.Builder = "", ""
+	got, err = Encode(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "recipe_ref") || strings.Contains(string(got), "builder") {
+		t.Errorf("empty recipe_ref/builder leaked into the wire form: %s", got)
+	}
+}
