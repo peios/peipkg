@@ -368,6 +368,26 @@ func TestNoarchInstalls(t *testing.T) {
 	}
 }
 
+func TestNoarchDependsOnArchSpecific(t *testing.T) {
+	// §4.1.3: a noarch depender's effective architecture is the system's
+	// primary architecture — its deps on arch-specific packages resolve
+	// like a native package's (the build-essentials / script→interpreter
+	// shape).
+	meta := cand(t, "build-meta", "1.0-1", dep(t, "binutils", ""))
+	meta.Architecture = "noarch"
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "build-meta"}},
+		nil,
+		[]resolver.Candidate{meta, cand(t, "binutils", "2.46-1")},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{"install binutils", "install build-meta"}) {
+		t.Errorf("plan: got %v, want [install binutils, install build-meta]", got)
+	}
+}
+
 func TestDeterministic(t *testing.T) {
 	reqs := []resolver.Request{{Kind: resolver.Install, Name: "nginx"}}
 	installed := []resolver.Installed{inst(t, "libc", "2.39-1")}

@@ -368,8 +368,14 @@ func satisfies(name string, ver version.Version, arch string, provides []manifes
 	dep manifest.Dependency, dependerArch string) bool {
 
 	// §4.1.3: with the v0.22 `any` arch qualifier, the satisfier's
-	// architecture must equal the depender's or be noarch.
-	if arch != archNoarch && arch != dependerArch {
+	// architecture must be noarch or equal the depender's *effective*
+	// architecture. A noarch depender's payload is
+	// architecture-independent but its resolution context is not: its
+	// effective architecture is the system's primary architecture, so
+	// any satisfier qualifies here — installability against the primary
+	// architecture is enforced separately (checkPlan), and within a plan
+	// or installed set every package already passes it.
+	if arch != archNoarch && dependerArch != archNoarch && arch != dependerArch {
 		return false
 	}
 	if name == dep.Name && dep.Constraint.Matches(ver) {
