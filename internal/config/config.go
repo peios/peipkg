@@ -55,6 +55,12 @@ type RepoConfig struct {
 	// trust anchors. The first-add of the repository is refused if its
 	// active index is below this value. Zero means no floor.
 	MinIndexVersion int64
+	// MaxTrustedAgeDays tunes the §6.5.4 maximum trusted age: how long
+	// the repository's last successful refresh may lie in the past
+	// before install, upgrade, and downgrade refuse to proceed without
+	// a fresh refresh. Zero means the spec default (30 days); values
+	// above 180 draw a per-operation warning.
+	MaxTrustedAgeDays int
 }
 
 // Provider supplies and stores repository configuration. The
@@ -95,6 +101,10 @@ func (c RepoConfig) validate() error {
 	}
 	if c.MinIndexVersion < 0 {
 		return fmt.Errorf("peipkg/config: repository %q: min_index_version must not be negative",
+			c.Name)
+	}
+	if c.MaxTrustedAgeDays < 0 {
+		return fmt.Errorf("peipkg/config: repository %q: max_trusted_age_days must not be negative",
 			c.Name)
 	}
 	return nil

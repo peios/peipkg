@@ -186,3 +186,58 @@ func TestPutRejectsInvalidConfig(t *testing.T) {
 		t.Error("Put should reject an invalid configuration")
 	}
 }
+
+func TestMaxTrustedAgeDays(t *testing.T) {
+	dir := t.TempDir()
+	writeRepo(t, dir, "tuned", `
+base_url = "https://example.org/peios"
+trust_anchors = ["`+fp+`"]
+max_trusted_age_days = 45
+`)
+	cfg, _, err := config.NewDirProvider(dir).Repository("tuned")
+	if err != nil {
+		t.Fatalf("Repository: %v", err)
+	}
+	if cfg.MaxTrustedAgeDays != 45 {
+		t.Errorf("MaxTrustedAgeDays: got %d, want 45", cfg.MaxTrustedAgeDays)
+	}
+
+	// Omitted means zero — the default is applied at the point of use.
+	writeRepo(t, dir, "defaulted", `
+base_url = "https://example.org/peios"
+trust_anchors = ["`+fp+`"]
+`)
+	cfg, _, err = config.NewDirProvider(dir).Repository("defaulted")
+	if err != nil {
+		t.Fatalf("Repository: %v", err)
+	}
+	if cfg.MaxTrustedAgeDays != 0 {
+		t.Errorf("omitted MaxTrustedAgeDays: got %d, want 0", cfg.MaxTrustedAgeDays)
+	}
+
+	// An explicit zero or a negative value is rejected, not defaulted.
+	for _, bad := range []string{"0", "-3"} {
+		writeRepo(t, dir, "bad", `
+base_url = "https://example.org/peios"
+trust_anchors = ["`+fp+`"]
+max_trusted_age_days = `+bad+`
+`)
+		if _, _, err := config.NewDirProvider(dir).Repository("bad"); err == nil {
+			t.Errorf("max_trusted_age_days = %s should be rejected", bad)
+		}
+	}
+
+	// Put round-trips a configured value and omits an unset one.
+	p := config.NewDirProvider(dir)
+	if err := p.Put(config.RepoConfig{
+		Name: "roundtrip", BaseURL: "https://example.org/peios",
+		Priority: 50, SignaturePolicy: config.PolicyRequired,
+		TrustAnchors: []string{fp}, MaxTrustedAgeDays: 45,
+	}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	cfg, _, err = p.Repository("roundtrip")
+	if err != nil || cfg.MaxTrustedAgeDays != 45 {
+		t.Errorf("round-trip: got %d, err=%v; want 45", cfg.MaxTrustedAgeDays, err)
+	}
+}

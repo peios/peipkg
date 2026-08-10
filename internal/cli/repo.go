@@ -67,6 +67,8 @@ func cmdRepoAdd(app *App, args []string) error {
 	insecure := fs.Bool("insecure", false, "permit an http base URL")
 	minIndex := fs.Int64("min-index-version", 0,
 		"out-of-band minimum acceptable index_version (§6.2.3)")
+	maxAge := fs.Int("max-trusted-age-days", 0,
+		"maximum trusted age in days before operations demand a refresh (0 = default 30, §6.5.4)")
 	var anchors stringList
 	fs.Var(&anchors, "anchor", "a trusted signing-key fingerprint (repeatable)")
 	pos, err := parseArgs(fs, args)
@@ -84,6 +86,7 @@ func cmdRepoAdd(app *App, args []string) error {
 		TrustAnchors:           anchors,
 		AllowInsecureTransport: *insecure,
 		MinIndexVersion:        *minIndex,
+		MaxTrustedAgeDays:      *maxAge,
 	}
 
 	ctx := context.Background()

@@ -22,6 +22,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/audit"
+	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/resolver"
 	"github.com/peios/peipkg/internal/signature"
@@ -624,5 +625,130 @@ func TestCrossRootUndoEndToEnd(t *testing.T) {
 	}
 	if _, found, _ := irfDB.GetPackage(ctx, "peiosutils"); found {
 		t.Error("peiosutils still recorded in the initramfs root after undo")
+	}
+}
+
+// TestInstallMaxTrustedAgeGate exercises the §6.5.4 maximum-trusted-age
+// gate end to end: an aged repository blocks install when its refresh
+// makes no progress (frozen index) or fails outright, --allow-stale
+// overrides with a warning and an audit record, and a refresh that
+// makes progress unblocks without ceremony.
+func TestInstallMaxTrustedAgeGate(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	fp := signature.Fingerprint(pub)
+
+	const pkgName, pkgVer = "hello", "1.0-1"
+	pkgBytes, sizeInstalled := buildSignedPackage(t, priv, pub, pkgName, pkgVer,
+		map[string]string{"usr/bin/hello": "#!/bin/sh\necho hi\n"})
+	pkgSum := sha256.Sum256(pkgBytes)
+	pkgURL := "/p/hello/1.0-1/hello_1.0-1_x86_64.peipkg"
+
+	descriptor := mustMarshal(t, map[string]any{
+		"schema_version": 1,
+		"repo": map[string]any{"name": "test", "signing": map[string]any{
+			"algorithm": "ed25519",
+			"keys": []any{map[string]any{
+				"fingerprint": fp, "url": "/keys/" + fp + ".pub", "status": "active"}}}},
+		"indexes": map[string]any{
+			"active": map[string]any{
+				"url": "/index/active.json", "signature_url": "/index/active.json.sig"},
+			"archive": map[string]any{
+				"url": "/index/archive.json", "signature_url": "/index/archive.json.sig"}},
+	})
+	makeIndex := func(indexVersion int, generatedAt string) []byte {
+		return mustMarshal(t, map[string]any{
+			"schema_version": 1, "repo": "test", "kind": "active",
+			"index_version": indexVersion, "generated_at": generatedAt,
+			"packages": []any{map[string]any{
+				"name": pkgName, "version": pkgVer, "architecture": "x86_64",
+				"dependencies": []any{}, "conflicts": []any{},
+				"size_compressed": len(pkgBytes), "size_installed": sizeInstalled,
+				"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(pkgSum[:])},
+				"url":  pkgURL}},
+		})
+	}
+	index := makeIndex(1, "2026-05-19T00:00:00Z")
+	served := map[string][]byte{
+		"/repo.json":             descriptor,
+		"/repo.json.sig":         detachedSig(priv, descriptor),
+		"/keys/" + fp + ".pub":   []byte(pub),
+		"/index/active.json":     index,
+		"/index/active.json.sig": detachedSig(priv, index),
+		pkgURL:                   pkgBytes,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := served[r.URL.Path]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(t.TempDir(), strings.NewReader(""), out, errOut)
+	app.emitter = &audit.Recorder{}
+
+	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure"}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+
+	// ageRepo backdates the recorded trust state past the 30-day default.
+	ageRepo := func() {
+		t.Helper()
+		withDB(t, app, func(store *db.DB) {
+			row, found, err := store.GetRepository(context.Background(), "test")
+			if err != nil || !found {
+				t.Fatalf("GetRepository: found=%v, err=%v", found, err)
+			}
+			row.LastRefreshAt = time.Now().Add(-31 * 24 * time.Hour)
+			if err := store.UpsertRepository(context.Background(), row); err != nil {
+				t.Fatalf("UpsertRepository: %v", err)
+			}
+		})
+	}
+
+	// Frozen: the server still serves index 1, so the forced refresh makes
+	// no progress and the install is refused.
+	ageRepo()
+	err = cmdInstall(app, []string{pkgName, "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "--allow-stale") {
+		t.Fatalf("frozen repository: expected a refusal naming --allow-stale, got %v", err)
+	}
+
+	// --allow-stale overrides, with a warning on stderr.
+	errOut.Reset()
+	if err := cmdInstall(app, []string{pkgName, "--yes", "--allow-stale"}); err != nil {
+		t.Fatalf("install --allow-stale: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "--allow-stale") {
+		t.Errorf("expected a stale-trust warning on stderr, got:\n%s", errOut.String())
+	}
+	if err := cmdUninstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+
+	// A refresh that makes progress unblocks the operation on its own.
+	ageRepo()
+	index2 := makeIndex(2, "2026-05-20T00:00:00Z")
+	served["/index/active.json"] = index2
+	served["/index/active.json.sig"] = detachedSig(priv, index2)
+	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("install after progressed refresh: %v", err)
+	}
+	if err := cmdUninstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+
+	// A failed refresh (repository unreachable) also refuses, with the
+	// refresh error surfaced.
+	ageRepo()
+	srv.Close()
+	err = cmdInstall(app, []string{pkgName, "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "refresh failed") {
+		t.Fatalf("unreachable repository: expected a refresh-failed refusal, got %v", err)
 	}
 }

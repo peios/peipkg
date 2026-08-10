@@ -39,6 +39,7 @@ type wireRepo struct {
 	TrustAnchors           []string `toml:"trust_anchors"`
 	AllowInsecureTransport bool     `toml:"allow_insecure_transport"`
 	MinIndexVersion        *int64   `toml:"min_index_version"`
+	MaxTrustedAgeDays      *int     `toml:"max_trusted_age_days"`
 }
 
 // Repositories returns every configured repository, ordered by name. A
@@ -99,6 +100,9 @@ func (p *DirProvider) Put(cfg RepoConfig) error {
 		AllowInsecureTransport: cfg.AllowInsecureTransport,
 		MinIndexVersion:        &cfg.MinIndexVersion,
 	}
+	if cfg.MaxTrustedAgeDays != 0 {
+		w.MaxTrustedAgeDays = &cfg.MaxTrustedAgeDays
+	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(w); err != nil {
 		return fmt.Errorf("peipkg/config: encoding repository %q: %w", cfg.Name, err)
@@ -150,6 +154,15 @@ func (p *DirProvider) load(name, path string) (RepoConfig, error) {
 	}
 	if w.MinIndexVersion != nil {
 		cfg.MinIndexVersion = *w.MinIndexVersion
+	}
+	if w.MaxTrustedAgeDays != nil {
+		// An explicit zero is rejected rather than silently meaning "the
+		// default": omit the key to get the default.
+		if *w.MaxTrustedAgeDays <= 0 {
+			return RepoConfig{}, fmt.Errorf(
+				"peipkg/config: %s: max_trusted_age_days must be a positive integer", path)
+		}
+		cfg.MaxTrustedAgeDays = *w.MaxTrustedAgeDays
 	}
 	if err := cfg.validate(); err != nil {
 		return RepoConfig{}, err

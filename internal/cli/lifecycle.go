@@ -7,12 +7,14 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/install"
 	"github.com/peios/peipkg/internal/manifest"
+	"github.com/peios/peipkg/internal/repository"
 	"github.com/peios/peipkg/internal/resolver"
 	"github.com/peios/peipkg/internal/version"
 )
@@ -28,6 +30,8 @@ func cmdInstall(app *App, args []string) error {
 		"claim every provided role, overriding current holders")
 	claimRoles := fs.String("claim", "",
 		"comma-separated roles to claim, overriding current holders")
+	allowStale := fs.Bool("allow-stale", false,
+		"proceed although a repository's trust state exceeds its maximum trusted age (§6.5.4)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -38,6 +42,9 @@ func cmdInstall(app *App, args []string) error {
 	claimDir, err := claimDirective(*noClaim, *claimAll, *claimRoles)
 	if err != nil {
 		return err
+	}
+	if err := ensureFreshTrust(app, *allowStale); err != nil {
+		return fmt.Errorf("install: %w", err)
 	}
 	// An argument may name a repository package or a local .peipkg file;
 	// a local file is installed raw — the repository trust layer skipped.
@@ -180,9 +187,14 @@ func cmdUpgrade(app *App, args []string) error {
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	fs.BoolVar(yes, "y", false, "skip the confirmation prompt")
 	noRecurse := fs.Bool("no-recurse", false, "confine the upgrade to the current root")
+	allowStale := fs.Bool("allow-stale", false,
+		"proceed although a repository's trust state exceeds its maximum trusted age (§6.5.4)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
+	}
+	if err := ensureFreshTrust(app, *allowStale); err != nil {
+		return fmt.Errorf("upgrade: %w", err)
 	}
 	var reqs []resolver.Request
 	if len(pos) == 0 {
@@ -715,6 +727,92 @@ func installedSet(ctx context.Context, store *db.DB,
 	return installed, nil
 }
 
+// ensureFreshTrust applies the §6.5.4 maximum-trusted-age gate before
+// an install, upgrade, or downgrade. For each configured repository
+// whose last successful refresh is older than its maximum trusted age,
+// a refresh is attempted; a repository that is still stale afterwards —
+// the refresh failed, or the index is frozen and the refresh time
+// deliberately did not advance (§6.2.3) — refuses the operation unless
+// the operator passed --allow-stale, which warns and is audited.
+//
+// Uninstall and undo are deliberately not gated: removal and recovery
+// must remain possible offline.
+func ensureFreshTrust(app *App, allowStale bool) error {
+	repos, err := app.configProvider().Repositories()
+	if err != nil {
+		return err
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+	ctx := context.Background()
+	store, err := app.openDB(ctx)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	client := app.repoClient(store)
+	now := time.Now()
+
+	for _, cfg := range repos {
+		if cfg.MaxTrustedAgeDays > repository.WarnMaxTrustedAgeDays {
+			fmt.Fprintf(app.errOut, "peipkg: warning: repository %q sets max_trusted_age_days=%d "+
+				"(above %d) — the freshness check is effectively disabled (§6.5.4)\n",
+				cfg.Name, cfg.MaxTrustedAgeDays, repository.WarnMaxTrustedAgeDays)
+		}
+		age, stale, err := client.TrustAge(ctx, cfg, now)
+		if err != nil {
+			return err
+		}
+		if !stale {
+			continue
+		}
+		max := repository.MaxTrustedAge(cfg)
+		fmt.Fprintf(app.errOut, "peipkg: repository %q last refreshed %s ago (maximum trusted "+
+			"age %s); refreshing\n", cfg.Name, formatAge(age), formatAge(max))
+		refreshErr := client.Refresh(ctx, cfg)
+		if refreshErr == nil {
+			// A refresh that made progress advanced the refresh time; a
+			// frozen index deliberately did not (§6.2.3) — re-check rather
+			// than assume.
+			if _, stale, err = client.TrustAge(ctx, cfg, now); err != nil {
+				return err
+			}
+			if !stale {
+				continue
+			}
+		}
+		if !allowStale {
+			if refreshErr != nil {
+				return fmt.Errorf("repository %q trust state is %s old (maximum %s) and the "+
+					"refresh failed: %v\nretry with the repository reachable, or pass "+
+					"--allow-stale to proceed with stale trust state (§6.5.4)",
+					cfg.Name, formatAge(age), formatAge(max), refreshErr)
+			}
+			return fmt.Errorf("repository %q is frozen: it refreshes but its index has not "+
+				"progressed, and its trust state is %s old (maximum %s)\npass --allow-stale "+
+				"to proceed with stale trust state (§6.5.4)",
+				cfg.Name, formatAge(age), formatAge(max))
+		}
+		fmt.Fprintf(app.errOut, "peipkg: warning: proceeding with stale trust state for "+
+			"repository %q (%s old) — authorised by --allow-stale (§6.5.4)\n",
+			cfg.Name, formatAge(age))
+		app.emit(audit.Event{Type: audit.TypeAuthorisation, Outcome: audit.OutcomeSuccess,
+			Repo: cfg.Name, Detail: fmt.Sprintf("proceed with stale trust state (age %s)",
+				formatAge(age))})
+	}
+	return nil
+}
+
+// formatAge renders a trust-state age for operator messages: whole days
+// once the age reaches a day, whole hours below that.
+func formatAge(d time.Duration) string {
+	if d >= 24*time.Hour {
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
 // availableSet builds the resolver's candidate set from the configured
 // repositories' cached active indexes. A repository with no usable
 // cached index is skipped with a warning.
@@ -779,12 +877,17 @@ func cmdDowngrade(app *App, args []string) error {
 	dryRun := fs.Bool("dry-run", false, "show the plan without applying it")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	fs.BoolVar(yes, "y", false, "skip the confirmation prompt")
+	allowStale := fs.Bool("allow-stale", false,
+		"proceed although a repository's trust state exceeds its maximum trusted age (§6.5.4)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 2 {
 		return fmt.Errorf("downgrade: usage: downgrade <package> <version>")
+	}
+	if err := ensureFreshTrust(app, *allowStale); err != nil {
+		return fmt.Errorf("downgrade: %w", err)
 	}
 	target, err := version.Parse(pos[1])
 	if err != nil {
