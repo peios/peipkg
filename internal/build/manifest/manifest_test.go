@@ -191,3 +191,26 @@ func TestBuildModTime(t *testing.T) {
 		t.Errorf("epoch %d, want 1778068800", tt.Unix())
 	}
 }
+
+func TestEncodeSourcePackage(t *testing.T) {
+	m := Manifest{
+		SchemaVersion: SchemaVersion,
+		Name:          "x",
+		Version:       "0",
+		Architecture:  "noarch",
+		Build: Build{
+			Timestamp:     "2026-01-01T00:00:00Z",
+			FarmID:        "f",
+			SourceRef:     "r",
+			SourcePackage: "x-source",
+		},
+	}
+	got, err := Encode(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"build":{"timestamp":"2026-01-01T00:00:00Z","farm_id":"f","source_ref":"r","source_package":"x-source"}`
+	if !strings.Contains(string(got), want) {
+		t.Errorf("Encode missing source_package:\n got: %s\nwant substring: %s", got, want)
+	}
+}

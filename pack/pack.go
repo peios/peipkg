@@ -130,6 +130,9 @@ type BuildInfo struct {
 	Timestamp string
 	FarmID    string
 	SourceRef string
+	// SourcePackage names the corresponding-source package built from the
+	// same recipe and source, empty when none exists (§3.3.4).
+	SourcePackage string
 }
 
 // PackOptions is everything Pack needs to emit one .peipkg. The payload
@@ -277,9 +280,10 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 		SideEffects:          append([]string(nil), m.SideEffects...),
 		SDOverrides:          overrides,
 		Build: internalmanifest.Build{
-			Timestamp: m.Build.Timestamp,
-			FarmID:    m.Build.FarmID,
-			SourceRef: m.Build.SourceRef,
+			Timestamp:     m.Build.Timestamp,
+			FarmID:        m.Build.FarmID,
+			SourceRef:     m.Build.SourceRef,
+			SourcePackage: m.Build.SourcePackage,
 		},
 	}, nil
 }

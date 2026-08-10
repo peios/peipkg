@@ -131,4 +131,7 @@ type Build struct {
 	Timestamp time.Time
 	FarmID    string
 	SourceRef string
+	// SourcePackage names the corresponding-source package built from the
+	// same recipe and source; empty when the producer declared none.
+	SourcePackage string
 }

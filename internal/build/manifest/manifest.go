@@ -99,6 +99,11 @@ type Build struct {
 	Timestamp string `json:"timestamp"`
 	FarmID    string `json:"farm_id"`
 	SourceRef string `json:"source_ref"`
+	// SourcePackage names the corresponding-source package built from the
+	// same recipe and source (§3.3.4). Like DefaultRoot it post-dates the
+	// format and uses omitempty: a package without one must emit bytes
+	// identical to a pre-source_package manifest.
+	SourcePackage string `json:"source_package,omitempty"`
 }
 
 // ModTime parses Build.Timestamp into the time.Time used for every tar

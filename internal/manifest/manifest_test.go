@@ -420,3 +420,20 @@ func TestMalformedJSON(t *testing.T) {
 		t.Error("Decode should reject malformed JSON")
 	}
 }
+
+func TestBuildSourcePackage(t *testing.T) {
+	m := baseManifest()
+	build := m["build"].(map[string]any)
+	build["source_package"] = "nginx-source"
+	got := mustDecode(t, m)
+	if got.Build.SourcePackage != "nginx-source" {
+		t.Errorf("Build.SourcePackage: got %q, want %q", got.Build.SourcePackage, "nginx-source")
+	}
+}
+
+func TestBuildSourcePackageAbsent(t *testing.T) {
+	got := mustDecode(t, baseManifest())
+	if got.Build.SourcePackage != "" {
+		t.Errorf("Build.SourcePackage: got %q, want empty for an absent field", got.Build.SourcePackage)
+	}
+}

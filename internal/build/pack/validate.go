@@ -23,7 +23,8 @@ var permittedTopLevels = []string{
 	"usr/libexec/", // arch-independent helper executables run by other programs, not on user PATH (e.g. feature lifecycle scripts); no triplet rule (that is scoped to usr/lib/)
 	"usr/share/",
 	"usr/include/",
-	"usr/src/debug/", // only the debug-source subtree of usr/src is a destination
+	"usr/src/debug/", // separated debug info's source subtree of usr/src
+	"usr/src/dist/",  // corresponding-source packages (§3.4.1); the rest of usr/src stays admin territory
 	"etc/",
 	"var/",
 	"opt/",

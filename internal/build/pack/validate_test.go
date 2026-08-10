@@ -328,3 +328,26 @@ func TestValidateFilesMapsDisk(t *testing.T) {
 		t.Error("expected §3.4.1 rejection for usr/local destination, got nil")
 	}
 }
+
+func TestValidateAcceptsDistSourceTree(t *testing.T) {
+	// /usr/src/dist/ holds corresponding-source packages (§3.4.1); the
+	// payload is arch-independent, so a noarch package may ship it.
+	leaves := []entry{
+		{path: "usr/src/dist/dash-0.5.12-2/upstream/dash-0.5.12.tar.gz", kind: kindFile},
+		{path: "usr/src/dist/dash-0.5.12-2/recipe/pekit.toml", kind: kindFile},
+	}
+	if err := validateEntries("noarch", leaves); err != nil {
+		t.Errorf("expected accept of /usr/src/dist/ tree, got: %v", err)
+	}
+}
+
+func TestValidateRejectsBareUsrSrc(t *testing.T) {
+	// Only the debug/ and dist/ subtrees of /usr/src are destinations;
+	// anything else under /usr/src stays admin territory.
+	err := validateEntries("x86_64", []entry{
+		{path: "usr/src/foo-1.0/main.c", kind: kindFile},
+	})
+	if err == nil || !strings.Contains(err.Error(), "usr/src/foo-1.0/main.c") {
+		t.Errorf("expected bare /usr/src rejection, got %v", err)
+	}
+}

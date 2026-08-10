@@ -540,7 +540,13 @@ func validateBuild(w wireBuild) (Build, error) {
 	if err != nil {
 		return Build{}, fmt.Errorf("peipkg/manifest: build: timestamp: %w", err)
 	}
-	return Build{Timestamp: ts, FarmID: *w.FarmID, SourceRef: *w.SourceRef}, nil
+	out := Build{Timestamp: ts, FarmID: *w.FarmID, SourceRef: *w.SourceRef}
+	// source_package is optional (§3.3.4): absent means the producer
+	// declared no corresponding-source package.
+	if w.SourcePackage != nil {
+		out.SourcePackage = *w.SourcePackage
+	}
+	return out, nil
 }
 
 // parseOptionalConstraint parses a constraint string, treating the empty

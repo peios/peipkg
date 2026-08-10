@@ -74,9 +74,10 @@ type wireSDOverride struct {
 }
 
 type wireBuild struct {
-	Timestamp *string `json:"timestamp"`
-	FarmID    *string `json:"farm_id"`
-	SourceRef *string `json:"source_ref"`
+	Timestamp     *string `json:"timestamp"`
+	FarmID        *string `json:"farm_id"`
+	SourceRef     *string `json:"source_ref"`
+	SourcePackage *string `json:"source_package"`
 }
 
 // Decode parses and validates a package manifest from the raw bytes of
