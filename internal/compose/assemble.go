@@ -55,6 +55,11 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 			return err
 		}
 	}
+	// The license inventory is anchor-level and image-wide, like the
+	// repository configuration below.
+	if err := writeLicenseManifest(out, m, fetched); err != nil {
+		return err
+	}
 	// Repositories are anchor-level (the consumer's anchor-fetch model):
 	// a composed sub-root receives its packages through the build, not its
 	// own repositories.

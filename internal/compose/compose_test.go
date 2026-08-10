@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,33 @@ func TestFetchAndAssemble(t *testing.T) {
 	// manifest's repository configuration.
 	if _, err := os.Stat(filepath.Join(root, "conf/peipkg/official.repo")); err != nil {
 		t.Errorf("conf/peipkg/official.repo missing: %v", err)
+	}
+
+	// The aggregate license inventory covers the composed package set.
+	var inventory struct {
+		SchemaVersion int    `json:"schema_version"`
+		SourceDate    string `json:"source_date"`
+		Packages      []struct {
+			Name      string `json:"name"`
+			Version   string `json:"version"`
+			SourceRef string `json:"source_ref"`
+			Root      string `json:"root"`
+		} `json:"packages"`
+	}
+	invData, err := os.ReadFile(filepath.Join(root, "usr/share/peios/licenses.json"))
+	if err != nil {
+		t.Fatalf("usr/share/peios/licenses.json: %v", err)
+	}
+	if err := json.Unmarshal(invData, &inventory); err != nil {
+		t.Fatalf("decoding licenses.json: %v", err)
+	}
+	if inventory.SchemaVersion != 1 || inventory.SourceDate != "2026-06-01T00:00:00Z" {
+		t.Errorf("licenses.json header = %+v", inventory)
+	}
+	if len(inventory.Packages) != 1 || inventory.Packages[0].Name != "foo" ||
+		inventory.Packages[0].Version != "1.0-1" || inventory.Packages[0].SourceRef != "test" ||
+		inventory.Packages[0].Root != "" {
+		t.Errorf("licenses.json packages = %+v", inventory.Packages)
 	}
 
 	// The seeded database has the right meta, package, and file rows.
@@ -457,6 +485,31 @@ func TestAssembleMultiRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(irf, "usr/bin/foo")); !os.IsNotExist(err) {
 		t.Errorf("foo should not be in the initramfs: %v", err)
+	}
+
+	// The license inventory is anchor-level, image-wide, and sorted
+	// (root, name): the anchor's foo first, then the initramfs' bar with
+	// its root recorded. The nested root gets no inventory of its own.
+	var inventory struct {
+		Packages []struct {
+			Name string `json:"name"`
+			Root string `json:"root"`
+		} `json:"packages"`
+	}
+	invData, err := os.ReadFile(filepath.Join(out, "usr/share/peios/licenses.json"))
+	if err != nil {
+		t.Fatalf("usr/share/peios/licenses.json: %v", err)
+	}
+	if err := json.Unmarshal(invData, &inventory); err != nil {
+		t.Fatalf("decoding licenses.json: %v", err)
+	}
+	if len(inventory.Packages) != 2 ||
+		inventory.Packages[0].Name != "foo" || inventory.Packages[0].Root != "" ||
+		inventory.Packages[1].Name != "bar" || inventory.Packages[1].Root != "boot/initramfs" {
+		t.Errorf("licenses.json packages = %+v", inventory.Packages)
+	}
+	if _, err := os.Stat(filepath.Join(irf, "usr/share/peios/licenses.json")); !os.IsNotExist(err) {
+		t.Errorf("nested root should not carry its own license inventory: %v", err)
 	}
 
 	// Anchor DB: records foo and the named-root registry entry.
