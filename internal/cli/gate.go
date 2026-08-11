@@ -23,6 +23,9 @@ func (app *App) presentPlan(plan resolver.Plan) {
 	for _, a := range plan.Authorizations {
 		app.printf("  ! elevated: %s\n", a.Detail)
 	}
+	for _, n := range plan.Notices {
+		app.printf("  note: %s\n", n.Detail)
+	}
 	// Loud cross-root plans (DESIGN-named-roots.md): if an operation
 	// touches a root other than the one invoked, say so prominently before
 	// the confirmation gate — installing "into a second filesystem image"

@@ -141,8 +141,9 @@ func resolveCore(reqs []Request, installedByRoot map[string][]Installed, availab
 
 	// Install / upgrade / downgrade requests seed the forward resolution.
 	var goals []string
+	var notices []Notice
 	for _, req := range reqs {
-		keys, err := applyGoal(req, world, idx, opts)
+		keys, err := applyGoal(req, world, idx, opts, &notices)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -173,6 +174,7 @@ func resolveCore(reqs []Request, installedByRoot map[string][]Installed, availab
 		}
 	}
 	plan.Authorizations = dedupeAuthorizations(auths)
+	plan.Notices = notices
 	return plan, nil
 }
 
@@ -215,17 +217,30 @@ func buildIndex(available []Candidate) candidateIndex {
 
 // applyGoal seeds the world from one install/upgrade/downgrade request,
 // returning the world keys whose dependencies must be resolved.
-func applyGoal(req Request, world map[string]*worldPkg, idx candidateIndex, opts Options) ([]string, error) {
+func applyGoal(req Request, world map[string]*worldPkg, idx candidateIndex, opts Options,
+	notices *[]Notice) ([]string, error) {
+
 	switch req.Kind {
 	case Install:
 		key := worldKey(req.Root, req.Name)
 		if _, ok := world[key]; ok {
 			return []string{key}, nil // already present in this root; just resolve its deps
 		}
-		cand := bestNamed(idx.byName[req.Name], version.Constraint{}, opts.PrimaryArch)
+		// An install goal resolves by name or via `provides` (§4.2.3), so a
+		// goal may name a role — `sh`, `cc`, `coreutils` — rather than a
+		// concrete package.
+		cand := bestForGoal(idx, req.Name, version.Constraint{}, opts.PrimaryArch)
 		if cand == nil {
 			return nil, &Rejection{Reason: ReasonUnsatisfiable,
 				Detail: fmt.Sprintf("no candidate is available for package %q", req.Name)}
+		}
+		if cand.Name != req.Name && notices != nil {
+			*notices = append(*notices, Notice{
+				Kind: NoticeGoalViaProvides,
+				Detail: fmt.Sprintf("goal %q is satisfied by %q %s via `provides`; "+
+					"no available package is named %q",
+					req.Name, cand.Name, cand.Version, req.Name),
+			})
 		}
 		placeCandidate(world, cand, req.Root)
 		return []string{worldKey(req.Root, cand.Name)}, nil

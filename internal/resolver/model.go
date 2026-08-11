@@ -174,6 +174,28 @@ type Authorization struct {
 	Detail string // human-readable, specific to the action
 }
 
+// NoticeKind identifies a resolution outcome worth reporting to the
+// operator but which does not gate applying the plan.
+type NoticeKind uint8
+
+const (
+	// NoticeGoalViaProvides marks an install goal that no available
+	// package matched by name, satisfied instead by a package declaring
+	// the requested name in its `provides` (§4.2.3). Reported because
+	// the operator asked for one name and got a package with another.
+	NoticeGoalViaProvides NoticeKind = iota
+)
+
+// Notice is an informational resolution outcome. Unlike an
+// [Authorization] it requires no operator act — it exists so a
+// resolution that legitimately substituted one thing for another says
+// so rather than resolving silently. Non-interactive callers
+// (peipkg-compose) may log notices and proceed.
+type Notice struct {
+	Kind   NoticeKind
+	Detail string // human-readable, specific to the outcome
+}
+
 // Plan is a resolved, ordered sequence of operations: removals first
 // (dependents before their dependencies), then installs and upgrades
 // (dependencies before their dependents) — §4.2.1.
@@ -182,4 +204,7 @@ type Plan struct {
 	// Authorizations are elevated actions the plan contains that the
 	// operator must explicitly authorise before it is applied (§7.6.6).
 	Authorizations []Authorization
+	// Notices are resolution outcomes reported to the operator that do
+	// not gate applying the plan.
+	Notices []Notice
 }

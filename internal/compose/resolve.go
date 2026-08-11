@@ -99,6 +99,12 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 		fmt.Fprintf(warnings, "peipkg-compose: warning: the plan contains an elevated action — %s\n",
 			a.Detail)
 	}
+	// A goal satisfied through `provides` put a package in the root under a
+	// name the manifest never mentions. The lock records which one, but the
+	// substitution is said out loud rather than left to a lock diff.
+	for _, n := range plan.Notices {
+		fmt.Fprintf(warnings, "peipkg-compose: note: %s\n", n.Detail)
+	}
 
 	lock := Lock{
 		Arch: m.Arch, SourceDate: m.SourceDate,

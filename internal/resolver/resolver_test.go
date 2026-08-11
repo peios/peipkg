@@ -587,3 +587,136 @@ func TestDowngradeRaisesAuthorization(t *testing.T) {
 		t.Fatalf("expected one AuthDowngrade, got %#v", plan.Authorizations)
 	}
 }
+
+// A goal may name a role rather than a concrete package: nothing is named
+// "coreutils", but coreutils-gnu provides it (§4.2.3).
+func TestInstallGoalResolvesViaProvides(t *testing.T) {
+	gnu := cand(t, "coreutils-gnu", "9.9-1")
+	roleVer := ver(t, "9.9-1")
+	gnu.Provides = []manifest.Provides{{Name: "coreutils", Version: &roleVer}}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "coreutils"}},
+		nil, []resolver.Candidate{gnu}, defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{"install coreutils-gnu"}) {
+		t.Errorf("plan: got %v, want [install coreutils-gnu]", got)
+	}
+	if len(plan.Notices) != 1 || plan.Notices[0].Kind != resolver.NoticeGoalViaProvides {
+		t.Errorf("want one NoticeGoalViaProvides, got %+v", plan.Notices)
+	}
+}
+
+// Rule 4 orders provides matches by the ROLE version, not the package
+// version. peiosutils 0.4 offers coreutils 10.0 and must beat
+// coreutils-gnu 9.9 offering coreutils 9.9 — comparing 0.4 against 9.9
+// would be a comparison of nothing, and would pin the role to whichever
+// package happens to carry bigger numbers.
+func TestGoalViaProvidesOrdersByRoleVersion(t *testing.T) {
+	gnu := cand(t, "coreutils-gnu", "9.9-1")
+	gnuRole := ver(t, "9.9-1")
+	gnu.Provides = []manifest.Provides{{Name: "coreutils", Version: &gnuRole}}
+
+	peios := cand(t, "peiosutils", "0.4-1")
+	peiosRole := ver(t, "10.0-1")
+	peios.Provides = []manifest.Provides{{Name: "coreutils", Version: &peiosRole}}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "coreutils"}},
+		nil, []resolver.Candidate{gnu, peios}, defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{"install peiosutils"}) {
+		t.Errorf("plan: got %v, want [install peiosutils]", got)
+	}
+}
+
+// Distinct packages filling one role, alike under rules 1-4, must be
+// separated by a rule rather than by index order. Candidate order is
+// reversed between runs; the winner must not move.
+func TestGoalViaProvidesTieBreaksOnPackageName(t *testing.T) {
+	mk := func(name string) resolver.Candidate {
+		c := cand(t, name, "1.0-1")
+		rv := ver(t, "1.0-1")
+		c.Provides = []manifest.Provides{{Name: "awk", Version: &rv}}
+		return c
+	}
+	gawk, mawk := mk("gawk"), mk("mawk")
+
+	for _, order := range [][]resolver.Candidate{{gawk, mawk}, {mawk, gawk}} {
+		plan, err := resolver.Resolve(
+			[]resolver.Request{{Kind: resolver.Install, Name: "awk"}},
+			nil, order, defaultOptions())
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if got := summary(plan); !slices.Equal(got, []string{"install gawk"}) {
+			t.Errorf("candidate order %s/%s: got %v, want [install gawk]",
+				order[0].Name, order[1].Name, got)
+		}
+	}
+}
+
+// A name match beats a provides match for the same name only through the
+// ordinary rules — but it must never be skipped: a real package named
+// coreutils is a candidate for the coreutils goal.
+func TestGoalPrefersHigherRoleVersionOverNameMatch(t *testing.T) {
+	real := cand(t, "coreutils", "9.0-1")
+	other := cand(t, "peiosutils", "0.4-1")
+	roleVer := ver(t, "9.5-1")
+	other.Provides = []manifest.Provides{{Name: "coreutils", Version: &roleVer}}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "coreutils"}},
+		nil, []resolver.Candidate{real, other}, defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{"install peiosutils"}) {
+		t.Errorf("plan: got %v, want [install peiosutils]", got)
+	}
+}
+
+// An unversioned `provides` satisfies any constraint (§4.1.4) but asserts
+// no version, so it loses rule 4 to a provider that states one.
+func TestGoalPrefersVersionedProvidesOverUnversioned(t *testing.T) {
+	quiet := cand(t, "aaa-quiet", "1.0-1")
+	quiet.Provides = []manifest.Provides{{Name: "awk"}}
+
+	loud := cand(t, "zzz-loud", "1.0-1")
+	rv := ver(t, "1.0-1")
+	loud.Provides = []manifest.Provides{{Name: "awk", Version: &rv}}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "awk"}},
+		nil, []resolver.Candidate{quiet, loud}, defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{"install zzz-loud"}) {
+		t.Errorf("plan: got %v, want [install zzz-loud] (versioned provides wins rule 4)", got)
+	}
+}
+
+// Upgrade acts on a concrete installed package; resolving it through
+// `provides` would let an upgrade silently swap one package for another.
+func TestUpgradeDoesNotResolveViaProvides(t *testing.T) {
+	usurper := cand(t, "peiosutils", "2.0-1")
+	rv := ver(t, "2.0-1")
+	usurper.Provides = []manifest.Provides{{Name: "coreutils-gnu", Version: &rv}}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Upgrade, Name: "coreutils-gnu"}},
+		[]resolver.Installed{inst(t, "coreutils-gnu", "9.9-1")},
+		[]resolver.Candidate{usurper},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); len(got) != 0 {
+		t.Errorf("plan: got %v, want no operations (provides must not satisfy an upgrade)", got)
+	}
+}
