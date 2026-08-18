@@ -78,10 +78,10 @@ func TestExecuteAutoClaimWithDefaultPath(t *testing.T) {
 	ctx := t.Context()
 	store, root, lock := freshEnv(t)
 	loregd := testPkg{name: "loregd", version: "1.0-1",
-		files: map[string]string{"usr/bin/loregd": "the daemon"}}
+		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
 	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
 		Provider: fakeProvider{"loregd": claimProvide(t, loregd,
-			providesRole("registryd", "/usr/bin/loregd", "/usr/bin/registryd"), nil)}}
+			providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil)}}
 	plan := resolver.Plan{Operations: []resolver.Operation{installOp(t, "loregd", "1.0-1")}}
 
 	if _, err := install.Execute(ctx, plan, env); err != nil {
@@ -93,7 +93,7 @@ func TestExecuteAutoClaimWithDefaultPath(t *testing.T) {
 		t.Errorf("ClaimHolder: %q found=%v, want loregd", holder, found)
 	}
 	// Relative target (link lives in /usr/bin, points at sibling loregd).
-	target, err := os.Readlink(filepath.Join(root, "usr/bin/registryd"))
+	target, err := os.Readlink(filepath.Join(root, "usr/sbin/registryd"))
 	if err != nil || target != "loregd" {
 		t.Errorf("claim symlink: target %q err %v, want loregd", target, err)
 	}
@@ -109,15 +109,15 @@ func TestExecuteRetroactiveMaterialisation(t *testing.T) {
 	// Install the holder with no default path and no consumer: held but
 	// unmaterialised (§4.4.4).
 	loregd := testPkg{name: "loregd", version: "1.0-1",
-		files: map[string]string{"usr/bin/loregd": "the daemon"}}
+		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
 	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
 		Provider: fakeProvider{"loregd": claimProvide(t, loregd,
-			providesRole("registryd", "/usr/bin/loregd", ""), nil)}}
+			providesRole("registryd", "/usr/sbin/loregd", ""), nil)}}
 	if _, err := install.Execute(ctx,
 		resolver.Plan{Operations: []resolver.Operation{installOp(t, "loregd", "1.0-1")}}, env); err != nil {
 		t.Fatalf("Execute loregd: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(root, "usr/bin/registryd")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(root, "usr/sbin/registryd")); !os.IsNotExist(err) {
 		t.Fatalf("registryd should not exist yet, Lstat err=%v", err)
 	}
 	if holder, found, _ := store.ClaimHolder(ctx, "registryd"); !found || holder != "loregd" {
@@ -129,12 +129,12 @@ func TestExecuteRetroactiveMaterialisation(t *testing.T) {
 	peinit := testPkg{name: "peinit", version: "1.0-1",
 		files: map[string]string{"usr/bin/peinit": "init"}}
 	env.Provider = fakeProvider{"peinit": claimProvide(t, peinit, nil,
-		dependsRole("registryd", "/usr/bin/registryd"))}
+		dependsRole("registryd", "/usr/sbin/registryd"))}
 	if _, err := install.Execute(ctx,
 		resolver.Plan{Operations: []resolver.Operation{installOp(t, "peinit", "1.0-1")}}, env); err != nil {
 		t.Fatalf("Execute peinit: %v", err)
 	}
-	target, err := os.Readlink(filepath.Join(root, "usr/bin/registryd"))
+	target, err := os.Readlink(filepath.Join(root, "usr/sbin/registryd"))
 	if err != nil || target != "loregd" {
 		t.Errorf("retroactive symlink: target %q err %v", target, err)
 	}
@@ -147,18 +147,18 @@ func TestExecuteWithdrawalOnHolderRemoval(t *testing.T) {
 	// loregd holds registryd (auto, default path); altregd also provides
 	// it but is installed second, so it does not become holder.
 	loregd := testPkg{name: "loregd", version: "1.0-1",
-		files: map[string]string{"usr/bin/loregd": "d"}}
+		files: map[string]string{"usr/sbin/loregd": "d"}}
 	altregd := testPkg{name: "altregd", version: "1.0-1",
 		files: map[string]string{"usr/bin/altregd": "d"}}
 	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
 		Provider: fakeProvider{"loregd": claimProvide(t, loregd,
-			providesRole("registryd", "/usr/bin/loregd", "/usr/bin/registryd"), nil)}}
+			providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil)}}
 	if _, err := install.Execute(ctx,
 		resolver.Plan{Operations: []resolver.Operation{installOp(t, "loregd", "1.0-1")}}, env); err != nil {
 		t.Fatalf("Execute loregd: %v", err)
 	}
 	env.Provider = fakeProvider{"altregd": claimProvide(t, altregd,
-		providesRole("registryd", "/usr/bin/altregd", "/usr/bin/registryd"), nil)}
+		providesRole("registryd", "/usr/bin/altregd", "/usr/sbin/registryd"), nil)}
 	if _, err := install.Execute(ctx,
 		resolver.Plan{Operations: []resolver.Operation{installOp(t, "altregd", "1.0-1")}}, env); err != nil {
 		t.Fatalf("Execute altregd: %v", err)
@@ -177,7 +177,7 @@ func TestExecuteWithdrawalOnHolderRemoval(t *testing.T) {
 	if _, found, _ := store.ClaimHolder(ctx, "registryd"); found {
 		t.Error("registryd should be unheld after holder removal")
 	}
-	if _, err := os.Lstat(filepath.Join(root, "usr/bin/registryd")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(root, "usr/sbin/registryd")); !os.IsNotExist(err) {
 		t.Errorf("claim symlink should be gone, Lstat err=%v", err)
 	}
 	if !hasWarning(res.Warnings, "withdrawn") || !hasWarning(res.Warnings, "altregd") {
@@ -193,15 +193,15 @@ func TestClaimGrantAndRevoke(t *testing.T) {
 	// loregd auto-holds registryd; altregd is installed but not holder.
 	for _, name := range []string{"loregd", "altregd"} {
 		pkg := testPkg{name: name, version: "1.0-1",
-			files: map[string]string{"usr/bin/" + name: "d"}}
+			files: map[string]string{"usr/sbin/" + name: "d"}}
 		env.Provider = fakeProvider{name: claimProvide(t, pkg,
-			providesRole("registryd", "/usr/bin/"+name, "/usr/bin/registryd"), nil)}
+			providesRole("registryd", "/usr/sbin/"+name, "/usr/sbin/registryd"), nil)}
 		if _, err := install.Execute(ctx,
 			resolver.Plan{Operations: []resolver.Operation{installOp(t, name, "1.0-1")}}, env); err != nil {
 			t.Fatalf("Execute %s: %v", name, err)
 		}
 	}
-	if target, _ := os.Readlink(filepath.Join(root, "usr/bin/registryd")); target != "loregd" {
+	if target, _ := os.Readlink(filepath.Join(root, "usr/sbin/registryd")); target != "loregd" {
 		t.Fatalf("initial holder link: %q, want loregd", target)
 	}
 
@@ -213,7 +213,7 @@ func TestClaimGrantAndRevoke(t *testing.T) {
 	if holder, _, _ := store.ClaimHolder(ctx, "registryd"); holder != "altregd" {
 		t.Errorf("holder after grant: %q, want altregd", holder)
 	}
-	if target, _ := os.Readlink(filepath.Join(root, "usr/bin/registryd")); target != "altregd" {
+	if target, _ := os.Readlink(filepath.Join(root, "usr/sbin/registryd")); target != "altregd" {
 		t.Errorf("link after grant: %q, want altregd", target)
 	}
 
@@ -224,7 +224,7 @@ func TestClaimGrantAndRevoke(t *testing.T) {
 	if _, found, _ := store.ClaimHolder(ctx, "registryd"); found {
 		t.Error("registryd should be unheld after revoke")
 	}
-	if _, err := os.Lstat(filepath.Join(root, "usr/bin/registryd")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(root, "usr/sbin/registryd")); !os.IsNotExist(err) {
 		t.Errorf("link should be gone after revoke, Lstat err=%v", err)
 	}
 }

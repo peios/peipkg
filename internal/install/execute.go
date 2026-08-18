@@ -50,6 +50,14 @@ type Env struct {
 	// Claims directs install-time claim behaviour (§7.7.2). The zero
 	// value auto-claims unheld roles the installed packages provide.
 	Claims ClaimDirective
+	// BypassPathRestrictions waives the §3.4 payload layout check for
+	// packages that declare special_system_package — the operator's half
+	// of the two-key exemption (peipkg install
+	// --dangerously-bypass-path-restrictions). It has no effect on a
+	// package that does not declare itself special: a package cannot be
+	// exempted without saying so, and saying so exempts nothing on its
+	// own.
+	BypassPathRestrictions bool
 }
 
 // Result reports the outcome of an execution.

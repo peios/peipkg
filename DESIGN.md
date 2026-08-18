@@ -112,7 +112,7 @@ test-enforced.
 ### The package database — a private SQLite store
 
 Installed-package state lives in a **private SQLite database** at
-`/var/lib/peipkg/db.sqlite`, **not** in the registry (LCS). The registry
+`/var/state/peipkg/db.sqlite`, **not** in the registry (LCS). The registry
 is for *configuration* — mutable state that reconcilers materialise; the
 package database is an *internal ledger* of fact. A registry-backed DB
 would also gate peipkg v1 on LCS (unimplemented) and create a
@@ -120,7 +120,7 @@ bootstrapping circularity (peipkg installs the registry components).
 Schema: see "The package database".
 
 The DB, the transaction journal, the staging area and the download
-cache all live under `/var/lib/peipkg/`, with an SD granting write to
+cache all live under `/var/state/peipkg/`, with an SD granting write to
 the install-authority tier. A member of that tier can therefore corrupt
 the shared DB — the same trust posture as `dpkg`'s status file under
 root, acceptable within one tier. When `elex` exists, the DB can be
@@ -176,11 +176,11 @@ Stage phase.
 Two distinct things, two homes, opposite lifecycles:
 
 - **Configuration** — operator intent: which repositories exist, their
-  trust anchors, signature policy, priority. Lives in `/conf/peipkg/*`.
+  trust anchors, signature policy, priority. Lives in `/lcl/conf/peipkg/*`.
 - **Derived state** — descriptors, indexes, freshness counters. Lives in
-  `/var/lib/peipkg/` (the SQLite DB and a cache directory).
+  `/var/state/peipkg/` (the SQLite DB and a cache directory).
 
-`/conf/peipkg/*` is a **temporary placeholder**: when LCS lands,
+`/lcl/conf/peipkg/*` is a **temporary placeholder**: when LCS lands,
 repository configuration moves into the registry. The config/state split
 is therefore the **LCS-migration seam** — config migrates to the
 registry, the state DB stays SQLite forever. peipkg reads configuration
@@ -189,7 +189,7 @@ LCS implementation later) so the migration is one contained change.
 
 ### Repository config files
 
-One file per repository: `/conf/peipkg/<name>.repo`, the
+One file per repository: `/lcl/conf/peipkg/<name>.repo`, the
 `sources.list.d` pattern. The file is **fully flat TOML** — every
 top-level key maps 1:1 to a future Windows-style registry value, so
 every field is a scalar or a list-of-scalars (no nested tables, no
@@ -208,7 +208,7 @@ supplying it out-of-band (§6.5.2). `peipkg repo add` is a convenience
 that runs the §6.5.2 interactive trust ceremony (fetch descriptor,
 display the fetched fingerprint grouped for visual comparison, confirm)
 and writes the file. Who may write repository config is the SD on
-`/conf/peipkg/`; a rogue `.repo` file is not itself an exploit, since
+`/lcl/conf/peipkg/`; a rogue `.repo` file is not itself an exploit, since
 installing from a repository still passes install-target authority and
 signature verification.
 
@@ -373,7 +373,7 @@ limit. A transaction can span filesystems (`/var`, `/boot`, `/opt` are
 commonly separate mounts). Therefore **the commit never renames across a
 directory boundary**: each file is staged as a temporary file *inside
 its own destination directory*, then renamed in place — same directory,
-guaranteed same filesystem, atomic, `EXDEV` impossible. `/var/lib/peipkg/`
+guaranteed same filesystem, atomic, `EXDEV` impossible. `/var/state/peipkg/`
 holds the DB and download cache, which are read in place, never renamed
 onto another filesystem.
 
@@ -516,7 +516,7 @@ past the durability boundary.
 
 ## The package database
 
-SQLite in WAL mode at `/var/lib/peipkg/db.sqlite`. WAL gives Phase 1 and
+SQLite in WAL mode at `/var/state/peipkg/db.sqlite`. WAL gives Phase 1 and
 `query` reads a lockless consistent snapshot of committed state while a
 transaction is in flight. Seven tables:
 
@@ -539,7 +539,7 @@ Design points:
   why SQLite-as-the-durability-boundary works (F2); atomicity is
   SQLite's, not something peipkg builds.
 - Repository **state** is here; repository **config** is in
-  `/conf/peipkg/*` — that boundary is the LCS-migration seam.
+  `/lcl/conf/peipkg/*` — that boundary is the LCS-migration seam.
 
 ---
 
@@ -562,7 +562,7 @@ Design points:
   core system packages) that `uninstall` refuses without
   `--allow-critical`. A foot-gun guard, not a security boundary.
 - **Drop-in directories**: a non-official-repo package whose payload
-  writes to the top level of a protected `/etc/*.d/` directory is
+  writes to the top level of a protected `/usr/etc/*.d/` directory is
   rejected at plan time (§3.4.4.1; v1 uses the spec's fixed list).
 - **Single-writer**: one transaction at a time, an exclusive lock with
   conservative stale-lock detection (`kill(pid,0)` + start-time check).
@@ -634,7 +634,7 @@ Out of v1 scope, or pending peer subsystems that do not yet exist:
   asymmetric-key and event-co-signing primitives.
 - **`/etc` reconciler convergence** — depends on the future reconciler
   framework.
-- **`/conf/peipkg/*` → registry migration** — depends on LCS.
+- **`/lcl/conf/peipkg/*` → registry migration** — depends on LCS.
 - **eventd draining** — `kmes_emit` works today; eventd (the drain and
   store) does not exist yet.
 - **`elex` hardening** of the package database — optional, when `elex`

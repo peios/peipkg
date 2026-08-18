@@ -56,8 +56,8 @@ needs not yet seen.
 
 The enabling fact is that peipkg's database is **already fully per-root**
 (DESIGN.md → "The package database"): each root carries its own
-`<root>/var/lib/peipkg/db.sqlite`, journal, staging area, and cache, and
-its own `<root>/conf/peipkg/*` config. A "named root" introduces no new
+`<root>/var/state/peipkg/db.sqlite`, journal, staging area, and cache, and
+its own `<root>/lcl/conf/peipkg/*` config. A "named root" introduces no new
 storage model — it is a name→path indirection plus one small registry
 table. The same physical separation is what makes cross-root
 dependencies clean rather than dangerous: there is no shared, mutable
@@ -574,7 +574,7 @@ manifest lowering):
 
 - **Repo availability for composed roots beyond v1.** v1 fetches and
   resolves cross-root deps from the anchor's repos. When registry
-  integration replaces the temporary `/conf/peipkg/*` repo system, revisit
+  integration replaces the temporary `/lcl/conf/peipkg/*` repo system, revisit
   whether a composed root should be able to draw on its own sources.
 - **`peipkg-compose` overlap.** ✅ **Resolved (2026-06-24): compose builds
   multi-root images.** compose and the consumer were confirmed orthogonal

@@ -111,6 +111,8 @@ func cmdBuild(args []string) int {
 	out := fs.String("out", "", "output root directory")
 	locked := fs.Bool("locked", false, "require an existing lock; do not resolve")
 	update := fs.Bool("update", false, "re-resolve and overwrite the lock")
+	bypassPaths := fs.Bool("dangerously-bypass-path-restrictions", false,
+		"permit packages declaring special_system_package to compose outside the §3.4 layout")
 	manifest, err := parseOneManifest(fs, args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "peipkg-compose build:", err)
@@ -127,6 +129,8 @@ func cmdBuild(args []string) int {
 		Update:       *update,
 		Fetcher:      repository.NewHTTPFetcher(),
 		Warnings:     os.Stderr,
+
+		BypassPathRestrictions: *bypassPaths,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "peipkg-compose: %v\n", err)

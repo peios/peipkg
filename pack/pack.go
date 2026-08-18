@@ -48,6 +48,19 @@ type Manifest struct {
 	// is a root reference (a named reference, never a path).
 	DefaultRoot string
 
+	// SpecialSystemPackage marks a package exempt from the §3.4 payload
+	// layout rules: fsbase's mountpoint tree, the kernel, and the few
+	// others whose job is to lay down the very structure those rules
+	// protect. Declaring it makes [ValidatePayload] and [ValidateFiles]
+	// no-ops for this package.
+	//
+	// It grants nothing at install time. An installer refuses an
+	// out-of-layout payload unless the operator ALSO passes
+	// --dangerously-bypass-path-restrictions (or the compose
+	// equivalent). A package may propose its own exemption; only the
+	// operator can grant it.
+	SpecialSystemPackage bool
+
 	Dependencies         []Dependency
 	OptionalDependencies []Dependency
 	Conflicts            []Dependency
@@ -196,14 +209,21 @@ func Pack(opts PackOptions) error {
 // coherence against architecture (§3.4.2), the empty-/var/ rule
 // (§3.4.4), and symlink-target containment (§3.4.10).
 //
-// Validation is a separate, opt-in call rather than part of [Pack]:
-// exotic packages (a kernel's /boot tree, for one) deliberately stage
-// layouts the strict rules reject. Ordinary producers should validate
-// before packing so violations surface at build time rather than at
-// install time on a target system. Failures are aggregated so a single
-// run reports every problem.
-func ValidatePayload(architecture, stagedRoot string) error {
-	return internalpack.ValidatePayload(architecture, stagedRoot)
+// Validation is a separate call rather than part of [Pack] so a
+// producer keeps control of when it runs. A package that declares
+// [Manifest.SpecialSystemPackage] is exempt and this returns nil
+// immediately — that declaration is how a kernel or fsbase stages a
+// layout the ordinary rules reject, replacing the old convention of
+// simply not calling this.
+//
+// Producers should validate before packing so violations surface at
+// build time rather than at install time on a target system. Failures
+// are aggregated so a single run reports every problem.
+func ValidatePayload(m Manifest, stagedRoot string) error {
+	if m.SpecialSystemPackage {
+		return nil
+	}
+	return internalpack.ValidatePayload(m.Architecture, stagedRoot)
 }
 
 // ValidateFiles runs the same §3.4 layout checks over an explicit
@@ -211,8 +231,11 @@ func ValidatePayload(architecture, stagedRoot string) error {
 // to [ValidatePayload]. Checks apply to the archive paths; sources are
 // only consulted for entry kinds and symlink targets, so they must
 // exist.
-func ValidateFiles(architecture string, files map[string]string) error {
-	return internalpack.ValidateFiles(architecture, files)
+func ValidateFiles(m Manifest, files map[string]string) error {
+	if m.SpecialSystemPackage {
+		return nil
+	}
+	return internalpack.ValidateFiles(m.Architecture, files)
 }
 
 // toInternalManifest converts the public manifest into its internal
@@ -279,6 +302,7 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 		License:              m.License,
 		Homepage:             m.Homepage,
 		DefaultRoot:          m.DefaultRoot,
+		SpecialSystemPackage: m.SpecialSystemPackage,
 		Dependencies:         deps,
 		OptionalDependencies: optDeps,
 		Conflicts:            conflicts,

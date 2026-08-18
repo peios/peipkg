@@ -32,6 +32,8 @@ func cmdInstall(app *App, args []string) error {
 		"comma-separated roles to claim, overriding current holders")
 	allowStale := fs.Bool("allow-stale", false,
 		"proceed although a repository's trust state exceeds its maximum trusted age (§6.5.4)")
+	bypassPaths := fs.Bool("dangerously-bypass-path-restrictions", false,
+		"permit packages declaring special_system_package to install outside the §3.4 layout")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -39,6 +41,7 @@ func cmdInstall(app *App, args []string) error {
 	if len(pos) == 0 {
 		return fmt.Errorf("install: at least one package name or .peipkg file is required")
 	}
+	app.bypassPathRestrictions = *bypassPaths
 	claimDir, err := claimDirective(*noClaim, *claimAll, *claimRoles)
 	if err != nil {
 		return err
@@ -470,13 +473,14 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	}
 
 	env := install.Env{
-		Root:           app.paths.root,
-		DB:             store,
-		LockPath:       app.paths.lockPath,
-		PeipkgVersion:  peipkgVersion,
-		RunSideEffects: true,
-		Claims:         claimDir,
-		Provider:       provider,
+		Root:                   app.paths.root,
+		DB:                     store,
+		LockPath:               app.paths.lockPath,
+		PeipkgVersion:          peipkgVersion,
+		RunSideEffects:         true,
+		Claims:                 claimDir,
+		Provider:               provider,
+		BypassPathRestrictions: app.bypassPathRestrictions,
 	}
 	result, err := install.Execute(ctx, plan, env)
 	if err != nil {
@@ -614,6 +618,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 			Root: root, DB: store, LockPath: p.lockPath,
 			PeipkgVersion: peipkgVersion, RunSideEffects: true,
 			Claims: claimDir, Provider: provider,
+			BypassPathRestrictions: app.bypassPathRestrictions,
 		}
 	}
 
@@ -840,8 +845,8 @@ func availableSet(ctx context.Context, app *App, store *db.DB) (
 				Dependencies: e.Dependencies, Conflicts: e.Conflicts,
 				Provides: e.Provides, Replaces: e.Replaces,
 				Repo: cfg.Name, RepoPriority: cfg.Priority,
-				DefaultRoot:    e.DefaultRoot,
-				URL:            e.URL, Hash: e.Hash,
+				DefaultRoot: e.DefaultRoot,
+				URL:         e.URL, Hash: e.Hash,
 				SizeCompressed: e.SizeCompressed, SizeInstalled: e.SizeInstalled,
 			})
 		}

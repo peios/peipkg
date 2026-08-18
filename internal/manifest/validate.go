@@ -79,6 +79,11 @@ func (wm wireManifest) validate() (Manifest, error) {
 		m.DefaultRoot = wm.DefaultRoot
 	}
 
+	// special_system_package needs no validation beyond its type: it is a
+	// declaration, not a grant. Install refuses an out-of-layout payload
+	// unless the operator also passes the bypass flag.
+	m.SpecialSystemPackage = wm.SpecialSystemPackage
+
 	if *wm.SizeInstalled < 0 {
 		return Manifest{}, fmt.Errorf(
 			"peipkg/manifest: size_installed is negative (%d)", *wm.SizeInstalled)

@@ -33,6 +33,7 @@ type wireManifest struct {
 	License              string            `json:"license"`
 	Homepage             string            `json:"homepage"`
 	DefaultRoot          string            `json:"default_root"`
+	SpecialSystemPackage bool              `json:"special_system_package"`
 	Dependencies         *[]wireDependency `json:"dependencies"`
 	OptionalDependencies []wireDependency  `json:"optional_dependencies"`
 	Conflicts            *[]wireDependency `json:"conflicts"`

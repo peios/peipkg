@@ -23,7 +23,7 @@ func TestClaimsProviderValid(t *testing.T) {
 		map[string]any{
 			"name": "registryd",
 			"claims": map[string]any{
-				"binary": map[string]any{"target": "/usr/bin/loregd"},
+				"binary": map[string]any{"target": "/usr/sbin/loregd"},
 			},
 		},
 	))
@@ -34,7 +34,7 @@ func TestClaimsProviderValid(t *testing.T) {
 	if !ok {
 		t.Fatalf("Claims: missing binary slot in %+v", m.Provides[0].Claims)
 	}
-	if slot.Target != "/usr/bin/loregd" {
+	if slot.Target != "/usr/sbin/loregd" {
 		t.Errorf("Target: got %q", slot.Target)
 	}
 	if slot.Path != "" {
@@ -48,12 +48,12 @@ func TestClaimsProviderDefaultPath(t *testing.T) {
 			"name": "registryd",
 			"claims": map[string]any{
 				"binary": map[string]any{
-					"target": "/usr/bin/loregd", "path": "/usr/bin/registryd"},
+					"target": "/usr/sbin/loregd", "path": "/usr/sbin/registryd"},
 			},
 		},
 	))
 	slot := m.Provides[0].Claims["binary"]
-	if slot.Target != "/usr/bin/loregd" || slot.Path != "/usr/bin/registryd" {
+	if slot.Target != "/usr/sbin/loregd" || slot.Path != "/usr/sbin/registryd" {
 		t.Errorf("slot: got %+v", slot)
 	}
 }
@@ -63,7 +63,7 @@ func TestClaimsConsumerValid(t *testing.T) {
 		map[string]any{
 			"name": "registryd",
 			"claims": map[string]any{
-				"binary": map[string]any{"path": "/usr/bin/registryd"},
+				"binary": map[string]any{"path": "/usr/sbin/registryd"},
 			},
 		},
 	))
@@ -71,7 +71,7 @@ func TestClaimsConsumerValid(t *testing.T) {
 	if !ok {
 		t.Fatalf("Claims: missing binary slot in %+v", m.Dependencies[0].Claims)
 	}
-	if slot.Path != "/usr/bin/registryd" {
+	if slot.Path != "/usr/sbin/registryd" {
 		t.Errorf("Path: got %q", slot.Path)
 	}
 	if slot.Target != "" {
@@ -107,7 +107,7 @@ func TestClaimsRejected(t *testing.T) {
 	cases := map[string]map[string]any{
 		"consumer with target": withDeps(map[string]any{
 			"name":   "registryd",
-			"claims": map[string]any{"binary": map[string]any{"target": "/usr/bin/loregd"}},
+			"claims": map[string]any{"binary": map[string]any{"target": "/usr/sbin/loregd"}},
 		}),
 		"consumer missing path": withDeps(map[string]any{
 			"name":   "registryd",
@@ -115,11 +115,11 @@ func TestClaimsRejected(t *testing.T) {
 		}),
 		"provider missing target": withProvides(map[string]any{
 			"name":   "registryd",
-			"claims": map[string]any{"binary": map[string]any{"path": "/usr/bin/registryd"}},
+			"claims": map[string]any{"binary": map[string]any{"path": "/usr/sbin/registryd"}},
 		}),
 		"relative path": withDeps(map[string]any{
 			"name":   "registryd",
-			"claims": map[string]any{"binary": map[string]any{"path": "usr/bin/registryd"}},
+			"claims": map[string]any{"binary": map[string]any{"path": "usr/sbin/registryd"}},
 		}),
 		"unclean path": withDeps(map[string]any{
 			"name":   "registryd",
@@ -127,7 +127,7 @@ func TestClaimsRejected(t *testing.T) {
 		}),
 		"invalid slot name": withDeps(map[string]any{
 			"name":   "registryd",
-			"claims": map[string]any{"-bad-": map[string]any{"path": "/usr/bin/registryd"}},
+			"claims": map[string]any{"-bad-": map[string]any{"path": "/usr/sbin/registryd"}},
 		}),
 	}
 	for name, m := range cases {
@@ -141,7 +141,7 @@ func TestClaimsRejectedOnConflicts(t *testing.T) {
 	m["conflicts"] = []any{
 		map[string]any{
 			"name":   "registryd",
-			"claims": map[string]any{"binary": map[string]any{"path": "/usr/bin/registryd"}},
+			"claims": map[string]any{"binary": map[string]any{"path": "/usr/sbin/registryd"}},
 		},
 	}
 	wantReject(t, m)

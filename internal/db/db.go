@@ -1,5 +1,5 @@
 // Package db is peipkg's private package database: the SQLite store at
-// /var/lib/peipkg/db.sqlite that records every installed package and the
+// /var/state/peipkg/db.sqlite that records every installed package and the
 // transaction journal.
 //
 // A database is opened with [Open], which configures the connection and

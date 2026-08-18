@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/peios/peipkg/internal/archive"
+	packvalidate "github.com/peios/peipkg/internal/build/pack"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/resolver"
 )
@@ -64,6 +65,24 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 	pp ProvidedPackage, plannedDirs map[string]bool) (stagedOp, error) {
 
 	s := stagedOp{op: op, stagedAt: map[string]string{}}
+
+	// §3.4 layout enforcement, at the last point before bytes reach the
+	// filesystem. Pack-time validation is a producer's courtesy to
+	// itself and proves nothing here — the .peipkg on this machine need
+	// not have come from a cooperating producer.
+	//
+	// Every root is held to the same rules, the nested initramfs included.
+	// Packages install vendor storage paths under /usr; runtime projections such
+	// as /bin are filesystem topology, not package destinations. A package that
+	// genuinely must lay down other structure declares itself special like any
+	// other.
+	//
+	// Two keys open this: the package declares special_system_package
+	// AND the operator passed --dangerously-bypass-path-restrictions.
+	// Either alone leaves the check in force.
+	if err := checkPayloadLayout(env, pp); err != nil {
+		return s, err
+	}
 
 	// The files the package's previous version owns — empty for a fresh
 	// install — diffed against the new payload to find removed files.
@@ -285,10 +304,16 @@ func originRepo(op resolver.Operation) string {
 	return ""
 }
 
-// isEtcPath reports whether a logical path is configuration under /etc,
-// where §7.2.2 modified-detection applies.
+// isEtcPath reports whether a logical path is configuration in the /etc
+// namespace, where §7.2.2 modified-detection applies.
+//
+// /usr/etc is where package config now lands: packages no longer write
+// /etc directly, which is a merged view resolving usr/etc < system/retc
+// < lcl/etc. Bare /etc is still recognised so a package installed before
+// the layout change keeps its modified-file protection across the
+// upgrade that moves it.
 func isEtcPath(logical string) bool {
-	return strings.HasPrefix(logical, "/etc/")
+	return strings.HasPrefix(logical, "/usr/etc/") || strings.HasPrefix(logical, "/etc/")
 }
 
 // fileModified reports whether the file at path has content differing
@@ -305,4 +330,43 @@ func fileModified(path, recordedHash string) (bool, error) {
 		return false, fmt.Errorf("peipkg/install: hashing %s: %w", path, err)
 	}
 	return hex.EncodeToString(h.Sum(nil)) != recordedHash, nil
+}
+
+// checkPayloadLayout enforces the §3.4 payload layout rules over a
+// verified package immediately before staging.
+//
+// The exemption needs both keys turned at once. A package that declares
+// special_system_package but meets an installer that was not given
+// --dangerously-bypass-path-restrictions is still checked, and the error
+// says so — the operator is told an exemption was asked for and refused,
+// rather than the install silently succeeding or failing obscurely.
+func checkPayloadLayout(env Env, pp ProvidedPackage) error {
+	if pp.Pkg == nil {
+		return nil
+	}
+	special := pp.Pkg.Manifest.SpecialSystemPackage
+	if special && env.BypassPathRestrictions {
+		return nil
+	}
+
+	entries := make([]packvalidate.InstallEntry, 0, len(pp.Pkg.Payload))
+	for _, e := range pp.Pkg.Payload {
+		entries = append(entries, packvalidate.InstallEntry{
+			Path:       e.Path,
+			IsDir:      e.Type == archive.EntryDir,
+			IsSymlink:  e.Type == archive.EntrySymlink,
+			LinkTarget: e.LinkTarget,
+		})
+	}
+
+	err := packvalidate.ValidateInstallPaths(pp.Pkg.Manifest.Architecture, entries)
+	if err == nil {
+		return nil
+	}
+	if special {
+		return fmt.Errorf(
+			"%s declares special_system_package but this install did not pass "+
+				"--dangerously-bypass-path-restrictions: %w", pp.Pkg.Manifest.Name, err)
+	}
+	return err
 }

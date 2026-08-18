@@ -123,7 +123,7 @@ func resolveRootRef(ctx context.Context, anchor, ref string) (string, error) {
 // the root has no database yet, which for resolution means the root holds
 // no registry (so a name looked up there is simply unregistered).
 func openRootDB(ctx context.Context, root string) (store *db.DB, exists bool, err error) {
-	dbPath := filepath.Join(root, "var/lib/peipkg/db.sqlite")
+	dbPath := filepath.Join(root, "var/state/peipkg/db.sqlite")
 	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, false, nil

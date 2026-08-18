@@ -44,6 +44,12 @@ type BuildOptions struct {
 	Fetcher Fetcher
 	// Warnings receives non-fatal notices and may be nil.
 	Warnings io.Writer
+	// BypassPathRestrictions permits packages that declare
+	// special_system_package to compose payloads outside the §3.4
+	// layout — the compose equivalent of `peipkg install
+	// --dangerously-bypass-path-restrictions`. It exempts nothing that
+	// has not declared itself special.
+	BypassPathRestrictions bool
 }
 
 // BuildResult describes a completed root composition.
@@ -66,6 +72,8 @@ func Build(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 		Update:       opts.Update,
 		Fetcher:      fetcherOrDefault(opts.Fetcher),
 		Warnings:     opts.Warnings,
+
+		BypassPathRestrictions: opts.BypassPathRestrictions,
 	})
 	if err != nil {
 		return BuildResult{}, err

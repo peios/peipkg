@@ -29,6 +29,9 @@ type testPkg struct {
 	files         map[string]string // payload path -> content
 	dirs          []string          // payload paths
 	symlinks      map[string]string // payload path -> target
+	// special marks the package as declaring special_system_package —
+	// its half of the two-key §3.4 layout exemption.
+	special bool
 }
 
 // fakeProvider serves pre-built verified packages by name.
@@ -127,6 +130,7 @@ func provide(t *testing.T, p testPkg) install.ProvidedPackage {
 	pkg := &archive.Package{
 		Manifest: manifest.Manifest{
 			Name: p.name, Version: mustVer(t, p.version), Architecture: "x86_64",
+			SpecialSystemPackage: p.special,
 		},
 		ManifestJSON: []byte(fmt.Sprintf(`{"name":%q,"version":%q}`, p.name, p.version)),
 		Payload:      payload,
@@ -202,7 +206,7 @@ func TestExecuteInstallMultiplePackages(t *testing.T) {
 	env := install.Env{
 		Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test",
 		Provider: fakeProvider{
-			"libc":  provide(t, testPkg{name: "libc", version: "2.39-1", files: map[string]string{"usr/lib/libc.so": "libc"}}),
+			"libc":  provide(t, testPkg{name: "libc", version: "2.39-1", files: map[string]string{"usr/lib/x86_64-linux-peios/libc.so": "libc"}}),
 			"nginx": provide(t, testPkg{name: "nginx", version: "1.0-1", files: map[string]string{"usr/bin/nginx": "nginx"}}),
 		},
 	}
@@ -390,14 +394,14 @@ func TestExecuteUpgradeKeepsModifiedEtcFile(t *testing.T) {
 	installEnv := baseEnv
 	installEnv.Provider = fakeProvider{"app": provide(t, testPkg{
 		name: "app", version: "1.0-1",
-		files: map[string]string{"etc/app.conf": "default config v1"}})}
+		files: map[string]string{"usr/etc/app.conf": "default config v1"}})}
 	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
 		installOp(t, "app", "1.0-1")}}, installEnv); err != nil {
 		t.Fatalf("Execute (install): %v", err)
 	}
 
 	// The operator edits the config file after install.
-	confPath := filepath.Join(root, "etc/app.conf")
+	confPath := filepath.Join(root, "usr/etc/app.conf")
 	if err := os.WriteFile(confPath, []byte("operator's edits"), 0o644); err != nil {
 		t.Fatalf("edit conf: %v", err)
 	}
@@ -405,7 +409,7 @@ func TestExecuteUpgradeKeepsModifiedEtcFile(t *testing.T) {
 	upgradeEnv := baseEnv
 	upgradeEnv.Provider = fakeProvider{"app": provide(t, testPkg{
 		name: "app", version: "1.1-1",
-		files: map[string]string{"etc/app.conf": "default config v2"}})}
+		files: map[string]string{"usr/etc/app.conf": "default config v2"}})}
 	result, err := install.Execute(ctx, resolver.Plan{
 		Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "1.1-1")}}, upgradeEnv)
 	if err != nil {
@@ -432,7 +436,7 @@ func TestExecuteUpgradeReplacesUnmodifiedEtcFile(t *testing.T) {
 	installEnv := baseEnv
 	installEnv.Provider = fakeProvider{"app": provide(t, testPkg{
 		name: "app", version: "1.0-1",
-		files: map[string]string{"etc/app.conf": "default config v1"}})}
+		files: map[string]string{"usr/etc/app.conf": "default config v1"}})}
 	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
 		installOp(t, "app", "1.0-1")}}, installEnv); err != nil {
 		t.Fatalf("Execute (install): %v", err)
@@ -442,13 +446,13 @@ func TestExecuteUpgradeReplacesUnmodifiedEtcFile(t *testing.T) {
 	upgradeEnv := baseEnv
 	upgradeEnv.Provider = fakeProvider{"app": provide(t, testPkg{
 		name: "app", version: "1.1-1",
-		files: map[string]string{"etc/app.conf": "default config v2"}})}
+		files: map[string]string{"usr/etc/app.conf": "default config v2"}})}
 	if _, err := install.Execute(ctx, resolver.Plan{
 		Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "1.1-1")}}, upgradeEnv); err != nil {
 		t.Fatalf("Execute (upgrade): %v", err)
 	}
 
-	confPath := filepath.Join(root, "etc/app.conf")
+	confPath := filepath.Join(root, "usr/etc/app.conf")
 	if got, _ := os.ReadFile(confPath); string(got) != "default config v2" {
 		t.Errorf("an unmodified /etc file should be replaced: content %q", got)
 	}

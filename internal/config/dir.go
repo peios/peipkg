@@ -17,7 +17,7 @@ import (
 const repoFileExt = ".repo"
 
 // DirProvider is a [Provider] backed by a directory of <name>.repo TOML
-// files — the temporary /conf/peipkg/ layout used until the registry
+// files — the temporary /lcl/conf/peipkg/ layout used until the registry
 // lands.
 type DirProvider struct {
 	dir string

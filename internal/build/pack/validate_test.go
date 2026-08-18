@@ -12,37 +12,43 @@ func TestValidateAcceptsPermittedPaths(t *testing.T) {
 		{path: "usr/bin/foo", kind: kindFile},
 		{path: "usr/sbin/food", kind: kindFile},
 		{path: "usr/lib/x86_64-linux-peios/libfoo.so.1", kind: kindFile},
-		{path: "usr/libexec/peios/features.d/foo/install.sh", kind: kindFile},
+		{path: "usr/libexec/features/foo/install.sh", kind: kindFile},
+		{path: "usr/lib/modules/6.16.0-peios/kernel/fs/ext4/ext4.ko", kind: kindFile},
+		{path: "usr/lib/firmware/amdgpu/aldebaran.bin", kind: kindFile},
 		{path: "usr/share/doc/foo/README", kind: kindFile},
 		{path: "usr/include/foo.h", kind: kindFile},
-		{path: "etc/foo/foo.conf", kind: kindFile},
-		{path: "opt/foo/bin/foo", kind: kindFile},
-		{path: "system/boot/prelude/init", kind: kindFile},
+		{path: "usr/etc/foo/foo.conf", kind: kindFile},
+		{path: "usr/conf/foo/foo.conf", kind: kindFile},
 		{path: "hooks/mount-root.sh", kind: kindFile},
 		{path: "++/microcode/kernel/x86/microcode/GenuineIntel.bin", kind: kindFile},
 		{path: "var", kind: kindDir},
-		{path: "proc", kind: kindDir},
-		{path: "sys", kind: kindDir},
-		{path: "dev", kind: kindDir},
-		{path: "run", kind: kindDir},
-		{path: "tmp", kind: kindDir},
 	}
 	if err := validateEntries("x86_64", leaves); err != nil {
 		t.Errorf("expected accept, got: %v", err)
 	}
 }
 
-func TestValidateRejectsPopulatedRuntimeMountpoint(t *testing.T) {
-	for _, path := range []string{
-		"proc/version",
-		"sys/kernel",
-		"dev/null",
-		"run/service/socket",
-		"tmp/file",
+// TestValidateRejectsRuntimeMountpoints covers the kernel-interface and
+// runtime roots. They were once admitted as bare directories so fsbase
+// could ship the mountpoint tree; that carve-out is gone, and a package
+// laying down this structure now declares special_system_package and is
+// installed with the operator's explicit bypass. Nothing else may write
+// here, as a directory or otherwise.
+func TestValidateRejectsRuntimeMountpoints(t *testing.T) {
+	for _, l := range []entry{
+		{path: "proc/version", kind: kindFile},
+		{path: "sys/kernel", kind: kindFile},
+		{path: "dev/null", kind: kindFile},
+		{path: "run/service/socket", kind: kindFile},
+		{path: "tmp/file", kind: kindFile},
+		{path: "proc", kind: kindDir},
+		{path: "sys", kind: kindDir},
+		{path: "dev", kind: kindDir},
+		{path: "run", kind: kindDir},
+		{path: "tmp", kind: kindDir},
 	} {
-		err := validateEntries("x86_64", []entry{{path: path, kind: kindFile}})
-		if err == nil {
-			t.Errorf("path %q: expected rejection for populated runtime mountpoint", path)
+		if err := validateEntries("x86_64", []entry{l}); err == nil {
+			t.Errorf("path %q (dir=%v): expected rejection", l.path, l.kind == kindDir)
 		}
 	}
 }
@@ -100,13 +106,15 @@ func TestValidateRejectsBareUsrLib(t *testing.T) {
 func TestValidateAcceptsOsRelease(t *testing.T) {
 	// /usr/lib/os-release is the freedesktop contract path: arch-independent and
 	// exempt from the triplet layout, so it is permitted directly under
-	// /usr/lib/ even in a noarch package, alongside the /etc compat symlink.
+	// /usr/lib/ even in a noarch package. The compat symlink ships in the vendor
+	// config layer (/usr/etc), not /etc — packages never write /etc directly;
+	// the merged view projects usr/etc < system/retc < lcl/etc.
 	err := validateEntries("noarch", []entry{
 		{path: "usr/lib/os-release", kind: kindFile},
-		{path: "etc/os-release", kind: kindSymlink, linkTarget: "../usr/lib/os-release"},
+		{path: "usr/etc/os-release", kind: kindSymlink, linkTarget: "../lib/os-release"},
 	})
 	if err != nil {
-		t.Errorf("expected accept of os-release + /etc symlink, got: %v", err)
+		t.Errorf("expected accept of os-release + /usr/etc symlink, got: %v", err)
 	}
 }
 
@@ -228,7 +236,7 @@ func TestValidateRejectsSymlinkEscapingPeipkgTree(t *testing.T) {
 	// (path.Join produces "../foo"). This is the strongest escape: not
 	// just outside §3.4.1, but outside the entire relative root.
 	err := validateEntries("x86_64", []entry{
-		{path: "etc/foo", kind: kindSymlink, linkTarget: "../../../bar"},
+		{path: "usr/etc/foo", kind: kindSymlink, linkTarget: "../../../bar"},
 	})
 	if err == nil {
 		t.Errorf("expected rejection of target escaping peipkg tree, got nil")
@@ -237,16 +245,36 @@ func TestValidateRejectsSymlinkEscapingPeipkgTree(t *testing.T) {
 
 // TestValidateAcceptsSymlinkToSystemFileShape documents the format-level
 // gap: a symlink whose resolved path lands inside §3.4.1 destinations
-// (here, "etc/passwd") passes format-level validation, even though
-// /etc/passwd is typically a system-managed file no peipkg owns. The
-// install-time consumer is responsible for catching this via collision
-// detection. See the §3.4 informative note covering this case.
+// (here, "usr/etc/passwd") passes format-level validation, even though that
+// is typically a system-managed file no peipkg owns. The install-time
+// consumer is responsible for catching this via collision detection. See the
+// §3.4 informative note covering this case.
 func TestValidateAcceptsSymlinkToSystemFileShape(t *testing.T) {
 	err := validateEntries("x86_64", []entry{
-		{path: "usr/share/foo/link", kind: kindSymlink, linkTarget: "../../../etc/passwd"},
+		{path: "usr/share/foo/link", kind: kindSymlink, linkTarget: "../../etc/passwd"},
 	})
 	if err != nil {
-		t.Errorf("format-level validator should accept syntactically valid /etc/-relative target; got: %v", err)
+		t.Errorf("format-level validator should accept syntactically valid vendor-config target; got: %v", err)
+	}
+}
+
+// TestValidateRejectsOperatorAndDerivedRoots locks in the two top-level
+// destinations withdrawn when the Peios filesystem layout was formalised:
+// /opt is operator territory and deliberately off this allowlist, and
+// /system holds material derived from the image, registry or platform, so
+// nothing a package ships belongs there either.
+func TestValidateRejectsOperatorAndDerivedRoots(t *testing.T) {
+	for _, path := range []string{
+		"opt/foo/bin/foo",
+		"system/boot/prelude/init",
+		"system/retc/foo.conf",
+		"lcl/policy/autorun.d/foo.sh",
+		"lcl/etc/foo.conf",
+		"etc/foo/foo.conf",
+	} {
+		if err := validateEntries("x86_64", []entry{{path: path, kind: kindFile}}); err == nil {
+			t.Errorf("path %q: expected rejection, got nil", path)
+		}
 	}
 }
 

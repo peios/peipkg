@@ -486,7 +486,7 @@ func installLiveBootCrossRoot(t *testing.T) (app *App, anchor, initramfs string)
 		map[string]any{"dependencies": []any{
 			map[string]any{"name": "peiosutils", "root": "initramfs"}}})
 	puBytes, puSize := buildSignedPackage(t, priv, pub, "peiosutils", "1.0-1",
-		map[string]string{"bin/peiosutils": "peiosutils"})
+		map[string]string{"usr/bin/peiosutils": "peiosutils"})
 	liveSum, puSum := sha256.Sum256(liveBytes), sha256.Sum256(puBytes)
 	liveURL := "/p/live-boot/1.0-1/live-boot_1.0-1_x86_64.peipkg"
 	puURL := "/p/peiosutils/1.0-1/peiosutils_1.0-1_x86_64.peipkg"
@@ -566,11 +566,11 @@ func TestCrossRootInstallEndToEnd(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(anchor, "usr/bin/live-boot")); err != nil || string(b) != "live-boot" {
 		t.Errorf("live-boot in anchor: %q err %v", b, err)
 	}
-	if b, err := os.ReadFile(filepath.Join(initramfs, "bin/peiosutils")); err != nil || string(b) != "peiosutils" {
+	if b, err := os.ReadFile(filepath.Join(initramfs, "usr/bin/peiosutils")); err != nil || string(b) != "peiosutils" {
 		t.Errorf("peiosutils in initramfs: %q err %v", b, err)
 	}
 	// peiosutils must NOT have been installed into the anchor.
-	if _, err := os.Stat(filepath.Join(anchor, "bin/peiosutils")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(anchor, "usr/bin/peiosutils")); !os.IsNotExist(err) {
 		t.Errorf("peiosutils should not be in the anchor root: %v", err)
 	}
 
@@ -611,7 +611,7 @@ func TestCrossRootUndoEndToEnd(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(anchor, "usr/bin/live-boot")); !os.IsNotExist(err) {
 		t.Errorf("live-boot should be removed from the anchor: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(initramfs, "bin/peiosutils")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(initramfs, "usr/bin/peiosutils")); !os.IsNotExist(err) {
 		t.Errorf("peiosutils should be removed from the initramfs root: %v", err)
 	}
 	// Both databases no longer record the packages.

@@ -46,7 +46,7 @@ type Manifest struct {
 	SourceDate time.Time
 	// Repositories are the package sources. They drive metadata fetch
 	// and verification during the build, and are written into the root
-	// as /conf/peipkg/<name>.repo.
+	// as /lcl/conf/peipkg/<name>.repo.
 	Repositories []config.RepoConfig
 	// LocalPackages are paths or globs of .peipkg files on the build
 	// host that join the resolver's candidate set — the bootstrap path

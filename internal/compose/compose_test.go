@@ -27,8 +27,8 @@ func TestFetchAndAssemble(t *testing.T) {
 	sizeInstalled := int64(len(binContent) + len(cfgContent))
 
 	entries := []testEntry{
-		{Path: "etc", IsDir: true},
-		{Path: "etc/foo.conf", Content: cfgContent},
+		{Path: "usr/etc", IsDir: true},
+		{Path: "usr/etc/foo.conf", Content: cfgContent},
 		{Path: "usr", IsDir: true},
 		{Path: "usr/bin", IsDir: true},
 		{Path: "usr/bin/foo", Content: binContent},
@@ -78,7 +78,7 @@ func TestFetchAndAssemble(t *testing.T) {
 	}
 
 	root := filepath.Join(t.TempDir(), "root")
-	if err := assemble(ctx, root, m, fetched); err != nil {
+	if err := assemble(ctx, root, m, fetched, false); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 
@@ -88,10 +88,10 @@ func TestFetchAndAssemble(t *testing.T) {
 	} else if !bytes.Equal(got, binContent) {
 		t.Errorf("usr/bin/foo content mismatch")
 	}
-	if got, err := os.ReadFile(filepath.Join(root, "etc/foo.conf")); err != nil {
-		t.Errorf("etc/foo.conf: %v", err)
+	if got, err := os.ReadFile(filepath.Join(root, "usr/etc/foo.conf")); err != nil {
+		t.Errorf("usr/etc/foo.conf: %v", err)
 	} else if !bytes.Equal(got, cfgContent) {
-		t.Errorf("etc/foo.conf content mismatch")
+		t.Errorf("usr/etc/foo.conf content mismatch")
 	}
 
 	// The .repo file was written so the booted root inherits the
@@ -111,9 +111,9 @@ func TestFetchAndAssemble(t *testing.T) {
 			Root      string `json:"root"`
 		} `json:"packages"`
 	}
-	invData, err := os.ReadFile(filepath.Join(root, "usr/share/peios/licenses.json"))
+	invData, err := os.ReadFile(filepath.Join(root, "usr/share/licenses.json"))
 	if err != nil {
-		t.Fatalf("usr/share/peios/licenses.json: %v", err)
+		t.Fatalf("usr/share/licenses.json: %v", err)
 	}
 	if err := json.Unmarshal(invData, &inventory); err != nil {
 		t.Fatalf("decoding licenses.json: %v", err)
@@ -128,7 +128,7 @@ func TestFetchAndAssemble(t *testing.T) {
 	}
 
 	// The seeded database has the right meta, package, and file rows.
-	store, err := db.Open(ctx, filepath.Join(root, "var/lib/peipkg/db.sqlite"))
+	store, err := db.Open(ctx, filepath.Join(root, "var/state/peipkg/db.sqlite"))
 	if err != nil {
 		t.Fatalf("opening seeded db: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestAssembleMaterializesClaims(t *testing.T) {
 	}
 
 	root := filepath.Join(t.TempDir(), "root")
-	if err := assemble(ctx, root, m, fetched); err != nil {
+	if err := assemble(ctx, root, m, fetched, false); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestAssembleMaterializesClaims(t *testing.T) {
 	}
 
 	// The holder and link rows were recorded in the seed transaction.
-	store, err := db.Open(ctx, filepath.Join(root, "var/lib/peipkg/db.sqlite"))
+	store, err := db.Open(ctx, filepath.Join(root, "var/state/peipkg/db.sqlite"))
 	if err != nil {
 		t.Fatalf("opening seeded db: %v", err)
 	}
@@ -408,7 +408,7 @@ name = "foo"
 	if result.RootDir != outDir || result.LockPath != lockPath || result.PackageCount != 1 {
 		t.Fatalf("result = %+v", result)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "var/lib/peipkg/db.sqlite")); err != nil {
+	if _, err := os.Stat(filepath.Join(outDir, "var/state/peipkg/db.sqlite")); err != nil {
 		t.Fatalf("seeded database missing: %v", err)
 	}
 }
@@ -455,7 +455,7 @@ func TestAssembleMultiRoot(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "image")
-	if err := assemble(ctx, out, m, fetched); err != nil {
+	if err := assemble(ctx, out, m, fetched, false); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 
@@ -464,20 +464,15 @@ func TestAssembleMultiRoot(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, "usr/bin/foo")); err != nil {
 		t.Errorf("foo not in anchor: %v", err)
 	}
-	// bar's real payload is at usr/bin/bar; the compose-intrinsic usr-merge
-	// (/bin -> usr/bin, minted per-root) makes it resolve at the legacy path too.
-	if _, err := os.Stat(filepath.Join(irf, "bin/bar")); err != nil {
-		t.Errorf("bar not reachable via the initramfs usr-merge: %v", err)
-	}
-	// The merge is laid in every root, not just one: /bin is a symlink to usr/bin
-	// in both the anchor and the initramfs, and /lib64 points at the x86_64
-	// triplet dir so the ELF interpreter resolves.
+	// Compose installs package storage paths and claims only. Runtime filesystem
+	// topology (including PFSL merged views and the x86-64 /lib64 ABI mapping)
+	// belongs to the image/bootstrap layer, so compose must not mint legacy-root
+	// symlinks in either the anchor or a named root.
 	for _, root := range []string{out, irf} {
-		if tgt, err := os.Readlink(filepath.Join(root, "bin")); err != nil || tgt != "usr/bin" {
-			t.Errorf("%s/bin -> %q (err %v), want usr/bin", root, tgt, err)
-		}
-		if tgt, err := os.Readlink(filepath.Join(root, "lib64")); err != nil || tgt != "usr/lib/x86_64-linux-peios" {
-			t.Errorf("%s/lib64 -> %q (err %v), want usr/lib/x86_64-linux-peios", root, tgt, err)
+		for _, name := range []string{"bin", "sbin", "lib", "lib64"} {
+			if _, err := os.Lstat(filepath.Join(root, name)); !os.IsNotExist(err) {
+				t.Errorf("compose unexpectedly materialised %s/%s: %v", root, name, err)
+			}
 		}
 	}
 	if _, err := os.Stat(filepath.Join(out, "bin/bar")); !os.IsNotExist(err) {
@@ -496,9 +491,9 @@ func TestAssembleMultiRoot(t *testing.T) {
 			Root string `json:"root"`
 		} `json:"packages"`
 	}
-	invData, err := os.ReadFile(filepath.Join(out, "usr/share/peios/licenses.json"))
+	invData, err := os.ReadFile(filepath.Join(out, "usr/share/licenses.json"))
 	if err != nil {
-		t.Fatalf("usr/share/peios/licenses.json: %v", err)
+		t.Fatalf("usr/share/licenses.json: %v", err)
 	}
 	if err := json.Unmarshal(invData, &inventory); err != nil {
 		t.Fatalf("decoding licenses.json: %v", err)
@@ -508,12 +503,12 @@ func TestAssembleMultiRoot(t *testing.T) {
 		inventory.Packages[1].Name != "bar" || inventory.Packages[1].Root != "boot/initramfs" {
 		t.Errorf("licenses.json packages = %+v", inventory.Packages)
 	}
-	if _, err := os.Stat(filepath.Join(irf, "usr/share/peios/licenses.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(irf, "usr/share/licenses.json")); !os.IsNotExist(err) {
 		t.Errorf("nested root should not carry its own license inventory: %v", err)
 	}
 
 	// Anchor DB: records foo and the named-root registry entry.
-	anchorDB, err := db.Open(ctx, filepath.Join(out, "var/lib/peipkg/db.sqlite"))
+	anchorDB, err := db.Open(ctx, filepath.Join(out, "var/state/peipkg/db.sqlite"))
 	if err != nil {
 		t.Fatalf("open anchor db: %v", err)
 	}
@@ -529,7 +524,7 @@ func TestAssembleMultiRoot(t *testing.T) {
 	}
 
 	// Initramfs DB: records bar, with its own state directory.
-	irfDB, err := db.Open(ctx, filepath.Join(irf, "var/lib/peipkg/db.sqlite"))
+	irfDB, err := db.Open(ctx, filepath.Join(irf, "var/state/peipkg/db.sqlite"))
 	if err != nil {
 		t.Fatalf("open initramfs db: %v", err)
 	}

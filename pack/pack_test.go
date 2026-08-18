@@ -387,21 +387,21 @@ func TestValidatePayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := pack.ValidatePayload("noarch", root); err == nil {
+	if err := pack.ValidatePayload(pack.Manifest{Architecture: "noarch"}, root); err == nil {
 		t.Error("expected /var/ violation, got nil")
 	}
 
 	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
-	if err := pack.ValidatePayload("noarch", filepath.Join(caseDir, "staged")); err != nil {
+	if err := pack.ValidatePayload(pack.Manifest{Architecture: "noarch"}, filepath.Join(caseDir, "staged")); err != nil {
 		t.Errorf("hello-noarch staged tree should validate, got %v", err)
 	}
 
 	// The Files counterpart applies the same rules to mapped paths.
 	good := filepath.Join(caseDir, "staged", "usr", "share", "hello", "MESSAGE")
-	if err := pack.ValidateFiles("noarch", map[string]string{"usr/share/msg": good}); err != nil {
+	if err := pack.ValidateFiles(pack.Manifest{Architecture: "noarch"}, map[string]string{"usr/share/msg": good}); err != nil {
 		t.Errorf("mapped file should validate, got %v", err)
 	}
-	if err := pack.ValidateFiles("noarch", map[string]string{"srv/msg": good}); err == nil {
+	if err := pack.ValidateFiles(pack.Manifest{Architecture: "noarch"}, map[string]string{"srv/msg": good}); err == nil {
 		t.Error("expected §3.4.1 rejection for srv/ destination, got nil")
 	}
 }

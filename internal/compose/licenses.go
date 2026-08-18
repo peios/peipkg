@@ -15,7 +15,7 @@ import (
 // it is a compose artifact, not package payload: no package owns it, and
 // it describes the image as composed (later upgrades on a live system
 // are answered by the package database, not this file).
-const licensesPath = "usr/share/peios/licenses.json"
+const licensesPath = "usr/share/licenses.json"
 
 type licenseManifest struct {
 	SchemaVersion int            `json:"schema_version"`

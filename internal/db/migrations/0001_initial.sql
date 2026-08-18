@@ -1,9 +1,9 @@
 -- peipkg package database — schema version 1.
 --
 -- The consumer-side package manager's private state store, at
--- /var/lib/peipkg/db.sqlite. This is an internal ledger of *fact* —
+-- /var/state/peipkg/db.sqlite. This is an internal ledger of *fact* —
 -- what is installed, and the transaction history — NOT configuration.
--- Repository configuration lives in /conf/peipkg/*.repo and never here.
+-- Repository configuration lives in /lcl/conf/peipkg/*.repo and never here.
 --
 -- Migrations are append-only: once released, this file is never
 -- edited. A schema change adds 000N_<name>.sql. The migration runner

@@ -44,7 +44,7 @@ type PackageFile struct {
 
 // Repository is one row of the repository table: the derived trust and
 // freshness state of a configured repository. The repository's
-// configuration lives in /conf/peipkg/*.repo, never here.
+// configuration lives in /lcl/conf/peipkg/*.repo, never here.
 type Repository struct {
 	Name string
 	// HighestIndexVersion is the index_version freshness floor: an index

@@ -50,7 +50,7 @@ func TestExecuteCrossRoot(t *testing.T) {
 		"live-boot": provide(t, testPkg{name: "live-boot", version: "1.0-1",
 			files: map[string]string{"usr/bin/live-boot": "lb"}}),
 		"busybox": provide(t, testPkg{name: "busybox", version: "1.0-1",
-			files: map[string]string{"bin/busybox": "bb"}}),
+			files: map[string]string{"usr/bin/busybox": "bb"}}),
 	}
 	storeA, rootA, envA := rootEnv(t, dir, "a", prov) // the anchor root "/"
 	storeB, rootB, envB := rootEnv(t, dir, "b", prov) // the initramfs root
@@ -73,7 +73,7 @@ func TestExecuteCrossRoot(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(rootA, "usr/bin/live-boot")); err != nil || string(b) != "lb" {
 		t.Errorf("live-boot payload in root A: %q err %v", b, err)
 	}
-	if b, err := os.ReadFile(filepath.Join(rootB, "bin/busybox")); err != nil || string(b) != "bb" {
+	if b, err := os.ReadFile(filepath.Join(rootB, "usr/bin/busybox")); err != nil || string(b) != "bb" {
 		t.Errorf("busybox payload in root B: %q err %v", b, err)
 	}
 	// Each root's database records its own package.

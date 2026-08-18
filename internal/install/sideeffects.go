@@ -7,9 +7,9 @@ import "os/exec"
 // PATH is never searched — so the genuine system tool runs and a
 // package cannot shadow it.
 var sideEffectCommands = map[string][]string{
-	"ldconfig": {"/usr/bin/ldconfig"},
-	"depmod":   {"/usr/bin/depmod", "-a"},
-	"man-db":   {"/usr/bin/mandb", "-q"},
+	"ldconfig": {"/bin/ldconfig"},
+	"depmod":   {"/bin/depmod", "-a"},
+	"man-db":   {"/bin/mandb", "-q"},
 }
 
 // runSideEffects runs each post-commit maintenance operation once, with
@@ -25,7 +25,7 @@ func runSideEffects(effects []string) []string {
 			continue // an unrecognised effect is rejected at manifest decode
 		}
 		cmd := exec.Command(argv[0], argv[1:]...)
-		cmd.Env = []string{"LC_ALL=C", "PATH=/usr/bin"}
+		cmd.Env = []string{"LC_ALL=C", "PATH=/bin"}
 		// cmd.Stdin left nil: the child reads from the null device.
 		if out, err := cmd.CombinedOutput(); err != nil {
 			warnings = append(warnings, "side effect "+effect+" failed: "+failureDetail(err, out))

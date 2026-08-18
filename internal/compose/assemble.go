@@ -3,15 +3,14 @@ package compose
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/peios/peipkg/internal/archive"
+	packvalidate "github.com/peios/peipkg/internal/build/pack"
 	"github.com/peios/peipkg/internal/claims"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
@@ -29,7 +28,8 @@ import (
 // package is assembled into the root its lock entry names (relative to
 // out, "" being out itself). The named roots are registered in the
 // anchor's database so the booted system resolves `--root <name>`.
-func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPackage) error {
+func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPackage,
+	bypassPaths bool) error {
 	byRoot := map[string][]fetchedPackage{}
 	for _, fp := range fetched {
 		byRoot[fp.Locked.Root] = append(byRoot[fp.Locked.Root], fp)
@@ -51,7 +51,8 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 		if rel == "" {
 			register = m.Roots
 		}
-		if err := assembleRoot(ctx, filepath.Join(out, rel), m, byRoot[rel], register); err != nil {
+		if err := assembleRoot(ctx, filepath.Join(out, rel), m, byRoot[rel], register,
+			bypassPaths); err != nil {
 			return err
 		}
 	}
@@ -70,8 +71,13 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 // root's claims, seeds its database (registering register's named roots
 // when non-nil), extracts payloads, and materialises claim links.
 func assembleRoot(ctx context.Context, rootDir string, m Manifest,
-	fetched []fetchedPackage, register []Root) error {
+	fetched []fetchedPackage, register []Root, bypassPaths bool) error {
 
+	for _, fp := range fetched {
+		if err := checkComposeLayout(fp, bypassPaths); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(rootDir, 0o755); err != nil {
 		return fmt.Errorf("peipkg/compose: creating root %s: %w", rootDir, err)
 	}
@@ -98,64 +104,6 @@ func assembleRoot(ctx context.Context, rootDir string, m Manifest,
 	if err := materializeClaims(rootDir, links); err != nil {
 		return err
 	}
-	// Finally lay the usr-merge skeleton: /bin /sbin /lib (and /lib64 on x86_64)
-	// become symlinks into /usr. Compose-intrinsic, so every root is merged
-	// uniformly — including roots (e.g. the initramfs) that carry no
-	// base-filesystem package. After payloads/claims so a conflicting real entry
-	// at a legacy root is reported rather than silently shadowed.
-	return materializeUsrMerge(rootDir, m.Arch)
-}
-
-// usrLink is one legacy-root → /usr compatibility symlink.
-type usrLink struct{ name, target string }
-
-// usrMergeLinks returns the top-level symlinks that make a root usr-merged:
-// every real file lives under /usr, and the legacy FHS roots are symlinks into
-// it so hard-coded paths still resolve — /bin/sh, #!/bin/… shebangs, and the
-// ELF interpreter (PT_INTERP) baked into every dynamic binary. These are
-// filesystem policy, not package payload, so PSD-009 §3.4 is untouched:
-// packages still write only under /usr, and compose mints the merge.
-func usrMergeLinks(arch string) []usrLink {
-	links := []usrLink{
-		{"bin", "usr/bin"},
-		{"sbin", "usr/sbin"},
-		{"lib", "usr/lib"},
-	}
-	// /lib64 is the x86-64 64-bit loader root: the psABI hard-codes every
-	// dynamic binary's interpreter as /lib64/ld-linux-x86-64.so.2, and glibc
-	// ships the real loader under the multiarch triplet dir. Point /lib64 at that
-	// dir so the interpreter resolves (this is what lets anything dynamically
-	// linked exec). Other arches name their loader root differently and add their
-	// own mapping here.
-	if arch == "x86_64" {
-		links = append(links, usrLink{"lib64", "usr/lib/" + arch + "-linux-peios"})
-	}
-	return links
-}
-
-// materializeUsrMerge creates the usr-merge symlinks in rootDir. It is
-// idempotent (a re-compose over an existing merged root is a no-op) and refuses
-// to clobber: a legacy root that already exists as a real directory/file, or as
-// a symlink to somewhere other than its merge target, is a hard error rather
-// than a silent overwrite.
-func materializeUsrMerge(rootDir, arch string) error {
-	for _, l := range usrMergeLinks(arch) {
-		path := filepath.Join(rootDir, l.name)
-		if existing, err := os.Readlink(path); err == nil {
-			if existing == l.target {
-				continue // already the merge link
-			}
-			return fmt.Errorf("peipkg/compose: /%s is a symlink to %q, want the usr-merge link to %q", l.name, existing, l.target)
-		}
-		if _, err := os.Lstat(path); err == nil {
-			return fmt.Errorf("peipkg/compose: usr-merge wants /%s to be a symlink to %q, but a real entry already exists there", l.name, l.target)
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("peipkg/compose: stat /%s: %w", l.name, err)
-		}
-		if err := os.Symlink(l.target, path); err != nil {
-			return fmt.Errorf("peipkg/compose: linking /%s -> %s: %w", l.name, l.target, err)
-		}
-	}
 	return nil
 }
 
@@ -165,7 +113,7 @@ func materializeUsrMerge(rootDir, arch string) error {
 // transaction so a collision-induced abort leaves nothing committed.
 func seedDatabase(ctx context.Context, root string, m Manifest, fetched []fetchedPackage,
 	holders map[string]string, links []claims.Link, register []Root) error {
-	stateDir := filepath.Join(root, "var/lib/peipkg")
+	stateDir := filepath.Join(root, "var/state/peipkg")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return fmt.Errorf("peipkg/compose: creating state directory: %w", err)
 	}
@@ -298,7 +246,7 @@ func writeFile(path string, content io.Reader) error {
 }
 
 // writeRepositoryConfig writes a .repo file for every manifest
-// repository into <root>/conf/peipkg/. DirProvider.Put validates each
+// repository into <root>/lcl/conf/peipkg/. DirProvider.Put validates each
 // configuration as it writes, so a malformed repository surfaces here.
 func writeRepositoryConfig(root string, repos []config.RepoConfig) error {
 	provider := config.NewDirProvider(filepath.Join(root, "conf/peipkg"))
@@ -308,4 +256,42 @@ func writeRepositoryConfig(root string, repos []config.RepoConfig) error {
 		}
 	}
 	return nil
+}
+
+// checkComposeLayout enforces the §3.4 payload layout rules over one
+// fetched package as it is assembled into the anchor root.
+//
+// This is compose's half of the same control `peipkg install` applies:
+// a composed image is built from .peipkg files that need not have come
+// from a cooperating producer, so pack-time validation proves nothing
+// here. A Special System Package composed with BypassPathRestrictions
+// is exempt; nothing else is.
+func checkComposeLayout(fp fetchedPackage, bypassPaths bool) error {
+	if fp.Pkg == nil {
+		return nil
+	}
+	special := fp.Pkg.Manifest.SpecialSystemPackage
+	if special && bypassPaths {
+		return nil
+	}
+
+	entries := make([]packvalidate.InstallEntry, 0, len(fp.Pkg.Payload))
+	for _, e := range fp.Pkg.Payload {
+		entries = append(entries, packvalidate.InstallEntry{
+			Path:       e.Path,
+			IsDir:      e.Type == archive.EntryDir,
+			IsSymlink:  e.Type == archive.EntrySymlink,
+			LinkTarget: e.LinkTarget,
+		})
+	}
+
+	err := packvalidate.ValidateInstallPaths(fp.Pkg.Manifest.Architecture, entries)
+	if err == nil {
+		return nil
+	}
+	if special {
+		return fmt.Errorf("peipkg/compose: %s declares special_system_package but this "+
+			"compose did not enable bypass_path_restrictions: %w", fp.Locked.Name, err)
+	}
+	return fmt.Errorf("peipkg/compose: %s: %w", fp.Locked.Name, err)
 }

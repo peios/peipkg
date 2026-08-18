@@ -21,7 +21,7 @@ func TestEncodeClaimsRoundTrip(t *testing.T) {
 		Dependencies: []Dependency{{Name: "logsink",
 			Claims: map[string]ClaimSlot{"sink": {Path: "/run/logsink.sock"}}}},
 		Provides: []Provides{{Name: "registryd", Claims: map[string]ClaimSlot{
-			"binary": {Target: "/usr/bin/loregd", Path: "/usr/bin/registryd"}}}},
+			"binary": {Target: "/usr/sbin/loregd", Path: "/usr/sbin/registryd"}}}},
 		SizeInstalled: 1,
 		Build:         Build{Timestamp: "2026-05-19T00:00:00Z", FarmID: "f", SourceRef: "s"},
 	}
@@ -33,8 +33,8 @@ func TestEncodeClaimsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("consumer.Decode rejected the emitted manifest: %v", err)
 	}
-	if got := cm.Provides[0].Claims["binary"]; got.Target != "/usr/bin/loregd" ||
-		got.Path != "/usr/bin/registryd" {
+	if got := cm.Provides[0].Claims["binary"]; got.Target != "/usr/sbin/loregd" ||
+		got.Path != "/usr/sbin/registryd" {
 		t.Errorf("provider claim round-trip: got %+v", got)
 	}
 	if got := cm.Dependencies[0].Claims["sink"]; got.Path != "/run/logsink.sock" ||

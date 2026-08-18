@@ -37,7 +37,7 @@ func loregdManifest(t *testing.T) string {
 		"schema_version": 1, "name": "loregd", "version": "1.0.0-1", "architecture": "x86_64",
 		"dependencies": []any{}, "conflicts": []any{}, "size_installed": 1,
 		"provides": []any{map[string]any{"name": "registryd", "claims": map[string]any{
-			"binary": map[string]any{"target": "/usr/bin/loregd", "path": "/usr/bin/registryd"}}}},
+			"binary": map[string]any{"target": "/usr/sbin/loregd", "path": "/usr/sbin/registryd"}}}},
 		"build": map[string]any{
 			"timestamp": "2026-05-19T00:00:00Z", "farm_id": "t", "source_ref": "t"},
 	})
@@ -73,7 +73,7 @@ func TestCmdClaimStatusGrantRevoke(t *testing.T) {
 		t.Fatalf("claim grant: %v", err)
 	}
 	// On-disk claim links are relative (sibling in /usr/bin).
-	if target, err := os.Readlink(filepath.Join(app.paths.root, "usr/bin/registryd")); err != nil ||
+	if target, err := os.Readlink(filepath.Join(app.paths.root, "usr/sbin/registryd")); err != nil ||
 		target != "loregd" {
 		t.Errorf("granted symlink: target %q err %v", target, err)
 	}
@@ -91,7 +91,7 @@ func TestCmdClaimStatusGrantRevoke(t *testing.T) {
 	if err := cmdClaim(app, []string{"-y", "registryd", "revoke"}); err != nil {
 		t.Fatalf("claim revoke: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(app.paths.root, "usr/bin/registryd")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(app.paths.root, "usr/sbin/registryd")); !os.IsNotExist(err) {
 		t.Errorf("symlink should be gone after revoke, Lstat err=%v", err)
 	}
 	withDB(t, app, func(store *db.DB) {

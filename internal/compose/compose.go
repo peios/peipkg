@@ -72,6 +72,13 @@ type BuildOptions struct {
 	Fetcher repository.Fetcher
 	// Warnings receives non-fatal notices and may be nil.
 	Warnings io.Writer
+	// BypassPathRestrictions is the composer's half of the Special
+	// System Package exemption — the compose equivalent of `peipkg
+	// install --dangerously-bypass-path-restrictions`. It waives the
+	// §3.4 payload layout check, but only for packages that themselves
+	// declare special_system_package. It cannot exempt an ordinary
+	// package, and the declaration alone exempts nothing.
+	BypassPathRestrictions bool
 }
 
 // Build produces a populated peipkg root from a manifest. It runs the
@@ -142,7 +149,7 @@ func BuildWithResult(ctx context.Context, opts BuildOptions) (BuildResult, error
 	if err := os.RemoveAll(staging); err != nil {
 		return BuildResult{}, fmt.Errorf("peipkg/compose: clearing prior staging directory: %w", err)
 	}
-	if err := assemble(ctx, staging, m, fetched); err != nil {
+	if err := assemble(ctx, staging, m, fetched, opts.BypassPathRestrictions); err != nil {
 		return BuildResult{}, err
 	}
 	if err := os.Rename(staging, opts.OutDir); err != nil {

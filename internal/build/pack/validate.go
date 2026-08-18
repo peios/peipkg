@@ -14,8 +14,8 @@ import (
 // separator, so "etc/foo" matches "etc/" but "etcetera" does not).
 //
 // usr/lib/ admits any first-segment-after-lib name to allow the per-triplet
-// dispatch (validateLibPath narrows it to "<arch>-linux-peios/" or the
-// "debug/" separated-debug-info tree, or rejects).
+// dispatch (validateLibPath narrows it to "<arch>-linux-peios/", the "debug/"
+// separated-debug-info tree, "modules/" or "firmware/", or rejects).
 var permittedTopLevels = []string{
 	"usr/bin/",
 	"usr/sbin/", // system binaries (daemons, init/boot, service executables)
@@ -23,23 +23,14 @@ var permittedTopLevels = []string{
 	"usr/libexec/", // arch-independent helper executables run by other programs, not on user PATH (e.g. feature lifecycle scripts); no triplet rule (that is scoped to usr/lib/)
 	"usr/share/",
 	"usr/include/",
+	"usr/etc/",       // vendor config defaults for legacy applications — the bottom layer of the /etc merge. Packages never write /etc directly; the merged view resolves usr/etc < system/retc < lcl/etc
+	"usr/conf/",      // vendor defaults for native-application supplementary config — the bottom layer of the /conf merge
 	"usr/src/debug/", // separated debug info's source subtree of usr/src
 	"usr/src/dist/",  // corresponding-source packages (§3.4.1); the rest of usr/src stays admin territory
-	"etc/",
 	"var/",
-	"opt/",
 	"boot/",
-	"system/",
 	"hooks/", // initramfs boot hooks — mkirf scans /hooks/ when packing the cpio
 	"++/",    // initramfs early-cpio segments — mkirf prepends /++/ uncompressed ahead of the main archive (CPU microcode, ACPI table overrides)
-}
-
-var permittedDirectoryOnlyRoots = map[string]bool{
-	"dev":  true,
-	"proc": true,
-	"run":  true,
-	"sys":  true,
-	"tmp":  true,
 }
 
 // ValidatePayload runs the PSD-009 §3.4 layout checks over the staged tree
@@ -101,15 +92,15 @@ func validateEntries(architecture string, leaves []entry) error {
 // install-destination rules: §3.4.1 permitted top-levels, §3.4.2 triplet
 // coherence, §3.4.4 var-must-be-empty.
 func validateEntryPath(architecture string, l entry) error {
-	if l.kind == kindDir {
-		if hasPermittedTopLevel(l.path) || permittedDirectoryOnlyRoots[l.path] {
-			return nil
+	if !hasPermittedTopLevel(l.path) {
+		if l.kind == kindDir {
+			return fmt.Errorf("directory %s is not under any §3.4.1 permitted top-level destination", l.path)
 		}
-		return fmt.Errorf("directory %s is not under any §3.4.1 permitted top-level destination or permitted runtime mountpoint root", l.path)
+		return fmt.Errorf("%s is not under any §3.4.1 permitted top-level destination", l.path)
 	}
 
-	if !hasPermittedTopLevel(l.path) {
-		return fmt.Errorf("%s is not under any §3.4.1 permitted top-level destination", l.path)
+	if l.kind == kindDir {
+		return nil
 	}
 
 	if strings.HasPrefix(l.path, "var/") {
@@ -140,10 +131,19 @@ func hasPermittedTopLevel(p string) bool {
 // /usr/lib/<triplet>/, the triplet must be <architecture>-linux-peios, and
 // noarch packages must not have any /usr/lib/<triplet>/ entries at all.
 //
-// /usr/lib/debug/ is the documented exception: separated debug information
-// (§3.4.1) mirrors the install path of the file it describes rather than
-// sitting under <triplet>, so it is exempt from the triplet layout. It is
-// still arch-dependent, so noarch packages must not ship it.
+// Three subtrees are documented exceptions to the triplet layout:
+//
+//   - /usr/lib/debug/     separated debug information (§3.4.1) mirrors the
+//     install path of the file it describes rather than
+//     sitting under <triplet>. Still arch-dependent, so
+//     noarch packages must not ship it.
+//   - /usr/lib/modules/   kernel modules and the kernel image itself
+//     (vmlinuz, System.map, config) live beside their own
+//     modules under <ver>/. With UKIs nothing boots from a
+//     firmware-visible path, so the kernel is ordinary
+//     package content. Arch-dependent.
+//   - /usr/lib/firmware/  device firmware blobs, addressed by device rather
+//     than by host triplet.
 func validateLibPath(architecture, leafPath string) error {
 	rest := strings.TrimPrefix(leafPath, "usr/lib/")
 	first, _, ok := strings.Cut(rest, "/")
@@ -163,6 +163,17 @@ func validateLibPath(architecture, leafPath string) error {
 		if architecture == "noarch" {
 			return fmt.Errorf("noarch package contains arch-specific debug info %s (§3.4.2 forbids /usr/lib/debug/ entries in noarch packages)", leafPath)
 		}
+		return nil
+	}
+
+	if first == "modules" {
+		if architecture == "noarch" {
+			return fmt.Errorf("noarch package contains arch-specific kernel content %s (§3.4.2 forbids /usr/lib/modules/ entries in noarch packages)", leafPath)
+		}
+		return nil
+	}
+
+	if first == "firmware" {
 		return nil
 	}
 
@@ -207,4 +218,70 @@ func validateSymlinkTarget(l entry) error {
 		return fmt.Errorf("symlink %s -> %s resolves to %q, which is not under a §3.4.1 permitted destination", l.path, l.linkTarget, resolved)
 	}
 	return nil
+}
+
+// InstallEntry is one verified payload object as an install-time consumer
+// sees it: the archive path, its kind, and a symlink's target. It is the
+// decoupled shape of an archive payload entry, so the install path does
+// not have to reach into the producer's tar-emission types.
+type InstallEntry struct {
+	Path       string
+	IsDir      bool
+	IsSymlink  bool
+	LinkTarget string
+}
+
+// ValidateInstallPaths runs the same §3.4 layout checks a producer runs at
+// pack time, over an already-verified payload at install time.
+//
+// Pack-time validation is the producer's courtesy to itself: it catches a
+// bad layout at build time on the builder's machine. It is not a control,
+// because the .peipkg that reaches a target system need not have been
+// produced by a cooperating producer. This is the control — the last point
+// before bytes land in the filesystem.
+//
+// The caller decides whether to run it. A Special System Package installed
+// with the operator's explicit bypass skips it; nothing else does.
+func ValidateInstallPaths(architecture string, entries []InstallEntry) error {
+	// An archive carries an explicit entry for every ancestor directory
+	// of everything it ships, so a package with one file in
+	// usr/bin/ also carries bare "usr" and "usr/bin". Those are
+	// structure, not destinations, and the pack-time checks never see
+	// them — walkLeaves collects leaves only.
+	//
+	// A directory entry is therefore checked only when nothing else in
+	// the payload sits beneath it: that is the archive shape of an
+	// explicit empty directory, which is a real destination claim (a
+	// package shipping an empty opt/foo/ is claiming opt/foo/), while a
+	// directory with descendants is an ancestor of some leaf that is
+	// itself being checked.
+	hasDescendant := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		p := strings.Trim(e.Path, "/")
+		for {
+			i := strings.LastIndex(p, "/")
+			if i < 0 {
+				break
+			}
+			p = p[:i]
+			hasDescendant[p] = true
+		}
+	}
+
+	leaves := make([]entry, 0, len(entries))
+	for _, e := range entries {
+		path := strings.Trim(e.Path, "/")
+		if e.IsDir && hasDescendant[path] {
+			continue
+		}
+		l := entry{path: path, kind: kindFile, linkTarget: e.LinkTarget}
+		switch {
+		case e.IsDir:
+			l.kind = kindDir
+		case e.IsSymlink:
+			l.kind = kindSymlink
+		}
+		leaves = append(leaves, l)
+	}
+	return validateEntries(architecture, leaves)
 }

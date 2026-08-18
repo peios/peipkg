@@ -257,7 +257,7 @@ func TestDefaultRootEndToEndPlacement(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	pkgBytes, _ := buildSignedPackageEx(t, priv, pub, "live-boot", "1.0-1",
-		map[string]string{"init": "#!/bin/sh\n"},
+		map[string]string{"usr/bin/prelude": "#!/bin/sh\n"},
 		map[string]any{"default_root": "initramfs"})
 	pkgPath := filepath.Join(t.TempDir(), "live-boot_1.0-1_x86_64.peipkg")
 	if err := os.WriteFile(pkgPath, pkgBytes, 0o644); err != nil {
@@ -273,7 +273,7 @@ func TestDefaultRootEndToEndPlacement(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(initramfs, "init")); err != nil {
+	if _, err := os.Stat(filepath.Join(initramfs, "usr/bin/prelude")); err != nil {
 		t.Errorf("payload did not land in the initramfs root: %v", err)
 	}
 	// The app re-rooted: its operating root is now the initramfs.
@@ -281,7 +281,7 @@ func TestDefaultRootEndToEndPlacement(t *testing.T) {
 		t.Errorf("app root after install: got %q, want %q", app.paths.root, initramfs)
 	}
 	// And nothing landed in the anchor root.
-	if _, err := os.Stat(filepath.Join(anchor, "init")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(anchor, "usr/bin/prelude")); !os.IsNotExist(err) {
 		t.Errorf("payload should not be in the anchor root: %v", err)
 	}
 }

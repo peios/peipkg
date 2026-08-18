@@ -27,8 +27,8 @@ const peipkgVersion = "0.1.0"
 // paths locates peipkg's files beneath an operating root.
 type paths struct {
 	root      string // the install root — "/" in normal use
-	stateDir  string // <root>/var/lib/peipkg — the database, lock, caches
-	configDir string // <root>/conf/peipkg — the repository .repo files
+	stateDir  string // <root>/var/state/peipkg — the database, lock, caches
+	configDir string // <root>/lcl/conf/peipkg — the repository .repo files
 	dbPath    string
 	lockPath  string
 	cacheDir  string // verified repository indexes
@@ -46,11 +46,17 @@ type App struct {
 	out          io.Writer
 	errOut       io.Writer
 	emitter      audit.Emitter // the §7.6 audit-event sink
+	// bypassPathRestrictions is the operator's half of the Special System
+	// Package exemption (--dangerously-bypass-path-restrictions). It
+	// waives the §3.4 payload layout check, but only for a package that
+	// itself declares special_system_package: the flag cannot exempt an
+	// ordinary package, and the declaration cannot exempt itself.
+	bypassPathRestrictions bool
 }
 
 // newPaths locates peipkg's files beneath an operating root.
 func newPaths(root string) paths {
-	state := filepath.Join(root, "var/lib/peipkg")
+	state := filepath.Join(root, "var/state/peipkg")
 	return paths{
 		root:      root,
 		stateDir:  state,

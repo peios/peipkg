@@ -1,9 +1,9 @@
 // Package config reads and writes repository configuration. A
 // repository's operator-supplied settings — base URL, priority,
 // signature policy, trust anchors — live in a flat TOML file at
-// /conf/peipkg/<name>.repo (PSD-009 §6.5).
+// /lcl/conf/peipkg/<name>.repo (PSD-009 §6.5).
 //
-// /conf/peipkg/ is a temporary home: when the Peios registry (LCS)
+// /lcl/conf/peipkg/ is a temporary home: when the Peios registry (LCS)
 // lands, repository configuration moves into it. Config is therefore
 // reached only through the [Provider] interface, so that migration is
 // one contained change; the flat-scalar TOML shape maps one-to-one onto
@@ -64,7 +64,7 @@ type RepoConfig struct {
 }
 
 // Provider supplies and stores repository configuration. The
-// directory-backed implementation reads /conf/peipkg/*.repo; an
+// directory-backed implementation reads /lcl/conf/peipkg/*.repo; an
 // LCS-backed implementation will replace it when the registry lands.
 type Provider interface {
 	// Repositories returns every configured repository, ordered by name.

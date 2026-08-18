@@ -29,6 +29,17 @@ type Manifest struct {
 	// and governs top-level placement only, never dependency placement.
 	DefaultRoot string
 
+	// SpecialSystemPackage marks a package exempt from the §3.4 payload
+	// layout rules — fsbase's mountpoint tree, the kernel, and the few
+	// others whose job is to lay down the structure those rules protect.
+	//
+	// The declaration alone grants nothing at install time: install
+	// refuses an out-of-layout payload unless the operator ALSO passes
+	// --dangerously-bypass-path-restrictions (or the compose
+	// equivalent). A package can propose its own exemption; only the
+	// installer can grant it.
+	SpecialSystemPackage bool
+
 	Dependencies         []Dependency
 	OptionalDependencies []Dependency
 	Conflicts            []Dependency

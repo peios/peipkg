@@ -52,8 +52,8 @@ func TestClaimLinksCascadeOnHolderRemoval(t *testing.T) {
 		t.Fatalf("SetClaimHolder: %v", err)
 	}
 	links := []db.ClaimLink{
-		{Path: "/usr/bin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/bin/loregd"},
-		{Path: "/run/registryd.sock", Role: "registryd", Slot: "control", Target: "/usr/bin/loregd-ctl"},
+		{Path: "/usr/sbin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/sbin/loregd"},
+		{Path: "/run/registryd.sock", Role: "registryd", Slot: "control", Target: "/usr/sbin/loregd-ctl"},
 	}
 	if err := d.InsertClaimLinks(ctx, links); err != nil {
 		t.Fatalf("InsertClaimLinks: %v", err)
@@ -85,11 +85,11 @@ func TestClaimLinkPathIsUnique(t *testing.T) {
 	if err := d.SetClaimHolder(ctx, "registryd", "loregd"); err != nil {
 		t.Fatalf("SetClaimHolder: %v", err)
 	}
-	first := []db.ClaimLink{{Path: "/usr/bin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/bin/loregd"}}
+	first := []db.ClaimLink{{Path: "/usr/sbin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/sbin/loregd"}}
 	if err := d.InsertClaimLinks(ctx, first); err != nil {
 		t.Fatalf("first InsertClaimLinks: %v", err)
 	}
-	dup := []db.ClaimLink{{Path: "/usr/bin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/bin/other"}}
+	dup := []db.ClaimLink{{Path: "/usr/sbin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/bin/other"}}
 	if err := d.InsertClaimLinks(ctx, dup); err == nil {
 		t.Fatal("a second link at the same path should fail")
 	}

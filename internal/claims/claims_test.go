@@ -34,16 +34,16 @@ func consumer(name, role string, slots map[string]manifest.ClaimSlot, optional b
 
 func TestDesiredConsumerPath(t *testing.T) {
 	loregd := provider("loregd", "registryd",
-		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/bin/loregd"}})
+		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/sbin/loregd"}})
 	peinit := consumer("peinit", "registryd",
-		map[string]manifest.ClaimSlot{"binary": {Path: "/usr/bin/registryd"}}, false)
+		map[string]manifest.ClaimSlot{"binary": {Path: "/usr/sbin/registryd"}}, false)
 
 	links, err := claims.Desired([]claims.Installed{loregd, peinit},
 		map[string]string{"registryd": "loregd"})
 	if err != nil {
 		t.Fatalf("Desired: %v", err)
 	}
-	want := []claims.Link{{Path: "/usr/bin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/bin/loregd"}}
+	want := []claims.Link{{Path: "/usr/sbin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/sbin/loregd"}}
 	if !equalLinks(links, want) {
 		t.Errorf("links: got %+v, want %+v", links, want)
 	}
@@ -53,7 +53,7 @@ func TestDesiredHeldButUnmaterialised(t *testing.T) {
 	// Holder, no default path, no consumer: the role is held but
 	// materialises nothing (§4.4.4).
 	loregd := provider("loregd", "registryd",
-		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/bin/loregd"}})
+		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/sbin/loregd"}})
 	links, err := claims.Desired([]claims.Installed{loregd},
 		map[string]string{"registryd": "loregd"})
 	if err != nil {
@@ -66,13 +66,13 @@ func TestDesiredHeldButUnmaterialised(t *testing.T) {
 
 func TestDesiredProviderDefaultPath(t *testing.T) {
 	loregd := provider("loregd", "registryd",
-		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/bin/loregd", Path: "/usr/bin/registryd"}})
+		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/sbin/loregd", Path: "/usr/sbin/registryd"}})
 	links, err := claims.Desired([]claims.Installed{loregd},
 		map[string]string{"registryd": "loregd"})
 	if err != nil {
 		t.Fatalf("Desired: %v", err)
 	}
-	if len(links) != 1 || links[0].Path != "/usr/bin/registryd" {
+	if len(links) != 1 || links[0].Path != "/usr/sbin/registryd" {
 		t.Errorf("links: got %+v", links)
 	}
 }
@@ -81,9 +81,9 @@ func TestDesiredRetroactiveAndMultiPath(t *testing.T) {
 	// Two consumers declare different paths for the same slot; both
 	// materialise against the one holder target (§4.4.4 union rule).
 	loregd := provider("loregd", "registryd",
-		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/bin/loregd"}})
+		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/sbin/loregd"}})
 	a := consumer("svc-a", "registryd",
-		map[string]manifest.ClaimSlot{"binary": {Path: "/usr/bin/registryd"}}, false)
+		map[string]manifest.ClaimSlot{"binary": {Path: "/usr/sbin/registryd"}}, false)
 	b := consumer("svc-b", "registryd",
 		map[string]manifest.ClaimSlot{"binary": {Path: "/opt/registryd"}}, true)
 
@@ -93,8 +93,8 @@ func TestDesiredRetroactiveAndMultiPath(t *testing.T) {
 		t.Fatalf("Desired: %v", err)
 	}
 	want := []claims.Link{
-		{Path: "/opt/registryd", Role: "registryd", Slot: "binary", Target: "/usr/bin/loregd"},
-		{Path: "/usr/bin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/bin/loregd"},
+		{Path: "/opt/registryd", Role: "registryd", Slot: "binary", Target: "/usr/sbin/loregd"},
+		{Path: "/usr/sbin/registryd", Role: "registryd", Slot: "binary", Target: "/usr/sbin/loregd"},
 	}
 	if !equalLinks(links, want) {
 		t.Errorf("links: got %+v, want %+v", links, want)
@@ -103,7 +103,7 @@ func TestDesiredRetroactiveAndMultiPath(t *testing.T) {
 
 func TestDesiredPathClaimedByTwoRoles(t *testing.T) {
 	loregd := provider("loregd", "registryd",
-		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/bin/loregd", Path: "/usr/bin/x"}})
+		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/sbin/loregd", Path: "/usr/bin/x"}})
 	other := provider("other", "altrole",
 		map[string]manifest.ClaimSlot{"binary": {Target: "/usr/bin/other", Path: "/usr/bin/x"}})
 	_, err := claims.Desired([]claims.Installed{loregd, other},
@@ -137,7 +137,7 @@ func TestReconcileDiff(t *testing.T) {
 
 func TestEligibleProviderAndProvidedRoles(t *testing.T) {
 	m := manifest.Manifest{Provides: []manifest.Provides{
-		{Name: "registryd", Claims: map[string]manifest.ClaimSlot{"binary": {Target: "/usr/bin/loregd"}}},
+		{Name: "registryd", Claims: map[string]manifest.ClaimSlot{"binary": {Target: "/usr/sbin/loregd"}}},
 		{Name: "smtp-server"}, // a plain provides, no claims — not claimable
 	}}
 	if !claims.EligibleProvider(m, "registryd") {
@@ -167,7 +167,7 @@ func equalLinks(a, b []claims.Link) bool {
 func TestRelativeTarget(t *testing.T) {
 	cases := []struct{ path, target, want string }{
 		{"/init", "/usr/sbin/prelude", "usr/sbin/prelude"},  // root link, target below
-		{"/usr/bin/registryd", "/usr/bin/loregd", "loregd"}, // same directory
+		{"/usr/sbin/registryd", "/usr/sbin/loregd", "loregd"}, // same directory
 		{"/etc/foo", "/usr/lib/x/foo", "../usr/lib/x/foo"},  // cross-tree
 	}
 	for _, c := range cases {

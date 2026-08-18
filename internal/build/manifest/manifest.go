@@ -25,19 +25,34 @@ const SchemaVersion = 1
 // fields, so a stripped-down manifest would still be valid; we choose the
 // always-emit form for byte-stability.
 type Manifest struct {
-	SchemaVersion        int          `json:"schema_version"`
-	Name                 string       `json:"name"`
-	Version              string       `json:"version"`
-	Architecture         string       `json:"architecture"`
-	Description          string       `json:"description"`
-	License              string       `json:"license"`
-	Homepage             string       `json:"homepage"`
+	SchemaVersion int    `json:"schema_version"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Architecture  string `json:"architecture"`
+	Description   string `json:"description"`
+	License       string `json:"license"`
+	Homepage      string `json:"homepage"`
 	// DefaultRoot is the top-level placement preference (§3.3.6). Unlike
 	// the other optional fields it uses omitempty: it post-dates the
 	// format, so a package that declares none must emit bytes identical to
 	// a pre-default_root manifest. Declared before dependencies to match
 	// the normative field order.
-	DefaultRoot          string       `json:"default_root,omitempty"`
+	DefaultRoot string `json:"default_root,omitempty"`
+	// SpecialSystemPackage marks a package that is exempt from the §3.4
+	// payload layout rules — the base filesystem (fsbase's mountpoint
+	// tree), the kernel, and the handful of others whose whole job is to
+	// lay down structure the ordinary rules exist to protect.
+	//
+	// Declaring it disables layout validation at pack time. It does NOT
+	// by itself let the package install anywhere: the installer must
+	// also opt in (peipkg install --dangerously-bypass-path-restrictions,
+	// or the compose equivalent). Two keys, and a package holds only one
+	// of them — a package can propose its own exemption but cannot grant
+	// it, which is the same shape as registry autoapply.
+	//
+	// omitempty: it post-dates the format, so a package that does not
+	// declare it emits bytes identical to a pre-special-system manifest.
+	SpecialSystemPackage bool         `json:"special_system_package,omitempty"`
 	Dependencies         []Dependency `json:"dependencies"`
 	OptionalDependencies []Dependency `json:"optional_dependencies"`
 	Conflicts            []Dependency `json:"conflicts"`
@@ -54,13 +69,13 @@ type Manifest struct {
 // emits the canonical {"name":"..."} form regardless of whether the recipe
 // supplied the empty defaults explicitly.
 type Dependency struct {
-	Name       string               `json:"name"`
-	Constraint string               `json:"constraint,omitempty"`
-	Arch       string               `json:"arch,omitempty"`
+	Name       string `json:"name"`
+	Constraint string `json:"constraint,omitempty"`
+	Arch       string `json:"arch,omitempty"`
 	// Root is the dependency's placement root (§4.1.1); omitempty so a
 	// same-root dependency stays byte-identical to a pre-cross-root one.
-	Root       string               `json:"root,omitempty"`
-	Claims     map[string]ClaimSlot `json:"claims,omitempty"`
+	Root   string               `json:"root,omitempty"`
+	Claims map[string]ClaimSlot `json:"claims,omitempty"`
 }
 
 // Provides is one entry in the provides array (§4.1.4).
