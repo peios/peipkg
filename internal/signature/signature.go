@@ -32,6 +32,11 @@ const algorithmEd25519 = "ed25519"
 // hash as lowercase hex (§5.2.3).
 const fingerprintLen = 2 * sha256.Size
 
+// sha256Size is the length of the digest every signature is made over
+// (§5.1.2): the artifact is hashed first, and the hash is what gets
+// signed.
+const sha256Size = sha256.Size
+
 // ErrSignatureInvalid reports that a signature did not verify against
 // the public key — the package's authenticity is unproven (§5.3).
 var ErrSignatureInvalid = errors.New("peipkg/signature: signature does not verify")
