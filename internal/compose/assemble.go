@@ -248,8 +248,15 @@ func writeFile(path string, content io.Reader) error {
 // writeRepositoryConfig writes a .repo file for every manifest
 // repository into <root>/lcl/conf/peipkg/. DirProvider.Put validates each
 // configuration as it writes, so a malformed repository surfaces here.
+//
+// lcl/conf, not conf: /conf is a StrataFS view mounted at boot over
+// /lcl/conf and /usr/conf. A composed tree has no views — nothing has
+// booted it — so a file written to <root>/conf/ sits underneath a mount
+// that will later cover it, invisible to everything on the running
+// system. The image would compose cleanly, boot, and report no
+// repositories configured, with nothing pointing at why.
 func writeRepositoryConfig(root string, repos []config.RepoConfig) error {
-	provider := config.NewDirProvider(filepath.Join(root, "conf/peipkg"))
+	provider := config.NewDirProvider(filepath.Join(root, "lcl/conf/peipkg"))
 	for _, cfg := range repos {
 		if err := provider.Put(cfg); err != nil {
 			return fmt.Errorf("peipkg/compose: writing .repo for %q: %w", cfg.Name, err)

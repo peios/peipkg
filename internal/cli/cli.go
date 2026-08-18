@@ -26,9 +26,29 @@ const peipkgVersion = "0.1.0"
 
 // paths locates peipkg's files beneath an operating root.
 type paths struct {
-	root      string // the install root — "/" in normal use
-	stateDir  string // <root>/var/state/peipkg — the database, lock, caches
-	configDir string // <root>/lcl/conf/peipkg — the repository .repo files
+	root     string // the install root — "/" in normal use
+	stateDir string // <root>/var/state/peipkg — the database, lock, caches
+	// configDir holds the repository .repo files.
+	//
+	// lcl/conf/peipkg, the REAL storage, rather than conf/peipkg, which is
+	// a StrataFS view over it (`/lcl/conf+create:/usr/conf+ro`). Reading
+	// through the view works only where the view is mounted — that is, on
+	// a booted system, for --root /. It silently finds nothing on any
+	// other root: an installer's mounted target, a chroot being prepared,
+	// a composed image. Those are exactly what --root exists for.
+	//
+	// Addressing the storage directly is correct in both cases, because
+	// the view's writable tier IS this directory: a file written here
+	// appears at /conf/peipkg on a booted system, which is where an
+	// operator looks for it. Nothing about the human-facing path changes.
+	//
+	// No migration is needed. A .repo file written at runtime already
+	// landed here — it went through the view, whose create tier is
+	// /lcl/conf — so every configuration that has ever worked is already
+	// in this directory. The only files at <root>/conf/peipkg were put
+	// there by peipkg-compose writing into a composed tree, where no view
+	// is ever mounted, so they have never been read by anything.
+	configDir string
 	dbPath    string
 	lockPath  string
 	cacheDir  string // verified repository indexes
@@ -60,7 +80,7 @@ func newPaths(root string) paths {
 	return paths{
 		root:      root,
 		stateDir:  state,
-		configDir: filepath.Join(root, "conf/peipkg"),
+		configDir: filepath.Join(root, "lcl/conf/peipkg"),
 		dbPath:    filepath.Join(state, "db.sqlite"),
 		lockPath:  filepath.Join(state, "lock"),
 		cacheDir:  filepath.Join(state, "cache"),

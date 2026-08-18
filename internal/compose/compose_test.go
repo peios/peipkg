@@ -96,8 +96,8 @@ func TestFetchAndAssemble(t *testing.T) {
 
 	// The .repo file was written so the booted root inherits the
 	// manifest's repository configuration.
-	if _, err := os.Stat(filepath.Join(root, "conf/peipkg/official.repo")); err != nil {
-		t.Errorf("conf/peipkg/official.repo missing: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "lcl/conf/peipkg/official.repo")); err != nil {
+		t.Errorf("lcl/conf/peipkg/official.repo missing: %v", err)
 	}
 
 	// The aggregate license inventory covers the composed package set.

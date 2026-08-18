@@ -75,18 +75,43 @@ func cmdRepoAdd(app *App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(pos) != 2 {
-		return fmt.Errorf("repo add: usage: repo add <name> <base-url> --anchor <fingerprint>")
-	}
-	cfg := config.RepoConfig{
-		Name:                   pos[0],
-		BaseURL:                pos[1],
-		Priority:               *priority,
-		SignaturePolicy:        config.SignaturePolicy(*policy),
-		TrustAnchors:           anchors,
-		AllowInsecureTransport: *insecure,
-		MinIndexVersion:        *minIndex,
-		MaxTrustedAgeDays:      *maxAge,
+
+	var cfg config.RepoConfig
+	switch len(pos) {
+	case 1:
+		// The configured form: `repo add <name>` performs the trust
+		// ceremony for a repository whose .repo file is already present.
+		//
+		// This is how an image ships a repository. peipkg deliberately
+		// does NOT trust a configured repository on sight — a .repo file
+		// with anchors still has no recorded trust state, and every
+		// operation skips it with a warning until the ceremony has run
+		// (§6.5.2 makes the trust decision the user's, not the
+		// consumer's default). But an image that baked in the config and
+		// the anchors together HAS made that decision, through what
+		// §6.5.2 calls a configured channel, and it needs some way to
+		// say so without an operator retyping a 64-character fingerprint
+		// that is already sitting on disk.
+		//
+		// It is still an explicit act. Nothing here happens by itself.
+		cfg, err = configuredRepo(app, pos[0])
+		if err != nil {
+			return err
+		}
+	case 2:
+		cfg = config.RepoConfig{
+			Name:                   pos[0],
+			BaseURL:                pos[1],
+			Priority:               *priority,
+			SignaturePolicy:        config.SignaturePolicy(*policy),
+			TrustAnchors:           anchors,
+			AllowInsecureTransport: *insecure,
+			MinIndexVersion:        *minIndex,
+			MaxTrustedAgeDays:      *maxAge,
+		}
+	default:
+		return fmt.Errorf("repo add: usage: repo add <name> <base-url> --anchor <fingerprint>\n" +
+			"                  repo add <name>   (for a repository already configured on this system)")
 	}
 
 	ctx := context.Background()
@@ -97,13 +122,25 @@ func cmdRepoAdd(app *App, args []string) error {
 	defer store.Close()
 
 	provider := app.configProvider()
-	if err := provider.Put(cfg); err != nil {
-		return err
+	preconfigured := len(pos) == 1
+	if !preconfigured {
+		if err := provider.Put(cfg); err != nil {
+			return err
+		}
 	}
 	if err := app.repoClient(store).Add(ctx, cfg); err != nil {
 		// The trust ceremony failed; back out the configuration file so
 		// a half-added repository is not left behind.
-		_ = provider.Remove(cfg.Name)
+		//
+		// Only when this command wrote it. In the configured form the
+		// .repo file came from somewhere else — an image, an operator,
+		// a configuration manager — and deleting another party's file
+		// because a ceremony failed would turn a retryable failure
+		// (medium not mounted yet, repository not published) into lost
+		// configuration.
+		if !preconfigured {
+			_ = provider.Remove(cfg.Name)
+		}
 		return err
 	}
 	app.printf("added repository %q\n", cfg.Name)
@@ -239,4 +276,28 @@ func cmdRefresh(app *App, args []string) error {
 		return fmt.Errorf("%d repository refresh(es) failed", failures)
 	}
 	return nil
+}
+
+// configuredRepo loads a repository's existing .repo configuration for
+// the `repo add <name>` form, reporting a usable error when there is
+// none.
+func configuredRepo(app *App, name string) (config.RepoConfig, error) {
+	cfg, found, err := app.configProvider().Repository(name)
+	if err != nil {
+		return config.RepoConfig{}, err
+	}
+	if !found {
+		return config.RepoConfig{}, fmt.Errorf(
+			"repo add: no repository named %q is configured; give its base URL and "+
+				"trust anchors to add one", name)
+	}
+	// Without an anchor there is nothing to verify the descriptor
+	// against, so the ceremony would either fail confusingly or fall
+	// through to the unsigned path. Say which is missing instead.
+	if len(cfg.TrustAnchors) == 0 && cfg.SignaturePolicy != config.PolicyOptional {
+		return config.RepoConfig{}, fmt.Errorf(
+			"repo add: %q is configured with no trust_anchors, so its descriptor "+
+				"cannot be verified against anything", name)
+	}
+	return cfg, nil
 }

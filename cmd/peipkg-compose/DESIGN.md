@@ -64,7 +64,7 @@ What compose **reuses**, essentially unchanged:
 | `version` | Version algebra. |
 | `manifest` | Parsing `.peipkg` manifests. |
 | `signature` | Descriptor / index / package verification. |
-| `repository` | Descriptor fetch, trust verification, index fetch, freshness gate — driven by manifest-supplied config instead of `/conf/peipkg/*`. |
+| `repository` | Descriptor fetch, trust verification, index fetch, freshness gate — driven by manifest-supplied config instead of `/lcl/conf/peipkg/*`. |
 | `resolver` | The pure resolver, called with an **empty installed-set**. |
 | `archive` | `.peipkg` open and verify; `archive.Extract` is a standalone payload-extraction primitive. |
 | `db` | The package-database **schema**. compose creates and seeds a fresh DB. |
@@ -193,7 +193,7 @@ version = "9.9.1"
 - **`[[repository]]`** entries carry the same fields as a `.repo`
   file. compose uses them two ways: to fetch and trust-verify metadata
   during the build, and — written verbatim — as the output root's
-  `/conf/peipkg/<name>.repo` files, so the booted system inherits the
+  `/lcl/conf/peipkg/<name>.repo` files, so the booted system inherits the
   same repositories.
 - **`local_packages`** lets `.peipkg` files on the build host join the
   resolver's candidate set, exactly as `peipkg install ./foo.peipkg`
@@ -305,8 +305,8 @@ compose produces, under `--out`:
 
 - **The package payloads** — every file, directory, and symlink in the
   closure, at its manifest path.
-- **`var/lib/peipkg/db.sqlite`** — the seeded state database (below).
-- **`conf/peipkg/<name>.repo`** — one file per manifest repository, so
+- **`var/state/peipkg/db.sqlite`** — the seeded state database (below).
+- **`lcl/conf/peipkg/<name>.repo`** — one file per manifest repository, so
   the booted system inherits its repositories and trust anchors.
 
 Nothing else. No `/boot`, no kernel, no registry, no prelude — the
