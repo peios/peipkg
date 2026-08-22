@@ -8,8 +8,10 @@ import "os/exec"
 // package cannot shadow it.
 var sideEffectCommands = map[string][]string{
 	"ldconfig": {"/bin/ldconfig"},
-	"depmod":   {"/bin/depmod", "-a"},
-	"man-db":   {"/bin/mandb", "-q"},
+	// depmod is machine-facing and ships in libexec rather than on PATH —
+	// this is one of the callers that puts it there.
+	"depmod": {"/libexec/depmod", "-a"},
+	"man-db": {"/bin/mandb", "-q"},
 }
 
 // runSideEffects runs each post-commit maintenance operation once, with
