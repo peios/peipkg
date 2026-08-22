@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
@@ -46,6 +47,28 @@ func mustJSON(t *testing.T, v any) []byte {
 
 // publishRepo builds the URL→bytes map of a repository signed by priv,
 // whose active index carries the given version and generated-at stamp.
+// Index generated_at values for tests, expressed relative to now.
+//
+// These used to be hardcoded absolute dates. That is a latent trap once any
+// check measures the index's own age: peipkg enforces a 90-day maximum index
+// staleness (PSPU 5.34), so a fixture stamped with a fixed date starts failing
+// on a specific calendar day for a reason that has nothing to do with what the
+// test is checking. Five CLI e2e tests did exactly that when the staleness gate
+// landed (PEI-406).
+//
+// The three ages below stand in for the three roles the old dates played, and
+// keep their ordering: older < baseline < newer.
+const (
+	generatedOlder    = 11
+	generatedBaseline = 2
+	generatedNewer    = 1
+)
+
+// indexGeneratedAt renders a generated_at n days in the past.
+func indexGeneratedAt(daysAgo int) string {
+	return time.Now().UTC().Add(-time.Duration(daysAgo) * 24 * time.Hour).Format(time.RFC3339)
+}
+
 func publishRepo(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey,
 	indexVersion int, generatedAt string) memFetcher {
 	t.Helper()
@@ -141,7 +164,7 @@ func newTestStore(t *testing.T) *db.DB {
 func TestClientAdd(t *testing.T) {
 	pub, priv := keypair(t)
 	client := repository.NewClient(
-		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), newTestStore(t), t.TempDir())
 
 	if err := client.Add(t.Context(), testConfig(pub)); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -164,7 +187,7 @@ func TestClientAddCacheFailureDoesNotRecordRepository(t *testing.T) {
 		t.Fatalf("write cache blocker: %v", err)
 	}
 	client := repository.NewClient(
-		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), store, cachePath)
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), store, cachePath)
 
 	if err := client.Add(t.Context(), testConfig(pub)); err == nil {
 		t.Fatal("Add should fail when the cache path is not a directory")
@@ -180,7 +203,7 @@ func TestClientAddRejectsUntrustedAnchor(t *testing.T) {
 	pub, priv := keypair(t)
 	wrongAnchor, _ := keypair(t)
 	client := repository.NewClient(
-		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), newTestStore(t), t.TempDir())
 
 	cfg := testConfig(pub)
 	cfg.TrustAnchors = []string{signature.Fingerprint(wrongAnchor)}
@@ -193,12 +216,12 @@ func TestClientRefreshProgress(t *testing.T) {
 	pub, priv := keypair(t)
 	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
 
-	add := repository.NewClient(publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), store, cache)
+	add := repository.NewClient(publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), store, cache)
 	if err := add.Add(t.Context(), cfg); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// Republished at a higher index version: the refresh accepts it.
-	refresh := repository.NewClient(publishRepo(t, pub, priv, 6, "2026-05-20T00:00:00Z"), store, cache)
+	refresh := repository.NewClient(publishRepo(t, pub, priv, 6, indexGeneratedAt(generatedNewer)), store, cache)
 	if err := refresh.Refresh(t.Context(), cfg); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -215,7 +238,7 @@ func TestActiveIndexRejectsCacheAheadOfTrustState(t *testing.T) {
 	pub, priv := keypair(t)
 	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
 
-	add := repository.NewClient(publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), store, cache)
+	add := repository.NewClient(publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), store, cache)
 	if err := add.Add(t.Context(), cfg); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -227,7 +250,7 @@ func TestActiveIndexRejectsCacheAheadOfTrustState(t *testing.T) {
 		t.Fatal("repository state was not recorded")
 	}
 
-	refresh := repository.NewClient(publishRepo(t, pub, priv, 6, "2026-05-20T00:00:00Z"), store, cache)
+	refresh := repository.NewClient(publishRepo(t, pub, priv, 6, indexGeneratedAt(generatedNewer)), store, cache)
 	if err := refresh.Refresh(t.Context(), cfg); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -245,12 +268,12 @@ func TestClientRefreshRejectsRollback(t *testing.T) {
 	pub, priv := keypair(t)
 	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
 
-	add := repository.NewClient(publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), store, cache)
+	add := repository.NewClient(publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), store, cache)
 	if err := add.Add(t.Context(), cfg); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// Republished at a lower index version: a rollback, refused (§6.2.3).
-	rollback := repository.NewClient(publishRepo(t, pub, priv, 3, "2026-05-10T00:00:00Z"), store, cache)
+	rollback := repository.NewClient(publishRepo(t, pub, priv, 3, indexGeneratedAt(generatedOlder)), store, cache)
 	if err := rollback.Refresh(t.Context(), cfg); err == nil {
 		t.Error("Refresh should reject a rolled-back index")
 	}
@@ -260,14 +283,14 @@ func TestClientRefreshRejectsUntrustedDescriptor(t *testing.T) {
 	pub, priv := keypair(t)
 	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
 
-	add := repository.NewClient(publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), store, cache)
+	add := repository.NewClient(publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), store, cache)
 	if err := add.Add(t.Context(), cfg); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	// Republished signed by a key the consumer never trusted.
 	otherPub, otherPriv := keypair(t)
 	rotated := repository.NewClient(
-		publishRepo(t, otherPub, otherPriv, 6, "2026-05-20T00:00:00Z"), store, cache)
+		publishRepo(t, otherPub, otherPriv, 6, indexGeneratedAt(generatedNewer)), store, cache)
 	if err := rotated.Refresh(t.Context(), cfg); err == nil {
 		t.Error("Refresh should reject a descriptor signed by an unknown key")
 	}
@@ -276,7 +299,7 @@ func TestClientRefreshRejectsUntrustedDescriptor(t *testing.T) {
 func TestClientRefreshNeedsPriorState(t *testing.T) {
 	pub, priv := keypair(t)
 	client := repository.NewClient(
-		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), newTestStore(t), t.TempDir())
 	if err := client.Refresh(t.Context(), testConfig(pub)); err == nil {
 		t.Error("Refresh should fail for a repository that was never added")
 	}
@@ -286,7 +309,7 @@ func TestClientArchiveIndex(t *testing.T) {
 	pub, priv := keypair(t)
 	cfg := testConfig(pub)
 	client := repository.NewClient(
-		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), newTestStore(t), t.TempDir())
 	if err := client.Add(t.Context(), cfg); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -309,7 +332,7 @@ func TestClientAddRejectsBelowMinIndexVersion(t *testing.T) {
 	cfg := testConfig(pub)
 	cfg.MinIndexVersion = 10
 	below := repository.NewClient(
-		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), newTestStore(t), t.TempDir())
 	if err := below.Add(t.Context(), cfg); err == nil {
 		t.Error("Add should refuse an index below the configured minimum (§6.2.3)")
 	}
@@ -317,7 +340,7 @@ func TestClientAddRejectsBelowMinIndexVersion(t *testing.T) {
 	// At the minimum, the add succeeds.
 	cfg.MinIndexVersion = 5
 	atFloor := repository.NewClient(
-		publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z"), newTestStore(t), t.TempDir())
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), newTestStore(t), t.TempDir())
 	if err := atFloor.Add(t.Context(), cfg); err != nil {
 		t.Errorf("Add should accept an index at the minimum: %v", err)
 	}
@@ -326,7 +349,7 @@ func TestClientAddRejectsBelowMinIndexVersion(t *testing.T) {
 func TestClientAddUnsigned(t *testing.T) {
 	pub, priv := keypair(t)
 	// An unsigned-mode repository publishes no detached signatures.
-	fetcher := publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z")
+	fetcher := publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline))
 	delete(fetcher, testRepoBase+"/repo.json.sig")
 	delete(fetcher, testRepoBase+"/index/active.json.sig")
 	delete(fetcher, testRepoBase+"/index/archive.json.sig")
@@ -355,7 +378,7 @@ func TestClientAddUnsigned(t *testing.T) {
 func TestClientAddRequiredRejectsMissingSignature(t *testing.T) {
 	pub, priv := keypair(t)
 	// A required-policy repository must serve a descriptor signature.
-	fetcher := publishRepo(t, pub, priv, 5, "2026-05-19T00:00:00Z")
+	fetcher := publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline))
 	delete(fetcher, testRepoBase+"/repo.json.sig")
 	client := repository.NewClient(fetcher, newTestStore(t), t.TempDir())
 	if err := client.Add(t.Context(), testConfig(pub)); err == nil {

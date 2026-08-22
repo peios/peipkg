@@ -29,7 +29,7 @@ func TestTrustAgeLifecycle(t *testing.T) {
 	ctx := t.Context()
 
 	client := repository.NewClient(
-		publishRepo(t, pub, priv, 1, "2026-05-19T00:00:00Z"), store, cacheDir)
+		publishRepo(t, pub, priv, 1, indexGeneratedAt(generatedBaseline)), store, cacheDir)
 	if err := client.Add(ctx, cfg); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestTrustAgeLifecycle(t *testing.T) {
 
 	// A refresh that makes progress rejuvenates it.
 	progressed := repository.NewClient(
-		publishRepo(t, pub, priv, 2, "2026-08-01T00:00:00Z"), store, cacheDir)
+		publishRepo(t, pub, priv, 2, indexGeneratedAt(generatedNewer)), store, cacheDir)
 	if err := progressed.Refresh(ctx, cfg); err != nil {
 		t.Fatalf("progressed Refresh: %v", err)
 	}
