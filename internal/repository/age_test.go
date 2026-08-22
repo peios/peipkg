@@ -93,3 +93,109 @@ func TestTrustAgeLifecycle(t *testing.T) {
 		t.Errorf("unknown repository: age=%s, stale=%v, err=%v; want 0, false, nil", age, stale, err)
 	}
 }
+
+func TestMaxIndexStaleness(t *testing.T) {
+	if got := repository.MaxIndexStaleness(config.RepoConfig{}); got != 90*24*time.Hour {
+		t.Errorf("default MaxIndexStaleness = %s, want 2160h", got)
+	}
+	got := repository.MaxIndexStaleness(config.RepoConfig{MaxIndexStalenessDays: 120})
+	if got != 120*24*time.Hour {
+		t.Errorf("configured MaxIndexStaleness = %s, want 2880h", got)
+	}
+}
+
+// TestIndexStalenessIsIndependentOfTrustAge is the whole point of the
+// §5.34 check. It builds the exact repository the spec warns about: one
+// that bumps index_version on every publication while stamping an
+// ancient generated_at. Such a repository keeps TrustAge satisfied
+// forever — the version bump reads as progress, so Refresh advances the
+// recorded refresh time — while the metadata it serves is two years old.
+func TestIndexStalenessIsIndependentOfTrustAge(t *testing.T) {
+	pub, priv := keypair(t)
+	store := newTestStore(t)
+	cacheDir := t.TempDir()
+	cfg := testConfig(pub)
+	ctx := t.Context()
+	now := time.Now()
+
+	ancient := now.Add(-2 * 365 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	client := repository.NewClient(publishRepo(t, pub, priv, 1, ancient), store, cacheDir)
+	if err := client.Add(ctx, cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// The repository publishes again: a higher index_version, the same
+	// ancient generated_at.
+	bumped := repository.NewClient(publishRepo(t, pub, priv, 2, ancient), store, cacheDir)
+	if err := bumped.Refresh(ctx, cfg); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	// Trusted age is satisfied: the refresh just succeeded.
+	if _, stale, err := bumped.TrustAge(ctx, cfg, now); err != nil || stale {
+		t.Fatalf("trusted age after a bumping refresh: stale=%v, err=%v", stale, err)
+	}
+	// Index staleness is not, and that is the hole this check closes.
+	age, stale, err := bumped.IndexStaleness(ctx, cfg, now)
+	if err != nil {
+		t.Fatalf("IndexStaleness: %v", err)
+	}
+	if !stale {
+		t.Fatalf("two-year-old metadata reported fresh (age %s)", age)
+	}
+	if age < 2*365*24*time.Hour-24*time.Hour {
+		t.Errorf("IndexStaleness age = %s, want about 2 years", age)
+	}
+}
+
+// A recently generated index is not stale, and a configured window
+// wider than the index's age makes an otherwise-stale one acceptable.
+func TestIndexStalenessRespectsAFreshIndexAndAConfiguredWindow(t *testing.T) {
+	pub, priv := keypair(t)
+	store := newTestStore(t)
+	cacheDir := t.TempDir()
+	cfg := testConfig(pub)
+	ctx := t.Context()
+	now := time.Now()
+
+	recent := now.Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	client := repository.NewClient(publishRepo(t, pub, priv, 1, recent), store, cacheDir)
+	if err := client.Add(ctx, cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, stale, err := client.IndexStaleness(ctx, cfg, now); err != nil || stale {
+		t.Fatalf("day-old index: stale=%v, err=%v", stale, err)
+	}
+
+	// 100 days old: past the 90-day default, inside a configured 180.
+	old := now.Add(-100 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	store2 := newTestStore(t)
+	aged := repository.NewClient(publishRepo(t, pub, priv, 1, old), store2, t.TempDir())
+	if err := aged.Add(ctx, cfg); err != nil {
+		t.Fatalf("Add aged: %v", err)
+	}
+	if _, stale, err := aged.IndexStaleness(ctx, cfg, now); err != nil || !stale {
+		t.Fatalf("100-day-old index under the default: stale=%v, err=%v", stale, err)
+	}
+	wide := cfg
+	wide.MaxIndexStalenessDays = 180
+	if _, stale, err := aged.IndexStaleness(ctx, wide, now); err != nil || stale {
+		t.Fatalf("100-day-old index under a 180-day window: stale=%v, err=%v", stale, err)
+	}
+}
+
+// An unknown repository reports not-stale rather than inventing an age:
+// the caller's next index access produces the precise "no recorded
+// trust state" error, which this gate must not mask.
+func TestIndexStalenessOnAnUnknownRepositoryDefersToTheCaller(t *testing.T) {
+	pub, priv := keypair(t)
+	cfg := testConfig(pub)
+	client := repository.NewClient(
+		publishRepo(t, pub, priv, 1, time.Now().UTC().Format(time.RFC3339)),
+		newTestStore(t), t.TempDir())
+
+	age, stale, err := client.IndexStaleness(t.Context(), cfg, time.Now())
+	if err != nil || stale || age != 0 {
+		t.Fatalf("unknown repository: age=%s, stale=%v, err=%v", age, stale, err)
+	}
+}

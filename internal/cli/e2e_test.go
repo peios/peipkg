@@ -42,6 +42,17 @@ func detachedSig(priv ed25519.PrivateKey, content []byte) []byte {
 	return env
 }
 
+// daysAgo renders an index generated_at n days in the past, in the
+// format the wire schema expects.
+//
+// Relative rather than a fixed date because the install path now
+// enforces a 90-day maximum index staleness (§5.34): a hardcoded
+// timestamp makes every one of these tests start failing on a specific
+// calendar day, for a reason unrelated to what they check.
+func daysAgo(n int) string {
+	return time.Now().UTC().Add(-time.Duration(n) * 24 * time.Hour).Format(time.RFC3339)
+}
+
 func mustMarshal(t *testing.T, v any) []byte {
 	t.Helper()
 	data, err := json.Marshal(v)
@@ -171,7 +182,7 @@ func TestEndToEndInstall(t *testing.T) {
 	})
 	index := mustMarshal(t, map[string]any{
 		"schema_version": 1, "repo": "test", "kind": "active",
-		"index_version": 1, "generated_at": "2026-05-19T00:00:00Z",
+		"index_version": 1, "generated_at": daysAgo(2),
 		"packages": []any{map[string]any{
 			"name": pkgName, "version": pkgVer, "architecture": "x86_64",
 			"dependencies": []any{}, "conflicts": []any{},
@@ -401,12 +412,12 @@ func TestEndToEndDowngradeUndo(t *testing.T) {
 	})
 	active := mustMarshal(t, map[string]any{
 		"schema_version": 1, "repo": "test", "kind": "active",
-		"index_version": 2, "generated_at": "2026-05-19T00:00:00Z",
+		"index_version": 2, "generated_at": daysAgo(2),
 		"packages": []any{entry("2.0-1", hash(v2), url2, len(v2))},
 	})
 	archive := mustMarshal(t, map[string]any{
 		"schema_version": 1, "repo": "test", "kind": "archive",
-		"index_version": 2, "generated_at": "2026-05-19T00:00:00Z",
+		"index_version": 2, "generated_at": daysAgo(2),
 		"packages": []any{
 			entry("2.0-1", hash(v2), url2, len(v2)),
 			entry("1.0-1", hash(v1), url1, len(v1)),
@@ -506,7 +517,7 @@ func installLiveBootCrossRoot(t *testing.T) (app *App, anchor, initramfs string)
 	// Entries are sorted by name: live-boot, peiosutils.
 	index := mustMarshal(t, map[string]any{
 		"schema_version": 1, "repo": "test", "kind": "active",
-		"index_version": 1, "generated_at": "2026-05-19T00:00:00Z",
+		"index_version": 1, "generated_at": daysAgo(2),
 		"packages": []any{
 			map[string]any{
 				"name": "live-boot", "version": "1.0-1", "architecture": "x86_64",
@@ -670,7 +681,7 @@ func TestInstallMaxTrustedAgeGate(t *testing.T) {
 				"url":  pkgURL}},
 		})
 	}
-	index := makeIndex(1, "2026-05-19T00:00:00Z")
+	index := makeIndex(1, daysAgo(2))
 	served := map[string][]byte{
 		"/repo.json":             descriptor,
 		"/repo.json.sig":         detachedSig(priv, descriptor),
@@ -733,7 +744,7 @@ func TestInstallMaxTrustedAgeGate(t *testing.T) {
 
 	// A refresh that makes progress unblocks the operation on its own.
 	ageRepo()
-	index2 := makeIndex(2, "2026-05-20T00:00:00Z")
+	index2 := makeIndex(2, daysAgo(1))
 	served["/index/active.json"] = index2
 	served["/index/active.json.sig"] = detachedSig(priv, index2)
 	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
@@ -750,5 +761,115 @@ func TestInstallMaxTrustedAgeGate(t *testing.T) {
 	err = cmdInstall(app, []string{pkgName, "--yes"})
 	if err == nil || !strings.Contains(err.Error(), "refresh failed") {
 		t.Fatalf("unreachable repository: expected a refresh-failed refusal, got %v", err)
+	}
+}
+
+// TestInstallMaxIndexStalenessGate is the §5.34 gate end to end, on the
+// repository the spec names: one whose index_version keeps climbing
+// while its generated_at does not move. The maximum-trusted-age check
+// is satisfied throughout — every refresh here "makes progress" — so
+// anything that refuses the install is this gate and only this gate.
+func TestInstallMaxIndexStalenessGate(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	fp := signature.Fingerprint(pub)
+
+	const pkgName, pkgVer = "hello", "1.0-1"
+	pkgBytes, sizeInstalled := buildSignedPackage(t, priv, pub, pkgName, pkgVer,
+		map[string]string{"usr/bin/hello": "#!/bin/sh\necho hi\n"})
+	pkgSum := sha256.Sum256(pkgBytes)
+	pkgURL := "/p/hello/1.0-1/hello_1.0-1_x86_64.peipkg"
+
+	descriptor := mustMarshal(t, map[string]any{
+		"schema_version": 1,
+		"repo": map[string]any{"name": "test", "signing": map[string]any{
+			"algorithm": "ed25519",
+			"keys": []any{map[string]any{
+				"fingerprint": fp, "url": "/keys/" + fp + ".pub", "status": "active"}}}},
+		"indexes": map[string]any{
+			"active": map[string]any{
+				"url": "/index/active.json", "signature_url": "/index/active.json.sig"},
+			"archive": map[string]any{
+				"url": "/index/archive.json", "signature_url": "/index/archive.json.sig"}},
+	})
+	makeIndex := func(indexVersion int, generatedAt string) []byte {
+		return mustMarshal(t, map[string]any{
+			"schema_version": 1, "repo": "test", "kind": "active",
+			"index_version": indexVersion, "generated_at": generatedAt,
+			"packages": []any{map[string]any{
+				"name": pkgName, "version": pkgVer, "architecture": "x86_64",
+				"dependencies": []any{}, "conflicts": []any{},
+				"size_compressed": len(pkgBytes), "size_installed": sizeInstalled,
+				"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(pkgSum[:])},
+				"url":  pkgURL}},
+		})
+	}
+	// 200 days old: well past the 90-day maximum, and past the 180-day
+	// ceiling on max_trusted_age_days too, so no trusted-age setting
+	// could mask it.
+	stale := daysAgo(200)
+	index := makeIndex(1, stale)
+	served := map[string][]byte{
+		"/repo.json":             descriptor,
+		"/repo.json.sig":         detachedSig(priv, descriptor),
+		"/keys/" + fp + ".pub":   []byte(pub),
+		"/index/active.json":     index,
+		"/index/active.json.sig": detachedSig(priv, index),
+		pkgURL:                   pkgBytes,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := served[r.URL.Path]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(t.TempDir(), strings.NewReader(""), out, errOut)
+	app.emitter = &audit.Recorder{}
+
+	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure"}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+
+	// The install is refused: the metadata is 200 days old and refreshing
+	// brings nothing newer.
+	err = cmdInstall(app, []string{pkgName, "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "stale metadata") {
+		t.Fatalf("stale index: expected a stale-metadata refusal, got %v", err)
+	}
+
+	// A version bump alone does NOT clear it. This is the case the
+	// trusted-age check reads as progress and this one must not.
+	index2 := makeIndex(2, stale)
+	served["/index/active.json"] = index2
+	served["/index/active.json.sig"] = detachedSig(priv, index2)
+	err = cmdInstall(app, []string{pkgName, "--yes"})
+	if err == nil || !strings.Contains(err.Error(), "stale metadata") {
+		t.Fatalf("bumped index_version, unchanged generated_at: expected a refusal, got %v", err)
+	}
+
+	// --allow-stale overrides, with a warning naming the flag.
+	errOut.Reset()
+	if err := cmdInstall(app, []string{pkgName, "--yes", "--allow-stale"}); err != nil {
+		t.Fatalf("install --allow-stale: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "--allow-stale") {
+		t.Errorf("expected a stale-metadata warning on stderr, got:\n%s", errOut.String())
+	}
+	if err := cmdUninstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+
+	// A genuinely newer index clears it without any flag.
+	index3 := makeIndex(3, daysAgo(1))
+	served["/index/active.json"] = index3
+	served["/index/active.json.sig"] = detachedSig(priv, index3)
+	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("install after a genuinely newer index: %v", err)
 	}
 }

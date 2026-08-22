@@ -765,6 +765,15 @@ func ensureFreshTrust(app *App, allowStale bool) error {
 				"(above %d) — the freshness check is effectively disabled (§6.5.4)\n",
 				cfg.Name, cfg.MaxTrustedAgeDays, repository.WarnMaxTrustedAgeDays)
 		}
+		if cfg.MaxIndexStalenessDays > repository.WarnMaxIndexStalenessDays {
+			fmt.Fprintf(app.errOut, "peipkg: warning: repository %q sets "+
+				"max_index_staleness_days=%d (above %d) — the index-staleness check is "+
+				"effectively disabled (§5.34)\n",
+				cfg.Name, cfg.MaxIndexStalenessDays, repository.WarnMaxIndexStalenessDays)
+		}
+		if err := ensureIndexNotStale(ctx, app, client, cfg, now, allowStale); err != nil {
+			return err
+		}
 		age, stale, err := client.TrustAge(ctx, cfg, now)
 		if err != nil {
 			return err
@@ -806,6 +815,68 @@ func ensureFreshTrust(app *App, allowStale bool) error {
 			Repo: cfg.Name, Detail: fmt.Sprintf("proceed with stale trust state (age %s)",
 				formatAge(age))})
 	}
+	return nil
+}
+
+// ensureIndexNotStale applies the §5.34 maximum-index-staleness gate to
+// one repository.
+//
+// Separate from the maximum-trusted-age gate beside it because they
+// measure different things and only both together close the hole:
+// trusted age is time since the last successful refresh, staleness is
+// the age of the metadata itself. A repository that bumps index_version
+// on every publication while stamping an ancient generated_at reads as
+// permanently fresh to the trusted-age check — CheckFreshness treats
+// the version bump as progress, and Refresh then advances
+// LastRefreshAt — while serving metadata of any age.
+//
+// The 90-day window is independent of max_trusted_age_days, and
+// deliberately so: raising the trusted age (permitted up to 180 without
+// so much as a warning) must not widen this one.
+func ensureIndexNotStale(ctx context.Context, app *App, client *repository.Client,
+	cfg config.RepoConfig, now time.Time, allowStale bool) error {
+
+	age, stale, err := client.IndexStaleness(ctx, cfg, now)
+	if err != nil {
+		return err
+	}
+	if !stale {
+		return nil
+	}
+	max := repository.MaxIndexStaleness(cfg)
+	fmt.Fprintf(app.errOut, "peipkg: repository %q index was generated %s ago (maximum index "+
+		"staleness %s); refreshing\n", cfg.Name, formatAge(age), formatAge(max))
+
+	refreshErr := client.Refresh(ctx, cfg)
+	if refreshErr == nil {
+		// A refresh only clears this if it actually brought a newer
+		// index: a repository republishing the same ancient generated_at
+		// leaves the floor where it was. Re-measure rather than assume.
+		if _, stale, err = client.IndexStaleness(ctx, cfg, now); err != nil {
+			return err
+		}
+		if !stale {
+			return nil
+		}
+	}
+	if !allowStale {
+		if refreshErr != nil {
+			return fmt.Errorf("repository %q index was generated %s ago (maximum %s) and the "+
+				"refresh failed: %v\nretry with the repository reachable, or pass "+
+				"--allow-stale to proceed with stale metadata (§5.34)",
+				cfg.Name, formatAge(age), formatAge(max), refreshErr)
+		}
+		return fmt.Errorf("repository %q serves stale metadata: its index was generated %s "+
+			"ago (maximum %s) and refreshing did not bring a newer one\npass --allow-stale "+
+			"to proceed with stale metadata (§5.34)",
+			cfg.Name, formatAge(age), formatAge(max))
+	}
+	fmt.Fprintf(app.errOut, "peipkg: warning: proceeding with stale metadata for repository "+
+		"%q (index generated %s ago) — authorised by --allow-stale (§5.34)\n",
+		cfg.Name, formatAge(age))
+	app.emit(audit.Event{Type: audit.TypeAuthorisation, Outcome: audit.OutcomeSuccess,
+		Repo: cfg.Name, Detail: fmt.Sprintf("proceed with stale index metadata (generated %s ago)",
+			formatAge(age))})
 	return nil
 }
 

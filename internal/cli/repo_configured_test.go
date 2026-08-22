@@ -39,7 +39,7 @@ func serveMinimalRepo(t *testing.T, name string) (url, fingerprint string) {
 	})
 	index := mustMarshal(t, map[string]any{
 		"schema_version": 1, "repo": name, "kind": "active",
-		"index_version": 1, "generated_at": "2026-05-19T00:00:00Z",
+		"index_version": 1, "generated_at": daysAgo(2),
 		"packages": []any{},
 	})
 	served := map[string][]byte{

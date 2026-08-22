@@ -69,6 +69,9 @@ func cmdRepoAdd(app *App, args []string) error {
 		"out-of-band minimum acceptable index_version (§6.2.3)")
 	maxAge := fs.Int("max-trusted-age-days", 0,
 		"maximum trusted age in days before operations demand a refresh (0 = default 30, §6.5.4)")
+	maxStale := fs.Int("max-index-staleness-days", 0,
+		"maximum age of the index's own generated_at before operations demand a refresh "+
+			"(0 = default 90, §5.34)")
 	var anchors stringList
 	fs.Var(&anchors, "anchor", "a trusted signing-key fingerprint (repeatable)")
 	pos, err := parseArgs(fs, args)
@@ -108,6 +111,7 @@ func cmdRepoAdd(app *App, args []string) error {
 			AllowInsecureTransport: *insecure,
 			MinIndexVersion:        *minIndex,
 			MaxTrustedAgeDays:      *maxAge,
+			MaxIndexStalenessDays:  *maxStale,
 		}
 	default:
 		return fmt.Errorf("repo add: usage: repo add <name> <base-url> --anchor <fingerprint>\n" +

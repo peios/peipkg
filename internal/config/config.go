@@ -61,6 +61,17 @@ type RepoConfig struct {
 	// a fresh refresh. Zero means the spec default (30 days); values
 	// above 180 draw a per-operation warning.
 	MaxTrustedAgeDays int
+	// MaxIndexStalenessDays tunes the §5.34 maximum index staleness: how
+	// old the active index's own generated_at may be before an install
+	// operation triggers a refresh attempt. Zero means the spec default
+	// (90 days); values above 365 draw a per-operation warning.
+	//
+	// Deliberately independent of MaxTrustedAgeDays, which measures time
+	// since the last successful refresh. A repository that bumps
+	// index_version on every publication while stamping an ancient
+	// generated_at satisfies the trusted-age check forever and fails
+	// this one immediately.
+	MaxIndexStalenessDays int
 }
 
 // Provider supplies and stores repository configuration. The
@@ -105,6 +116,11 @@ func (c RepoConfig) validate() error {
 	}
 	if c.MaxTrustedAgeDays < 0 {
 		return fmt.Errorf("peipkg/config: repository %q: max_trusted_age_days must not be negative",
+			c.Name)
+	}
+	if c.MaxIndexStalenessDays < 0 {
+		return fmt.Errorf(
+			"peipkg/config: repository %q: max_index_staleness_days must not be negative",
 			c.Name)
 	}
 	return nil
