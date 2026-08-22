@@ -17,7 +17,12 @@ name = "peipkg"
 # target, a chroot being prepared, a composed image. Those are what --root is
 # for. No migration: a .repo written at runtime already landed here, because
 # the view's create tier IS /lcl/conf.
-version      = "0.1.1-3"
+# -4: the depmod side effect runs /libexec/depmod. depmod is machine-facing —
+# this and `make modules_install` are its only callers — so it moved off PATH
+# into libexec. Must ship together with kmod 33-2, which is what puts it there:
+# either alone leaves the side effect pointing at a path that does not exist,
+# and a failed side effect is a warning rather than an error.
+version      = "0.1.1-4"
 architecture = "x86_64"
 description  = "Peios package manager client (peipkg consumer; static, CGO-free)"
 license      = "MIT"
