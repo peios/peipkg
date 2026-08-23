@@ -238,6 +238,32 @@ func ValidateFiles(m Manifest, files map[string]string) error {
 	return internalpack.ValidateFiles(m.Architecture, files)
 }
 
+// ValidateSideEffects checks the manifest's side_effects declaration
+// against the payload it will be packed with (§5.24), in both
+// directions: a payload holding kernel modules must declare depmod, and
+// a manifest declaring depmod must hold kernel modules.
+//
+// Returns advisory findings and an error. The error carries the
+// normative failures (depmod is a MUST / MUST NOT); the findings carry
+// man-db, which the spec makes a SHOULD because a stale man index
+// degrades to a filesystem scan rather than breaking anything. Findings
+// are returned even alongside an error, so one run reports everything.
+//
+// Unlike the layout checks, [Manifest.SpecialSystemPackage] does not
+// exempt a package. Special packages stage exotic *layouts*, which is
+// why those checks let them through; what maintenance a payload needs
+// afterwards is a separate question, and the kernel's module tree is
+// exactly the payload that most needs depmod.
+func ValidateSideEffects(m Manifest, files map[string]string) ([]string, error) {
+	return internalpack.ValidateSideEffectsFiles(m.SideEffects, files)
+}
+
+// ValidateSideEffectsPayload is [ValidateSideEffects] over a staged tree
+// rather than an explicit file map, the [ValidatePayload] counterpart.
+func ValidateSideEffectsPayload(m Manifest, stagedRoot string) ([]string, error) {
+	return internalpack.ValidateSideEffectsPayload(m.SideEffects, stagedRoot)
+}
+
 // toInternalManifest converts the public manifest into its internal
 // on-wire form: each name-keyed array is checked for duplicates (§4.1
 // forbids identical names within a field) and sorted into canonical
