@@ -7,7 +7,6 @@ import "os/exec"
 // PATH is never searched — so the genuine system tool runs and a
 // package cannot shadow it.
 var sideEffectCommands = map[string][]string{
-	"ldconfig": {"/bin/ldconfig"},
 	// depmod is machine-facing and ships in libexec rather than on PATH —
 	// this is one of the callers that puts it there.
 	"depmod": {"/libexec/depmod", "-a"},

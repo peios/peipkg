@@ -100,7 +100,7 @@ func TestDecodeOptionalFields(t *testing.T) {
 	m["replaces"] = []any{
 		map[string]any{"name": "nginx-core"},
 	}
-	m["side_effects"] = []any{"ldconfig", "man-db"}
+	m["side_effects"] = []any{"depmod", "man-db"}
 	m["sd_overrides"] = []any{
 		map[string]any{
 			"path": "usr/bin/nginx",
@@ -121,7 +121,7 @@ func TestDecodeOptionalFields(t *testing.T) {
 	if got.Provides[1].Version != nil {
 		t.Errorf("Provides[1].Version: got %v, want nil (unversioned)", got.Provides[1].Version)
 	}
-	if len(got.SideEffects) != 2 || got.SideEffects[0] != manifest.SideEffectLdconfig {
+	if len(got.SideEffects) != 2 || got.SideEffects[0] != manifest.SideEffectDepmod {
 		t.Errorf("SideEffects: got %v", got.SideEffects)
 	}
 	if len(got.SDOverrides) != 1 || string(got.SDOverrides[0].SD) != "a security descriptor" {
@@ -363,12 +363,12 @@ func TestProvidesVersionRevisionOptional(t *testing.T) {
 func TestSideEffectRules(t *testing.T) {
 	t.Run("unknown side effect", func(t *testing.T) {
 		m := baseManifest()
-		m["side_effects"] = []any{"ldconfig", "rm-rf-slash"}
+		m["side_effects"] = []any{"depmod", "rm-rf-slash"}
 		wantReject(t, m)
 	})
 	t.Run("duplicate side effect", func(t *testing.T) {
 		m := baseManifest()
-		m["side_effects"] = []any{"ldconfig", "ldconfig"}
+		m["side_effects"] = []any{"depmod", "depmod"}
 		wantReject(t, m)
 	})
 }

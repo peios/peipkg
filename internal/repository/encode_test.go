@@ -175,7 +175,7 @@ func sampleEntry(t *testing.T, name, ver string) repository.IndexEntry {
 		Conflicts:      []manifest.Dependency{{Name: "live-boot-irf"}},
 		Provides:       []manifest.Provides{{Name: "root-mounted"}},
 		Replaces:       []manifest.Replaces{{Name: "stratafs-base-topo"}},
-		SideEffects:    []manifest.SideEffect{manifest.SideEffectLdconfig},
+		SideEffects:    []manifest.SideEffect{manifest.SideEffectDepmod},
 		SizeCompressed: 941,
 		SizeInstalled:  73,
 		Hash:           strings.Repeat("ab", 32),

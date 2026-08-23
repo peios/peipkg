@@ -118,10 +118,18 @@ type Replaces struct {
 type SideEffect string
 
 const (
-	SideEffectLdconfig SideEffect = "ldconfig"
-	SideEffectDepmod   SideEffect = "depmod"
-	SideEffectManDB    SideEffect = "man-db"
+	SideEffectDepmod SideEffect = "depmod"
+	SideEffectManDB  SideEffect = "man-db"
 )
+
+// There is deliberately no ldconfig side effect. Peios has no shared
+// library cache and needs none: the C library's libdir, slibdir and
+// rtlddir are all /usr/lib/<triplet>, and the loader carries that
+// compiled in as its default search path. One directory, already
+// searched -- nothing for a cache to accelerate and nothing outside the
+// path to admit. The rule that replaces it is a layout rule: a package
+// shipping a shared library installs it into /usr/lib/<triplet> (§5.24).
+
 
 // SDOverride is one entry of sd_overrides: a per-payload-entry security
 // descriptor (§3.3.5).

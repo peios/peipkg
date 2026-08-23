@@ -474,7 +474,7 @@ func validateSideEffects(raw []string) ([]SideEffect, error) {
 	seen := make(map[string]bool, len(raw))
 	for _, s := range raw {
 		switch SideEffect(s) {
-		case SideEffectLdconfig, SideEffectDepmod, SideEffectManDB:
+		case SideEffectDepmod, SideEffectManDB:
 		default:
 			return nil, fmt.Errorf("peipkg/manifest: side_effects: %q is not a recognised "+
 				"side effect", s)
