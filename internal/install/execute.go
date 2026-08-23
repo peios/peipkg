@@ -378,7 +378,9 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 	result.Warnings = append(result.Warnings, p.claimWarnings...)
 	result.Warnings = append(result.Warnings, discardBackups(p.ops)...)
 	if env.RunSideEffects {
-		result.Warnings = append(result.Warnings, runSideEffects(sideEffectsOf(p.staged))...)
+		effects, warnings := plannedSideEffects(p.staged)
+		result.Warnings = append(result.Warnings, warnings...)
+		result.Warnings = append(result.Warnings, runSideEffects(effects)...)
 	}
 	return result, nil
 }
@@ -618,21 +620,3 @@ func allCreatedDirs(staged []stagedOp) []string {
 	return dirs
 }
 
-// sideEffectsOf collects, de-duplicated, the side effects declared by
-// every package being installed or upgraded.
-func sideEffectsOf(staged []stagedOp) []string {
-	seen := map[string]bool{}
-	var effects []string
-	for _, s := range staged {
-		if s.pkg == nil {
-			continue // a removal declares no side effects
-		}
-		for _, e := range s.sideEffects {
-			if !seen[e] {
-				seen[e] = true
-				effects = append(effects, e)
-			}
-		}
-	}
-	return effects
-}
