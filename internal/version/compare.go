@@ -142,8 +142,14 @@ func compareSegments(a, b []segment) int {
 	next := longer[common]
 
 	// shorterVsLonger is the comparison result of shorter against longer.
-	shorterVsLonger := -1 // a numeric or non-pre-release tail makes the shorter side less
-	if next.kind == alphabetic && next.preRelease {
+	//
+	// The pre-release flag decides, not the kind. A tail that is a
+	// pre-release is something the shorter version has already passed,
+	// whether it is written `~rc1` or `~1` -- gating this on the tail being
+	// alphabetic made `1.0~1` sort *above* `1.0`, inverting the tilde for
+	// every numeric snapshot form (`1.0~1`, `5.2~20240101`).
+	shorterVsLonger := -1 // an ordinary tail makes the shorter side less
+	if next.preRelease {
 		shorterVsLonger = 1 // a pre-release tail makes the shorter side greater
 	}
 	if shorterIsA {
@@ -152,8 +158,23 @@ func compareSegments(a, b []segment) int {
 	return -shorterVsLonger
 }
 
-// compareSegment compares two individual segments per §2.2.7.2.
+// compareSegment compares two individual segments per PSPU §5.6.
+//
+// The pre-release flag is consulted before the kinds, because it is a
+// property of where the segment sits in the version rather than of what it
+// contains: a pre-release segment sorts below whatever follows the tail,
+// numeric or not. Reading it only in the numeric-vs-alphabetic branch left
+// `1.0~2` and `1.0-2` indistinguishable -- and indistinguishable is worse
+// than mis-ordered here, because `repopub` and the resolver both use
+// `Compare(...) == 0` as identity, so two archive entries the index cannot
+// order got picked between by sort stability.
 func compareSegment(a, b segment) int {
+	if a.preRelease != b.preRelease {
+		if a.preRelease {
+			return -1
+		}
+		return 1
+	}
 	switch {
 	case a.kind == numeric && b.kind == numeric:
 		return compareNumeric(a.text, b.text)
