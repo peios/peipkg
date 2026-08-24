@@ -102,7 +102,7 @@ func Compare(a, b Version) int {
 	if c := compareEpochUpstream(a, b); c != 0 {
 		return c
 	}
-	return cmp.Compare(a.revision, b.revision)
+	return compareNumeric(a.revision, b.revision)
 }
 
 // Equal reports whether v and other are the same version.
@@ -115,8 +115,8 @@ func (v Version) Less(other Version) bool { return Compare(v, other) < 0 }
 // upstream version, ignoring the revision. The constraint matcher
 // reuses it for operands whose revision was omitted.
 func compareEpochUpstream(a, b Version) int {
-	if a.epoch != b.epoch {
-		return cmp.Compare(a.epoch, b.epoch)
+	if c := compareNumeric(a.epoch, b.epoch); c != 0 {
+		return c
 	}
 	return compareSegments(a.segments, b.segments)
 }

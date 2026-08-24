@@ -1,7 +1,6 @@
 package version
 
 import (
-	"cmp"
 	"fmt"
 	"strings"
 )
@@ -117,8 +116,8 @@ func (c Constraint) MayNeedHistoricalVersions() bool {
 // omitted its revision, the revision is not part of the comparison.
 func (e expression) matches(v Version) bool {
 	c := compareEpochUpstream(v, e.operand)
-	if c == 0 && e.operand.revision != 0 {
-		c = cmp.Compare(v.revision, e.operand.revision)
+	if c == 0 && e.operand.revision != "" {
+		c = compareNumeric(v.revision, e.operand.revision)
 	}
 	switch e.op {
 	case OpEqual:

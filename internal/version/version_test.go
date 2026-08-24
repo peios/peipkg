@@ -9,17 +9,21 @@ import (
 func TestParseValid(t *testing.T) {
 	cases := []struct {
 		in       string
-		epoch    int
+		epoch    string
 		upstream string
-		revision int
+		revision string
 	}{
-		{"1.26.2-3", 0, "1.26.2", 3},
-		{"1.26.2-rc.1-1", 0, "1.26.2-rc.1", 1}, // upstream may itself contain hyphens
-		{"2:0.5.0-1", 2, "0.5.0", 1},
-		{"0.22-1", 0, "0.22", 1},
-		{"0:1.0-1", 0, "1.0", 1}, // an explicit epoch of zero is well-formed
-		{"16beta1-1", 0, "16beta1", 1},
-		{"1.0~rc.1-42", 0, "1.0~rc.1", 42},
+		{"1.26.2-3", "0", "1.26.2", "3"},
+		{"1.26.2-rc.1-1", "0", "1.26.2-rc.1", "1"}, // upstream may itself contain hyphens
+		{"2:0.5.0-1", "2", "0.5.0", "1"},
+		{"0.22-1", "0", "0.22", "1"},
+		{"0:1.0-1", "0", "1.0", "1"}, // an explicit epoch of zero is well-formed
+		{"16beta1-1", "0", "16beta1", "1"},
+		{"1.0~rc.1-42", "0", "1.0~rc.1", "42"},
+		// §2.2.2/§2.2.4 set no maximum: neither of these fits an int32,
+		// and the larger does not fit an int64 either.
+		{"4294967296:1.0-2147483648", "4294967296", "1.0", "2147483648"},
+		{"1.0-99999999999999999999", "0", "1.0", "99999999999999999999"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -28,13 +32,13 @@ func TestParseValid(t *testing.T) {
 				t.Fatalf("Parse(%q): %v", tc.in, err)
 			}
 			if v.Epoch() != tc.epoch {
-				t.Errorf("Epoch: got %d, want %d", v.Epoch(), tc.epoch)
+				t.Errorf("Epoch: got %q, want %q", v.Epoch(), tc.epoch)
 			}
 			if v.Upstream() != tc.upstream {
 				t.Errorf("Upstream: got %q, want %q", v.Upstream(), tc.upstream)
 			}
 			if v.Revision() != tc.revision {
-				t.Errorf("Revision: got %d, want %d", v.Revision(), tc.revision)
+				t.Errorf("Revision: got %q, want %q", v.Revision(), tc.revision)
 			}
 			if v.String() != tc.in {
 				t.Errorf("String: got %q, want a verbatim round-trip of %q", v.String(), tc.in)
