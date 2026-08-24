@@ -301,10 +301,10 @@ func TestArchiveOrdersVersionsDescending(t *testing.T) {
 		RepoName: "r", Kind: repository.IndexArchive, IndexVersion: 1,
 		GeneratedAt: time.Now().UTC(),
 		Packages: []repository.IndexEntry{
-			sampleEntry(t, "b", "1.0.0-1"),
-			sampleEntry(t, "a", "1.0.0-2"),
-			sampleEntry(t, "a", "2.0.0-1"),
-			sampleEntry(t, "a", "1.0.0-10"),
+			sampleEntry(t, "bb", "1.0.0-1"),
+			sampleEntry(t, "aa", "1.0.0-2"),
+			sampleEntry(t, "aa", "2.0.0-1"),
+			sampleEntry(t, "aa", "1.0.0-10"),
 		},
 	})
 	if err != nil {
@@ -318,7 +318,7 @@ func TestArchiveOrdersVersionsDescending(t *testing.T) {
 	for _, e := range idx.Packages {
 		got = append(got, e.Name+" "+e.Version.String())
 	}
-	want := []string{"a 2.0.0-1", "a 1.0.0-10", "a 1.0.0-2", "b 1.0.0-1"}
+	want := []string{"aa 2.0.0-1", "aa 1.0.0-10", "aa 1.0.0-2", "bb 1.0.0-1"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
@@ -337,8 +337,8 @@ func TestActiveIndexRefusesADuplicateName(t *testing.T) {
 		RepoName: "r", Kind: repository.IndexActive, IndexVersion: 1,
 		GeneratedAt: time.Now().UTC(),
 		Packages: []repository.IndexEntry{
-			sampleEntry(t, "a", "1.0.0-1"),
-			sampleEntry(t, "a", "2.0.0-1"),
+			sampleEntry(t, "aa", "1.0.0-1"),
+			sampleEntry(t, "aa", "2.0.0-1"),
 		},
 	})
 	if err == nil {

@@ -152,6 +152,16 @@ func validateName(s string) error {
 // '/' — the very thing that marks a literal path — is rejected here, as is
 // an empty segment. The reference's *existence* is a consumer concern
 // (§7); this checks only that it is syntactically a name.
+// ValidateName checks a package name against §5.3. The repository index
+// decoder shares it: an index is fetched from the network and its names
+// flow into URL construction and into the consumer's own records, so it
+// must be held to the same rule as a manifest rather than a laxer one.
+func ValidateName(s string) error { return validateName(s) }
+
+// ValidateArchitecture checks an architecture identifier against §5.8,
+// shared with the index decoder for the same reason as [ValidateName].
+func ValidateArchitecture(s string) error { return validateArchitecture(s) }
+
 func ValidateRootRef(s string) error {
 	if strings.ContainsRune(s, '/') {
 		return fmt.Errorf("%q must be a named reference, not a filesystem path", s)

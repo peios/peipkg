@@ -86,6 +86,11 @@ func ProvidedRoles(m manifest.Manifest) []string {
 	return roles
 }
 
+// maxClaimPathsPerRole is the §5.A limit on the claim paths materialised
+// for one role, counted across every slot the holder fills and every
+// installed consumer that declares a path.
+const maxClaimPathsPerRole = 256
+
 // Desired computes the claim links that should exist, given the installed
 // packages and the current holders (role -> holder package name). For
 // each held role it materialises, per slot the holder fills, a link at
@@ -101,6 +106,14 @@ func Desired(installed []Installed, holders map[string]string) ([]Link, error) {
 	result := map[string]Link{}
 	roles := sortedKeys(holders)
 	for _, role := range roles {
+		// §5.A caps the claim paths materialised per role at 256. The
+		// appendix is explicit that this is a materialisation limit
+		// rather than a manifest one: it bounds the union computed
+		// across every installed package declaring a path for the role,
+		// which is precisely the quantity an adversary controls by
+		// installing many consumer-only packages. This loop is the only
+		// place that sees the true count.
+		perRole := map[string]bool{}
 		hm, ok := byName[holders[role]]
 		if !ok {
 			// The holder is not installed; a held role with no installed
@@ -123,6 +136,7 @@ func Desired(installed []Installed, holders map[string]string) ([]Link, error) {
 				}
 			}
 			for path := range paths {
+				perRole[path] = true
 				link := Link{Path: path, Role: role, Slot: slot, Target: desc.Target}
 				if prev, dup := result[path]; dup && prev != link {
 					return nil, fmt.Errorf(
@@ -131,6 +145,11 @@ func Desired(installed []Installed, holders map[string]string) ([]Link, error) {
 				}
 				result[path] = link
 			}
+		}
+		if len(perRole) > maxClaimPathsPerRole {
+			return nil, fmt.Errorf(
+				"peipkg/claims: role %q materialises %d claim paths, the limit is %d",
+				role, len(perRole), maxClaimPathsPerRole)
 		}
 	}
 	return sortLinks(result), nil

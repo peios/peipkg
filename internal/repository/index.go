@@ -194,6 +194,20 @@ func decodeIndexEntry(w wireIndexEntry) (IndexEntry, error) {
 		return IndexEntry{}, fmt.Errorf("missing %q", "url")
 	}
 
+	// §5.33: an index entry's name, version and architecture are each
+	// validated with the same strictness a manifest receives. Without
+	// this the two paths disagreed about what a valid identity is — the
+	// same repository content was rejected at manifest-decode time and
+	// accepted here, after which the values flowed into installableArch,
+	// into the {name} and {arch} URL placeholders, and into the local
+	// package database.
+	if err := manifest.ValidateName(*w.Name); err != nil {
+		return IndexEntry{}, fmt.Errorf("name: %w", err)
+	}
+	if err := manifest.ValidateArchitecture(*w.Architecture); err != nil {
+		return IndexEntry{}, fmt.Errorf("architecture: %w", err)
+	}
+
 	entry := IndexEntry{
 		Name:         *w.Name,
 		Architecture: *w.Architecture,
