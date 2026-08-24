@@ -521,7 +521,7 @@ func installLiveBootCrossRoot(t *testing.T) (app *App, anchor, initramfs string)
 		"packages": []any{
 			map[string]any{
 				"name": "live-boot", "version": "1.0-1", "architecture": "x86_64",
-				"dependencies": []any{map[string]any{"name": "peiosutils", "root": "initramfs"}},
+				"dependencies":    []any{map[string]any{"name": "peiosutils", "root": "initramfs"}},
 				"conflicts":       []any{},
 				"size_compressed": len(liveBytes), "size_installed": liveSize,
 				"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(liveSum[:])},

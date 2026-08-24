@@ -3,6 +3,8 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/peios/peipkg/internal/jsonguard"
 )
 
 // schemaVersion is the manifest schema version this build understands
@@ -89,7 +91,7 @@ type wireBuild struct {
 // an error naming the offending field.
 func Decode(data []byte) (Manifest, error) {
 	var wm wireManifest
-	if err := json.Unmarshal(data, &wm); err != nil {
+	if err := jsonguard.Unmarshal(data, &wm); err != nil {
 		return Manifest{}, fmt.Errorf("peipkg/manifest: invalid JSON: %w", err)
 	}
 	return wm.validate()

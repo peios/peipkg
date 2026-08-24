@@ -22,7 +22,7 @@ const commitPayloadVersion = 1
 // [applyClaimMetadata] write at a live commit.
 type commitPayload struct {
 	Version int         `json:"v"`
-	Ops     []payloadOp  `json:"ops"`
+	Ops     []payloadOp `json:"ops"`
 	Claims  claimCommit `json:"claims"`
 }
 

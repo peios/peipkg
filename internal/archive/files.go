@@ -1,8 +1,9 @@
 package archive
 
 import (
-	"encoding/json"
 	"fmt"
+
+	"github.com/peios/peipkg/internal/jsonguard"
 )
 
 // filesSchemaVersion is the files.json schema version this build
@@ -49,7 +50,7 @@ type wireFileEntry struct {
 // done by the archive walk, which alone sees both.
 func decodeFiles(data []byte) (*filesManifest, error) {
 	var w wireFiles
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := jsonguard.Unmarshal(data, &w); err != nil {
 		return nil, fmt.Errorf("peipkg/archive: invalid files.json: %w", err)
 	}
 	switch {

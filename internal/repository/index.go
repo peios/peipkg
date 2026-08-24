@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/peios/peipkg/internal/jsonguard"
 	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/version"
 )
@@ -112,7 +113,7 @@ type wireIndexEntry struct {
 // (§6.2, §6.3). It does not verify the index's detached signature.
 func DecodeIndex(data []byte) (Index, error) {
 	var w wireIndex
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := jsonguard.Unmarshal(data, &w); err != nil {
 		return Index{}, fmt.Errorf("peipkg/repository: invalid index JSON: %w", err)
 	}
 	switch {

@@ -503,3 +503,66 @@ func TestBuildRecipeRefAndBuilder(t *testing.T) {
 			got.Build.RecipeRef, got.Build.Builder)
 	}
 }
+
+// PSPU §5.9's hardening rules apply to the manifest, and duplicate-key
+// rejection is the one that matters most here: size_installed is the
+// decompression bound, and name and version are what an operator reads.
+// A duplicate-key manifest read one way to a scanner or a third-party
+// validator and another way to peipkg, while every signature over the
+// bytes still verified.
+func TestManifestRejectsDuplicateKeys(t *testing.T) {
+	for name, raw := range map[string]string{
+		"name": `{"schema_version":1,"name":"nginx","name":"evil","version":"1.26.2-3",` +
+			`"architecture":"x86_64","dependencies":[],"conflicts":[],"size_installed":4096,` +
+			`"build":{"timestamp":"2026-05-19T12:00:00Z","farm_id":"f","source_ref":"git+https://e.org/s#r"}}`,
+		"size_installed": `{"schema_version":1,"name":"nginx","version":"1.26.2-3",` +
+			`"architecture":"x86_64","dependencies":[],"conflicts":[],` +
+			`"size_installed":0,"size_installed":999999,` +
+			`"build":{"timestamp":"2026-05-19T12:00:00Z","farm_id":"f","source_ref":"git+https://e.org/s#r"}}`,
+		"inside build": `{"schema_version":1,"name":"nginx","version":"1.26.2-3",` +
+			`"architecture":"x86_64","dependencies":[],"conflicts":[],"size_installed":4096,` +
+			`"build":{"timestamp":"2026-05-19T12:00:00Z","farm_id":"a","farm_id":"b","source_ref":"git+https://e.org/s#r"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, err := manifest.Decode([]byte(raw)); err == nil {
+				t.Errorf("Decode accepted a duplicate key, got %+v", got)
+			}
+		})
+	}
+}
+
+// §5.A caps nesting at 64. The depth is reachable inside an unknown
+// field, which §5.9 requires the parser to *ignore* — so the document
+// still decodes to a valid manifest unless the depth is checked before
+// unmarshalling.
+func TestManifestRejectsExcessiveNestingInAnIgnoredField(t *testing.T) {
+	m := baseManifest()
+	var deep any = 1
+	for range 200 {
+		deep = []any{deep}
+	}
+	m["future_field"] = deep
+	wantReject(t, m)
+
+	// Well within the cap, the same ignored field must still decode.
+	shallow := baseManifest()
+	var ok any = 1
+	for range 20 {
+		ok = []any{ok}
+	}
+	shallow["future_field"] = ok
+	mustDecode(t, shallow)
+}
+
+// §5.9 requires a \u escape to resolve to a valid code point.
+// encoding/json substitutes U+FFFD instead, so source_ref — which is
+// meant to be machine-resolvable — silently became a different string.
+func TestManifestRejectsUnpairedSurrogate(t *testing.T) {
+	raw := `{"schema_version":1,"name":"nginx","version":"1.26.2-3",` +
+		`"architecture":"x86_64","dependencies":[],"conflicts":[],"size_installed":4096,` +
+		`"build":{"timestamp":"2026-05-19T12:00:00Z","farm_id":"f",` +
+		`"source_ref":"git+https://e.org/s#a\ud800b"}}`
+	if got, err := manifest.Decode([]byte(raw)); err == nil {
+		t.Errorf("Decode accepted an unpaired surrogate, got %+v", got)
+	}
+}

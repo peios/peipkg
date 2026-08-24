@@ -6,10 +6,11 @@
 package repository
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/peios/peipkg/internal/jsonguard"
 )
 
 // descriptorSchemaVersion is the descriptor schema version this build
@@ -94,7 +95,7 @@ type wireIndexPointer struct {
 // applies against the appropriate trust anchors or trust set.
 func DecodeDescriptor(data []byte) (Descriptor, error) {
 	var w wireDescriptor
-	if err := json.Unmarshal(data, &w); err != nil {
+	if err := jsonguard.Unmarshal(data, &w); err != nil {
 		return Descriptor{}, fmt.Errorf("peipkg/repository: invalid descriptor JSON: %w", err)
 	}
 	switch {

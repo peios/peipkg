@@ -15,10 +15,11 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+
+	"github.com/peios/peipkg/internal/jsonguard"
 )
 
 // envelopeSchemaVersion is the signature-envelope schema version this
@@ -75,15 +76,9 @@ type wireEnvelope struct {
 // field is rejected, not ignored — §5.1.3 makes signing data a
 // deliberate exception to forward-compatible parsing.
 func DecodeEnvelope(data []byte) (Envelope, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-
 	var w wireEnvelope
-	if err := dec.Decode(&w); err != nil {
+	if err := jsonguard.UnmarshalStrict(data, &w); err != nil {
 		return Envelope{}, fmt.Errorf("peipkg/signature: invalid envelope JSON: %w", err)
-	}
-	if dec.More() {
-		return Envelope{}, fmt.Errorf("peipkg/signature: trailing data after the envelope")
 	}
 
 	switch {

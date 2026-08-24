@@ -166,9 +166,9 @@ func equalLinks(a, b []claims.Link) bool {
 
 func TestRelativeTarget(t *testing.T) {
 	cases := []struct{ path, target, want string }{
-		{"/init", "/usr/sbin/prelude", "usr/sbin/prelude"},  // root link, target below
+		{"/init", "/usr/sbin/prelude", "usr/sbin/prelude"},    // root link, target below
 		{"/usr/sbin/registryd", "/usr/sbin/loregd", "loregd"}, // same directory
-		{"/etc/foo", "/usr/lib/x/foo", "../usr/lib/x/foo"},  // cross-tree
+		{"/etc/foo", "/usr/lib/x/foo", "../usr/lib/x/foo"},    // cross-tree
 	}
 	for _, c := range cases {
 		got, err := claims.RelativeTarget(claims.Link{Path: c.path, Target: c.target})

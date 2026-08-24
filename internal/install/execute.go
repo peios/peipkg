@@ -619,4 +619,3 @@ func allCreatedDirs(staged []stagedOp) []string {
 	}
 	return dirs
 }
-
