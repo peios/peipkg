@@ -264,10 +264,55 @@ func TestInvalidDescription(t *testing.T) {
 	wantReject(t, m)
 }
 
-func TestDescriptionAllowsPrintableUTF8(t *testing.T) {
+func TestDescriptionAllowsPrintableASCII(t *testing.T) {
 	m := baseManifest()
-	m["description"] = "Swiss army knife — static utilities"
+	// The whole of §3.3.5's permitted range, 0x20 through 0x7E.
+	var b []byte
+	for c := byte(0x20); c <= 0x7E; c++ {
+		b = append(b, c)
+	}
+	m["description"] = string(b)
 	mustDecode(t, m)
+}
+
+// §3.3.5 restricts the description to printable ASCII 0x20-0x7E. A
+// Unicode printability test is not the same rule: it admits letters
+// that render as ASCII to an operator reading the description to decide
+// whether to install, which is the homoglyph and bidi-confusable
+// surface the byte range exists to close.
+func TestDescriptionRejectsNonASCII(t *testing.T) {
+	for name, desc := range map[string]string{
+		"em dash":            "Swiss army knife — static utilities",
+		"accented letter":    "caf\u00e9 utilities",
+		"emoji":              "utilities \U0001f389",
+		"cyrillic homoglyph": "p\u0430ckage tools", // U+0430 renders as "a"
+		"fullwidth latin":    "\uff50ackage tools",
+		"zero width joiner":  "package\u200dtools",
+		"non-breaking space": "package\u00a0tools",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := baseManifest()
+			m["description"] = desc
+			wantReject(t, m)
+		})
+	}
+}
+
+// DEL and the C1 range are non-printing but are not caught by a
+// "control character" test that only looks below 0x20.
+func TestDescriptionRejectsDelAndC1(t *testing.T) {
+	for name, desc := range map[string]string{
+		"DEL":      "package\x7ftools",
+		"C1 NEL":   "package\u0085tools",
+		"C1 CSI":   "package\u009btools",
+		"NUL byte": "package\x00tools",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := baseManifest()
+			m["description"] = desc
+			wantReject(t, m)
+		})
+	}
 }
 
 func TestInvalidDescriptionUTF8(t *testing.T) {

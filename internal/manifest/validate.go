@@ -7,8 +7,6 @@ import (
 	"path"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/peios/peipkg/internal/capability"
 	"github.com/peios/peipkg/internal/version"
@@ -197,19 +195,22 @@ func validateArchitecture(s string) error {
 	return nil
 }
 
-// validateDescription accepts printable UTF-8 while rejecting control
-// characters, which prevents terminal escape-sequence injection when the
-// description is shown to an operator.
+// validateDescription enforces §3.3.5: a description consists only of
+// printable ASCII in the range 0x20-0x7E.
+//
+// This is a byte-range whitelist, not a Unicode printability test, and
+// deliberately so. The description is shown to an operator deciding
+// whether to install a package, which makes it both the terminal-escape
+// surface and the homoglyph and bidi-confusable surface. A category-based
+// test admits non-ASCII letters that render as ASCII; the byte range
+// exists precisely so that nothing has to reason about which Unicode
+// categories are safe to render.
 func validateDescription(s string) error {
-	if !utf8.ValidString(s) {
-		return fmt.Errorf("is not valid UTF-8")
-	}
-	for _, r := range s {
-		if r == utf8.RuneError {
-			return fmt.Errorf("contains the Unicode replacement character")
-		}
-		if !unicode.IsPrint(r) {
-			return fmt.Errorf("contains a non-printable rune %#U", r)
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7E {
+			return fmt.Errorf(
+				"contains byte %#02x at offset %d, outside printable ASCII 0x20-0x7E",
+				s[i], i)
 		}
 	}
 	return nil

@@ -130,7 +130,6 @@ const (
 // path to admit. The rule that replaces it is a layout rule: a package
 // shipping a shared library installs it into /usr/lib/<triplet> (§5.24).
 
-
 // SDOverride is one entry of sd_overrides: a per-payload-entry security
 // descriptor (§3.3.5).
 //
