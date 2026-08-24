@@ -48,11 +48,12 @@ type stagedOp struct {
 // prepareOperation computes one plan operation's journal rows and
 // package-database changes without touching the filesystem.
 func prepareOperation(ctx context.Context, env Env, txnID int64, op resolver.Operation,
-	provided map[string]ProvidedPackage, plannedDirs map[string]bool) (stagedOp, error) {
+	provided map[string]ProvidedPackage, plannedDirs map[string]bool,
+	inTxn map[string]bool) (stagedOp, error) {
 	if op.Kind == resolver.OpRemove {
 		return stageRemoval(ctx, env, txnID, op)
 	}
-	return preparePackage(ctx, env, txnID, op, provided[op.Name], plannedDirs)
+	return preparePackage(ctx, env, txnID, op, provided[op.Name], plannedDirs, inTxn)
 }
 
 // preparePackage computes the file operations and database rows for
@@ -62,7 +63,7 @@ func prepareOperation(ctx context.Context, env Env, txnID int64, op resolver.Ope
 // Per-file metadata — type and the verified SHA-256 — comes from the
 // verified payload list, the authority for what the package owns.
 func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Operation,
-	pp ProvidedPackage, plannedDirs map[string]bool) (stagedOp, error) {
+	pp ProvidedPackage, plannedDirs map[string]bool, inTxn map[string]bool) (stagedOp, error) {
 
 	s := stagedOp{op: op, stagedAt: map[string]string{}}
 
@@ -81,6 +82,18 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 	// AND the operator passed --dangerously-bypass-path-restrictions.
 	// Either alone leaves the check in force.
 	if err := checkPayloadLayout(env, pp); err != nil {
+		return s, err
+	}
+
+	// §7.1.2.2 step 3: no payload path may collide with a path already
+	// owned by another installed package.
+	//
+	// The unique index on package_file is the invariant's home, but it
+	// fires inside the commit transaction — after a full download,
+	// extraction and on-disk clobber, leaving recovery to depend entirely
+	// on the rollback succeeding. Diagnosing it here costs one indexed
+	// query per payload path and fails before anything is staged.
+	if err := checkPayloadCollisions(ctx, env, op, pp, inTxn); err != nil {
 		return s, err
 	}
 
@@ -402,4 +415,37 @@ func checkPayloadLayout(env Env, pp ProvidedPackage) error {
 				"--dangerously-bypass-path-restrictions: %w", pp.Pkg.Manifest.Name, err)
 	}
 	return err
+}
+
+// checkPayloadCollisions reports a planned payload path already owned by
+// an installed package that this transaction does not touch (§7.1.2.2
+// step 3).
+//
+// Directories are excluded, as the schema constraint excludes them:
+// shared ownership of a directory is normal and expected. A path owned by
+// a package inside the transaction is not a collision either — that
+// package is being upgraded, downgraded or removed, so the ownership is
+// about to change anyway.
+func checkPayloadCollisions(ctx context.Context, env Env, op resolver.Operation,
+	pp ProvidedPackage, inTxn map[string]bool) error {
+
+	for _, entry := range pp.Pkg.Payload {
+		if entry.Type == archive.EntryDir {
+			continue
+		}
+		logical := "/" + entry.Path
+		owners, err := env.DB.FileOwners(ctx, logical)
+		if err != nil {
+			return err
+		}
+		for _, owner := range owners {
+			if owner.PackageName == op.Name || inTxn[owner.PackageName] {
+				continue
+			}
+			return fmt.Errorf(
+				"peipkg/install: %s payload path %s is already owned by %s",
+				op.Name, logical, owner.PackageName)
+		}
+	}
+	return nil
 }

@@ -263,8 +263,15 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	// Compute every journal row before touching the filesystem. Once the
 	// journal is durable, any staged payload content has a recovery path.
 	plannedDirs := map[string]bool{}
+	// Every package this transaction touches. A path currently owned by
+	// one of these is not a collision: the transaction is what frees or
+	// rewrites it. Anything else owning a planned path is.
+	inTxn := make(map[string]bool, len(plan.Operations))
 	for _, op := range plan.Operations {
-		s, err := prepareOperation(ctx, env, txnID, op, provided, plannedDirs)
+		inTxn[op.Name] = true
+	}
+	for _, op := range plan.Operations {
+		s, err := prepareOperation(ctx, env, txnID, op, provided, plannedDirs, inTxn)
 		p.staged = append(p.staged, s)
 		if err != nil {
 			abandon(ctx, env, txnID, p.staged, "preparing the journal failed")

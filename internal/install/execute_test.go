@@ -563,3 +563,89 @@ func TestPreservedEtcFileIsRecordedAsWhatIsActuallyOnDisk(t *testing.T) {
 		t.Errorf(".peipkg-new hash = %q, want the new version's %q", got, wantNew)
 	}
 }
+
+// §7.1.2.2 step 3 requires a consumer to verify that no payload path
+// collides with a path already owned by another installed package.
+//
+// No prepare-time check existed. The sole enforcement was the unique
+// index on package_file, which fires inside the commit transaction — that
+// is, after a full download, extraction, and an on-disk clobber in which
+// the victim's file has already been renamed aside and the new file
+// renamed into place. The collision was caught, but only after paying for
+// it, with recovery depending entirely on the rollback succeeding.
+func TestCollidingPayloadPathIsRejectedBeforeAnythingIsStaged(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	baseEnv := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+
+	const shared = "usr/bin/tool"
+	firstEnv := baseEnv
+	firstEnv.Provider = fakeProvider{"alpha": provide(t, testPkg{
+		name: "alpha", version: "1.0-1",
+		files: map[string]string{shared: "alpha's tool"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "alpha", "1.0-1")}}, firstEnv); err != nil {
+		t.Fatalf("Execute (alpha): %v", err)
+	}
+
+	secondEnv := baseEnv
+	secondEnv.Provider = fakeProvider{"beta": provide(t, testPkg{
+		name: "beta", version: "1.0-1",
+		files: map[string]string{shared: "beta's tool"}})}
+	_, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "beta", "1.0-1")}}, secondEnv)
+	if err == nil {
+		t.Fatal("installing a package over another's payload path succeeded")
+	}
+	if !strings.Contains(err.Error(), "already owned by alpha") {
+		t.Errorf("error %q does not name the owning package", err)
+	}
+
+	// The victim's file must be untouched — the whole point of catching
+	// this before staging rather than after the clobber.
+	if got, _ := os.ReadFile(filepath.Join(root, shared)); string(got) != "alpha's tool" {
+		t.Errorf("alpha's file is %q after the rejected install, want it untouched", got)
+	}
+	// And no staged sibling may be left behind.
+	entries, err := os.ReadDir(filepath.Join(root, "usr/bin"))
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "tool" {
+			t.Errorf("residue left in usr/bin after the rejected install: %s", e.Name())
+		}
+	}
+}
+
+// A path owned by a package the same transaction is upgrading or removing
+// is not a collision — the transaction is what frees it. Without that
+// exemption the check would reject every upgrade.
+func TestUpgradeAndReplacementAreNotCollisions(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	baseEnv := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+
+	const shared = "usr/bin/tool"
+	firstEnv := baseEnv
+	firstEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.0-1",
+		files: map[string]string{shared: "v1"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "app", "1.0-1")}}, firstEnv); err != nil {
+		t.Fatalf("Execute (install): %v", err)
+	}
+
+	// The same package upgrading over its own path.
+	upEnv := baseEnv
+	upEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.1-1",
+		files: map[string]string{shared: "v2"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		upgradeOp(t, "1.0-1", "1.1-1")}}, upEnv); err != nil {
+		t.Fatalf("Execute (upgrade over its own path): %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, shared)); string(got) != "v2" {
+		t.Errorf("after upgrade the file is %q, want v2", got)
+	}
+}
