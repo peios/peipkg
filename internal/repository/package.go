@@ -12,9 +12,26 @@ import (
 	"github.com/peios/peipkg/internal/config"
 )
 
-// packageFetchAllowance is the slack permitted above a package's
-// advertised compressed size when downloading it (§3.5.4).
-const packageFetchAllowance = 16 << 20
+// maxPackageFetchAllowance caps the slack permitted above a package's
+// advertised compressed size when downloading it. §3.5.4 sets the
+// allowance at the *lesser* of 1% of the advertised size or this value —
+// see [packageFetchAllowance].
+const maxPackageFetchAllowance = 16 << 20
+
+// packageFetchAllowance returns the §3.5.4 download allowance for a
+// package advertising sizeCompressed bytes: the lesser of 1% of that
+// size or 16 MiB.
+//
+// The 1% half is the one that binds in practice. 1% only exceeds 16 MiB
+// above a 1.6 GiB package, so taking the flat 16 MiB gave a 100 MB
+// package 16 MB of slack where it is owed 1 MB, and a 1 KB package 16 MB
+// where it is owed ten bytes.
+func packageFetchAllowance(sizeCompressed int64) int64 {
+	if sizeCompressed <= 0 {
+		return 0
+	}
+	return min(sizeCompressed/100, maxPackageFetchAllowance)
+}
 
 // FetchPackage downloads, hash-checks, and signature-verifies a package
 // file. packageURL is the candidate's URL, resolved against cfg's base;
@@ -33,7 +50,8 @@ func (c *Client) FetchPackage(ctx context.Context, cfg config.RepoConfig,
 	if err != nil {
 		return nil, nil, err
 	}
-	data, err := c.fetcher.Fetch(ctx, url, sizeCompressed+packageFetchAllowance)
+	data, err := c.fetcher.Fetch(ctx, url,
+		sizeCompressed+packageFetchAllowance(sizeCompressed))
 	if err != nil {
 		return nil, nil, err
 	}
