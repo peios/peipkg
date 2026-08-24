@@ -115,8 +115,18 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 			dest := physical
 			// §7.2.2 modified-detection: an operator-edited /etc file is
 			// not clobbered by an upgrade. The new default lands beside
-			// it and the divergence is reported; the database still
-			// records the path with the new version's hash.
+			// it as <name>.peipkg-new and the divergence is reported.
+			//
+			// recordedHash is what goes into package_file for the logical
+			// path. It must describe the bytes that end up *there*, which
+			// on the modified branch are the operator's, not the new
+			// version's. Recording the new version's hash made `peipkg
+			// verify` report the path as modified forever, on every run,
+			// for a file peipkg itself deliberately preserved — poisoning
+			// the one signal an operator has for a failed rollback or for
+			// tampering.
+			recordedHash := entry.Hash
+			preserved := false
 			if old, ok := existingByPath[logical]; ok && old.Type == db.FileTypeFile &&
 				isEtcPath(logical) && exists(physical) {
 				modified, err := fileModified(physical, old.Hash)
@@ -125,6 +135,10 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 				}
 				if modified {
 					dest = physical + etcNewMarker
+					preserved = true
+					if recordedHash, err = fileHash(physical); err != nil {
+						return s, err
+					}
 					s.warnings = append(s.warnings, fmt.Sprintf(
 						"%s has been modified since install — keeping it; the new "+
 							"default was written to %s%s", logical, logical, etcNewMarker))
@@ -135,7 +149,17 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 			s.stagedAt[logical] = staged
 			s.fileOps = append(s.fileOps, plannedOp(dest, staged, txnID))
 			s.files = append(s.files, db.PackageFile{
-				PackageName: op.Name, Path: logical, Type: db.FileTypeFile, Hash: entry.Hash})
+				PackageName: op.Name, Path: logical, Type: db.FileTypeFile, Hash: recordedHash})
+			if preserved {
+				// The .peipkg-new file is real content on disk. Left
+				// unrecorded it is an orphan: uninstall never removes it
+				// and `peipkg owns` cannot attribute it.
+				newPath := logical + etcNewMarker
+				newPaths[newPath] = true
+				s.files = append(s.files, db.PackageFile{
+					PackageName: op.Name, Path: newPath,
+					Type: db.FileTypeFile, Hash: entry.Hash})
+			}
 		case archive.EntrySymlink:
 			staged := tempPath(physical, stagedMarker, txnID)
 			rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
@@ -320,16 +344,25 @@ func isEtcPath(logical string) bool {
 // from recordedHash — the hex SHA-256 the package database recorded for
 // it at install.
 func fileModified(path, recordedHash string) (bool, error) {
+	onDisk, err := fileHash(path)
+	if err != nil {
+		return false, err
+	}
+	return onDisk != recordedHash, nil
+}
+
+// fileHash returns the lowercase-hex SHA-256 of the file at path.
+func fileHash(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return false, fmt.Errorf("peipkg/install: reading %s: %w", path, err)
+		return "", fmt.Errorf("peipkg/install: reading %s: %w", path, err)
 	}
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return false, fmt.Errorf("peipkg/install: hashing %s: %w", path, err)
+		return "", fmt.Errorf("peipkg/install: hashing %s: %w", path, err)
 	}
-	return hex.EncodeToString(h.Sum(nil)) != recordedHash, nil
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // checkPayloadLayout enforces the §3.4 payload layout rules over a

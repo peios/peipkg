@@ -494,3 +494,72 @@ func TestExecuteDiscardsBackupsAfterCommit(t *testing.T) {
 		}
 	}
 }
+
+// §7.2.2 keeps an operator-edited /etc file and writes the new default
+// beside it. The database row for the logical path was still written with
+// the *new version's* hash, so it described bytes that are not there.
+//
+// Two consequences, and the first is the serious one: `peipkg verify`
+// reported the path as modified forever, on every run, for a file peipkg
+// itself deliberately preserved — poisoning the one signal an operator
+// has for a failed rollback or for tampering. And the .peipkg-new file
+// was recorded nowhere, so uninstall never removed it and `peipkg owns`
+// could not attribute it.
+func TestPreservedEtcFileIsRecordedAsWhatIsActuallyOnDisk(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	baseEnv := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+
+	installEnv := baseEnv
+	installEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.0-1",
+		files: map[string]string{"usr/etc/app.conf": "default config v1"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "app", "1.0-1")}}, installEnv); err != nil {
+		t.Fatalf("Execute (install): %v", err)
+	}
+
+	const edits = "operator's edits"
+	confPath := filepath.Join(root, "usr/etc/app.conf")
+	if err := os.WriteFile(confPath, []byte(edits), 0o644); err != nil {
+		t.Fatalf("edit conf: %v", err)
+	}
+
+	upgradeEnv := baseEnv
+	upgradeEnv.Provider = fakeProvider{"app": provide(t, testPkg{
+		name: "app", version: "1.1-1",
+		files: map[string]string{"usr/etc/app.conf": "default config v2"}})}
+	if _, err := install.Execute(ctx, resolver.Plan{
+		Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "1.1-1")}}, upgradeEnv); err != nil {
+		t.Fatalf("Execute (upgrade): %v", err)
+	}
+
+	files, err := store.PackageFiles(ctx, "app")
+	if err != nil {
+		t.Fatalf("PackageFiles: %v", err)
+	}
+	byPath := map[string]string{}
+	for _, f := range files {
+		byPath[f.Path] = f.Hash
+	}
+
+	// The recorded hash must describe the bytes that are actually at the
+	// logical path — the operator's — so a verify run comes back clean.
+	editsSum := sha256.Sum256([]byte(edits))
+	wantPreserved := hex.EncodeToString(editsSum[:])
+	if got := byPath["/usr/etc/app.conf"]; got != wantPreserved {
+		t.Errorf("recorded hash for the preserved file = %q, want the on-disk hash %q",
+			got, wantPreserved)
+	}
+
+	// And .peipkg-new must be an owned file rather than an orphan.
+	newSum := sha256.Sum256([]byte("default config v2"))
+	wantNew := hex.EncodeToString(newSum[:])
+	got, owned := byPath["/usr/etc/app.conf.peipkg-new"]
+	if !owned {
+		t.Fatal(".peipkg-new is not recorded in package_file, so it is an orphan")
+	}
+	if got != wantNew {
+		t.Errorf(".peipkg-new hash = %q, want the new version's %q", got, wantNew)
+	}
+}

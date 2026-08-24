@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/peios/peipkg/internal/audit"
@@ -127,6 +128,18 @@ func cmdRepoAdd(app *App, args []string) error {
 
 	provider := app.configProvider()
 	preconfigured := len(pos) == 1
+
+	// §7.6.3.1 emits peipkg.config-change for a trust-policy or
+	// transport-flag change. Capture what was configured before this
+	// command overwrites it: re-adding an existing repository with a
+	// weakened policy otherwise produced an audit trail identical to a
+	// routine add, and trust-policy history could not be reconstructed
+	// from the event stream at all.
+	var previous *config.RepoConfig
+	if prior, found, err := provider.Repository(cfg.Name); err == nil && found {
+		previous = &prior
+	}
+
 	if !preconfigured {
 		if err := provider.Put(cfg); err != nil {
 			return err
@@ -151,7 +164,54 @@ func cmdRepoAdd(app *App, args []string) error {
 	app.warnUnsigned(cfg)
 	app.emit(audit.Event{Type: audit.TypeRepoAdd, Outcome: audit.OutcomeSuccess,
 		Repo: cfg.Name, Detail: cfg.BaseURL})
+	if detail := trustPolicyChanges(previous, cfg); detail != "" {
+		app.emit(audit.Event{Type: audit.TypeConfigChange, Outcome: audit.OutcomeSuccess,
+			Repo: cfg.Name, Detail: detail})
+	}
 	return nil
+}
+
+// trustPolicyChanges describes how the trust-relevant settings of an
+// existing repository differ from the ones just configured, as
+// "field: old -> new" clauses. It returns "" when nothing changed, and
+// for a repository that did not previously exist — a first add is
+// already covered by peipkg.repo-add.
+//
+// This only sees a change made through the flags of `repo add <name>
+// <url>`. The configured form reads the .repo file for both sides, so an
+// operator who edits that file directly and re-runs the ceremony leaves
+// nothing here to compare; detecting that would need peipkg to record the
+// previously-trusted policy of its own accord.
+func trustPolicyChanges(previous *config.RepoConfig, next config.RepoConfig) string {
+	if previous == nil {
+		return ""
+	}
+	var changes []string
+	if previous.SignaturePolicy != next.SignaturePolicy {
+		changes = append(changes, fmt.Sprintf("signature_policy: %s -> %s",
+			previous.SignaturePolicy, next.SignaturePolicy))
+	}
+	if previous.AllowInsecureTransport != next.AllowInsecureTransport {
+		changes = append(changes, fmt.Sprintf("allow_insecure_transport: %t -> %t",
+			previous.AllowInsecureTransport, next.AllowInsecureTransport))
+	}
+	if previous.MaxTrustedAgeDays != next.MaxTrustedAgeDays {
+		changes = append(changes, fmt.Sprintf("max_trusted_age_days: %d -> %d",
+			previous.MaxTrustedAgeDays, next.MaxTrustedAgeDays))
+	}
+	if previous.MinIndexVersion != next.MinIndexVersion {
+		changes = append(changes, fmt.Sprintf("min_index_version: %d -> %d",
+			previous.MinIndexVersion, next.MinIndexVersion))
+	}
+	if previous.MaxIndexStalenessDays != next.MaxIndexStalenessDays {
+		changes = append(changes, fmt.Sprintf("max_index_staleness_days: %d -> %d",
+			previous.MaxIndexStalenessDays, next.MaxIndexStalenessDays))
+	}
+	if !slices.Equal(previous.TrustAnchors, next.TrustAnchors) {
+		changes = append(changes, fmt.Sprintf("trust_anchors: %d -> %d",
+			len(previous.TrustAnchors), len(next.TrustAnchors)))
+	}
+	return strings.Join(changes, "; ")
 }
 
 // cmdRepoList prints the configured repositories.

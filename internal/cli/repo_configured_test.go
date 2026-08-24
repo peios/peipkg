@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/signature"
 )
@@ -251,4 +252,90 @@ func TestRepoAddWritesToRealStorage(t *testing.T) {
 		filepath.Join(app.paths.root, "lcl/conf/peipkg/medium.repo")); err != nil {
 		t.Errorf("repo add did not write to lcl/conf/peipkg: %v", err)
 	}
+}
+
+// §7.6.3.1 emits peipkg.config-change for "a trust-policy or
+// transport-flag change". The event type was declared and referenced by
+// nothing — not one emission site, not one test — so an operator
+// re-adding an existing repository with a weakened policy produced an
+// audit trail identical to a routine add, and trust-policy history could
+// not be reconstructed from the event stream at all.
+func TestRepoAddEmitsConfigChangeWhenTrustPolicyWeakens(t *testing.T) {
+	app, _ := testApp(t)
+	url, fp := serveMinimalRepo(t, "medium")
+	rec := app.emitter.(*audit.Recorder)
+
+	add := func(policy string) error {
+		return cmdRepoAdd(app, []string{
+			"--anchor", fp, "--insecure", "--policy", policy, "medium", url})
+	}
+
+	if err := add("required"); err != nil {
+		t.Fatalf("repo add (first): %v", err)
+	}
+	// A first add is fully described by peipkg.repo-add; there is no
+	// prior policy to have changed.
+	if n := countEvents(rec, audit.TypeConfigChange); n != 0 {
+		t.Fatalf("a first add emitted %d config-change events, want 0", n)
+	}
+
+	// The operator re-adds the same repository, downgrading the policy.
+	rec.Events = nil
+	if err := add("optional"); err != nil {
+		t.Fatalf("repo add (weakened): %v", err)
+	}
+
+	var change *audit.Event
+	for i := range rec.Events {
+		if rec.Events[i].Type == audit.TypeConfigChange {
+			change = &rec.Events[i]
+		}
+	}
+	if change == nil {
+		t.Fatalf("weakening signature_policy emitted no config-change event; got %+v", rec.Events)
+	}
+	if change.Repo != "medium" {
+		t.Errorf("config-change Repo = %q, want %q", change.Repo, "medium")
+	}
+	// The detail has to carry both values, or the event records that
+	// something changed without recording what it changed from.
+	for _, want := range []string{"signature_policy", "required", "optional"} {
+		if !strings.Contains(change.Detail, want) {
+			t.Errorf("config-change Detail %q does not mention %q", change.Detail, want)
+		}
+	}
+}
+
+// Re-running the ceremony with nothing altered must stay quiet, or the
+// event loses its meaning: every routine re-add would look like a policy
+// change.
+func TestRepoAddEmitsNoConfigChangeWhenNothingChanged(t *testing.T) {
+	app, _ := testApp(t)
+	url, fp := serveMinimalRepo(t, "medium")
+	rec := app.emitter.(*audit.Recorder)
+
+	add := func() error {
+		return cmdRepoAdd(app, []string{
+			"--anchor", fp, "--insecure", "--policy", "required", "medium", url})
+	}
+	if err := add(); err != nil {
+		t.Fatalf("repo add (first): %v", err)
+	}
+	rec.Events = nil
+	if err := add(); err != nil {
+		t.Fatalf("repo add (repeat): %v", err)
+	}
+	if n := countEvents(rec, audit.TypeConfigChange); n != 0 {
+		t.Errorf("an unchanged re-add emitted %d config-change events, want 0", n)
+	}
+}
+
+func countEvents(rec *audit.Recorder, typ string) int {
+	var n int
+	for _, e := range rec.Events {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
 }
