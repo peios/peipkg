@@ -61,15 +61,23 @@ type worldPkg struct {
 	candidate *Candidate
 }
 
-// originRepo reports the repository this package is being installed from
-// and that repository's priority, for §4.2.4 rule 2. Both are zero when
-// the package is not being changed by this resolution (it has no chosen
-// candidate), in which case rule 2 does not apply.
+// originRepo reports the repository this package came from and that
+// repository's priority, for §4.2.4 rule 2. Both are zero only when the
+// package is neither installed nor being changed by this resolution.
+//
+// Rule 2 scopes itself to "when the dependency is being resolved for a
+// depending package D", with no restriction to packages being newly
+// installed — so an already-installed depender's repository counts.
+// Returning zero for it made the same dependency resolve to different
+// providers depending on whether the depender happened to be part of the
+// transaction, which is precisely the "low-trust depender pulling in
+// low-trust transitive dependencies" gate the rule exists for, applied
+// inconsistently.
 func (p *worldPkg) originRepo() (repo string, priority int) {
 	if p.candidate != nil {
 		return p.candidate.Repo, p.candidate.RepoPriority
 	}
-	return "", 0
+	return p.installedRepo, p.installedRepoPriority
 }
 
 // Resolve computes a single-root plan that brings the installed set to a

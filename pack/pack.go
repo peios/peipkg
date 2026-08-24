@@ -25,6 +25,7 @@ import (
 
 	internalmanifest "github.com/peios/peipkg/internal/build/manifest"
 	internalpack "github.com/peios/peipkg/internal/build/pack"
+	consumermanifest "github.com/peios/peipkg/internal/manifest"
 )
 
 // Manifest is the fully-resolved metadata of one package (PSD-009
@@ -269,6 +270,12 @@ func ValidateSideEffectsPayload(m Manifest, stagedRoot string) ([]string, error)
 // forbids identical names within a field) and sorted into canonical
 // order, and sd_overrides is sorted by path (§3.3.5).
 func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
+	// §5.19: default_root is a root reference, never a filesystem path.
+	if m.DefaultRoot != "" {
+		if err := ValidateRootRef(m.DefaultRoot); err != nil {
+			return internalmanifest.Manifest{}, fmt.Errorf("default_root: %w", err)
+		}
+	}
 	deps, err := convertDeps(m.Dependencies, "dependencies")
 	if err != nil {
 		return internalmanifest.Manifest{}, err
@@ -379,6 +386,11 @@ func convertDeps(in []Dependency, field string) ([]internalmanifest.Dependency, 
 			return nil, fmt.Errorf("%s: duplicate name %q (PSD-009 §4.1 forbids identical names within a field)", field, d.Name)
 		}
 		seen[d.Name] = struct{}{}
+		if d.Root != "" {
+			if err := ValidateRootRef(d.Root); err != nil {
+				return nil, fmt.Errorf("%s: %s: root: %w", field, d.Name, err)
+			}
+		}
 		out = append(out, internalmanifest.Dependency{
 			Name:       d.Name,
 			Constraint: d.Constraint,
@@ -404,3 +416,14 @@ func convertClaims(in map[string]ClaimSlot) map[string]internalmanifest.ClaimSlo
 	}
 	return out
 }
+
+// ValidateRootRef checks a root reference against §5.19: a name whose
+// segments match [a-z0-9][a-z0-9_-]* joined by ".", never a filesystem
+// path. A manifest carrying an invalid reference is invalid.
+//
+// Exported because pack is the public producer library, and it is the
+// only producer-side gate a third party building on it has. Without it a
+// `default_root` of "/boot/initramfs" packed, signed and published
+// cleanly, and failed at the consumer's install — closed, but far too
+// late to be useful to whoever built it.
+func ValidateRootRef(s string) error { return consumermanifest.ValidateRootRef(s) }

@@ -720,3 +720,48 @@ func TestUpgradeDoesNotResolveViaProvides(t *testing.T) {
 		t.Errorf("plan: got %v, want no operations (provides must not satisfy an upgrade)", got)
 	}
 }
+
+// §4.2.4 rule 2 scopes itself to "when the dependency is being resolved
+// for a depending package D", with no restriction to packages being
+// newly installed. originRepo returned "" for a depender that was already
+// installed and had no chosen candidate, and morePreferred treats an
+// empty depender repo as "rule 2 inert".
+//
+// So the same dependency resolved to different providers depending on
+// whether the depender happened to be part of the transaction — precisely
+// the "low-trust depender pulling in low-trust transitive dependencies"
+// gate the rule exists for, applied inconsistently.
+func TestSelectionRule2AppliesToAnInstalledDepender(t *testing.T) {
+	// Two providers of lib at equal priority, differing in repository. The
+	// "extra" one carries the *higher* version, so if rule 2 goes inert
+	// the ordinary version preference picks it — which is what makes this
+	// able to tell the two behaviours apart.
+	libOfficial := cand(t, "lib", "1.0-1")
+	libExtra := cand(t, "lib", "2.0-1")
+	libExtra.Repo, libExtra.RepoPriority = "extra", 10
+
+	// app is already installed from "official" and is not itself being
+	// changed: no candidate for it is offered, so the resolver must reach
+	// for its recorded installed repository.
+	installedApp := inst(t, "app", "1.0-1", dep(t, "lib", ""))
+	installedApp.Repo, installedApp.RepoPriority = "official", 10
+
+	// app is requested but already installed at the offered version, so
+	// it seeds the forward walk without acquiring a candidate of its own.
+	// That is the state where originRepo had nothing to report: the
+	// depender is on the worklist and pkg.candidate is nil.
+	appCand := cand(t, "app", "1.0-1", dep(t, "lib", ""))
+	appCand.Repo, appCand.RepoPriority = "official", 10
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "app"}},
+		[]resolver.Installed{installedApp},
+		[]resolver.Candidate{appCand, libOfficial, libExtra},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if repo := opRepo(plan, "lib"); repo != "official" {
+		t.Errorf("rule 2 for an installed depender: lib chosen from %q, want \"official\" — "+
+			"the rule must not depend on whether the depender is in the transaction", repo)
+	}
+}

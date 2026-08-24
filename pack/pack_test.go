@@ -456,3 +456,41 @@ func extractEntry(t *testing.T, compressed []byte, name string) []byte {
 	t.Fatalf("entry %q not found in archive", name)
 	return nil
 }
+
+// §5.19: a root reference is a name — segments matching
+// [a-z0-9][a-z0-9_-]* joined by "." — never a filesystem path.
+//
+// The grammar was implemented three times (internal/manifest,
+// internal/cli, and pekit's own copy) and pack, the *public producer
+// library*, implemented none of them. So a third party building on pack
+// — the exact audience the format is published for — could emit a
+// .peipkg whose default_root is "/boot/initramfs". It failed closed, but
+// only at the consumer, at install time, with a package already signed
+// and published.
+func TestPackRejectsNonConformingRootReferences(t *testing.T) {
+	for name, ref := range map[string]string{
+		"absolute path":  "/boot/initramfs",
+		"relative path":  "./boot/initramfs",
+		"embedded slash": "boot/initramfs",
+		"uppercase":      "Initramfs",
+		"leading hyphen": "-initramfs",
+		"empty segment":  "initramfs..sub",
+		"trailing dot":   "initramfs.",
+		"leading dot":    ".initramfs",
+		"space":          "init ramfs",
+	} {
+		t.Run("default_root/"+name, func(t *testing.T) {
+			if err := pack.ValidateRootRef(ref); err == nil {
+				t.Errorf("ValidateRootRef(%q) = nil, want an error", ref)
+			}
+		})
+	}
+
+	for _, ref := range []string{"initramfs", "initramfs.sub", "root-a", "r0", "a_b.c-d"} {
+		t.Run("accept/"+ref, func(t *testing.T) {
+			if err := pack.ValidateRootRef(ref); err != nil {
+				t.Errorf("ValidateRootRef(%q) = %v, want nil", ref, err)
+			}
+		})
+	}
+}

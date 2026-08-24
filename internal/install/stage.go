@@ -15,6 +15,7 @@ import (
 	packvalidate "github.com/peios/peipkg/internal/build/pack"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/resolver"
+	"github.com/peios/peipkg/internal/version"
 )
 
 // etcNewMarker is the suffix of the file an upgrade writes beside an
@@ -83,6 +84,24 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 	// Either alone leaves the check in force.
 	if err := checkPayloadLayout(env, pp); err != nil {
 		return s, err
+	}
+
+	// §5.21: a provides.version greater than the providing package's own
+	// version MUST generate an operator warning at install time, because
+	// an inflated provides-version defeats constraint-based resolution.
+	//
+	// The attack is live rather than theoretical: libfoo 1.0-1 declaring
+	// provides libfoo 5.0 satisfies a `>= 4.0` dependency and installs
+	// silently. Where a genuine libfoo 4.0-1 is also a candidate it wins
+	// on the name match, so this lands exactly where the real package is
+	// absent — which is the shadowing case the warning exists for.
+	for _, prov := range pp.Pkg.Manifest.Provides {
+		if prov.Version != nil && version.Compare(*prov.Version, pp.Pkg.Manifest.Version) > 0 {
+			s.warnings = append(s.warnings, fmt.Sprintf(
+				"%s provides %s at version %s, above its own version %s — an inflated "+
+					"provides-version can shadow a real package in constraint resolution",
+				op.Name, prov.Name, prov.Version, pp.Pkg.Manifest.Version))
+		}
 	}
 
 	// §7.1.2.2 step 3: no payload path may collide with a path already

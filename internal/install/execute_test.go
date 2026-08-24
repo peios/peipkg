@@ -32,6 +32,9 @@ type testPkg struct {
 	// special marks the package as declaring special_system_package —
 	// its half of the two-key §3.4 layout exemption.
 	special bool
+	// provides is the package's provides array, for the §5.21
+	// inflated-provides-version rule.
+	provides []manifest.Provides
 }
 
 // fakeProvider serves pre-built verified packages by name.
@@ -133,6 +136,7 @@ func provide(t *testing.T, p testPkg) install.ProvidedPackage {
 		Manifest: manifest.Manifest{
 			Name: p.name, Version: mustVer(t, p.version), Architecture: "x86_64",
 			SpecialSystemPackage: p.special,
+			Provides:             p.provides,
 		},
 		ManifestJSON: []byte(fmt.Sprintf(`{"name":%q,"version":%q}`, p.name, p.version)),
 		Payload:      payload,
@@ -648,4 +652,72 @@ func TestUpgradeAndReplacementAreNotCollisions(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(root, shared)); string(got) != "v2" {
 		t.Errorf("after upgrade the file is %q, want v2", got)
 	}
+}
+
+// §5.21: "A provides.version greater than the providing package's own
+// version MUST generate an operator warning at install time, because an
+// inflated provides-version defeats constraint-based resolution."
+//
+// It was implemented nowhere. The attack is live rather than
+// theoretical: libfoo 1.0-1 declaring provides libfoo 5.0 satisfies a
+// `>= 4.0` dependency and installs silently. Where a genuine libfoo
+// 4.0-1 is also a candidate it wins on the name match, so this lands
+// exactly where the real package is absent — the shadowing case the
+// warning exists for.
+func TestInflatedProvidesVersionWarns(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+	env.Provider = fakeProvider{"libfoo": provide(t, testPkg{
+		name: "libfoo", version: "1.0-1",
+		provides: []manifest.Provides{{Name: "libfoo", Version: verPtr(t, "5.0-1")}},
+		files:    map[string]string{"usr/lib/x86_64-linux-peios/libfoo.so": "x"}})}
+
+	result, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "libfoo", "1.0-1")}}, env)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var found bool
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "libfoo") && strings.Contains(w, "5.0-1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("an inflated provides-version produced no warning; got %v", result.Warnings)
+	}
+}
+
+// A provides-version at or below the package's own version is the normal
+// case and must stay quiet, or the warning is noise.
+func TestProvidesVersionAtOrBelowDoesNotWarn(t *testing.T) {
+	for _, pv := range []string{"1.0-1", "0.9-1"} {
+		t.Run(pv, func(t *testing.T) {
+			ctx := t.Context()
+			store, root, lock := freshEnv(t)
+			env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "0.1.0-test"}
+			env.Provider = fakeProvider{"libfoo": provide(t, testPkg{
+				name: "libfoo", version: "1.0-1",
+				provides: []manifest.Provides{{Name: "libfoo", Version: verPtr(t, pv)}},
+				files:    map[string]string{"usr/lib/x86_64-linux-peios/libfoo.so": "x"}})}
+
+			result, err := install.Execute(ctx, resolver.Plan{Operations: []resolver.Operation{
+				installOp(t, "libfoo", "1.0-1")}}, env)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			for _, w := range result.Warnings {
+				if strings.Contains(w, "inflated") {
+					t.Errorf("provides %s produced an inflation warning: %s", pv, w)
+				}
+			}
+		})
+	}
+}
+
+func verPtr(t *testing.T, s string) *version.Version {
+	t.Helper()
+	v := mustVer(t, s)
+	return &v
 }

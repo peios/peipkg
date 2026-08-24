@@ -389,19 +389,21 @@ func TestEndToEndDowngradeUndo(t *testing.T) {
 	}
 	fp := signature.Fingerprint(pub)
 
-	v1, _ := buildSignedPackage(t, priv, pub, "widget", "1.0-1",
+	v1, installed1 := buildSignedPackage(t, priv, pub, "widget", "1.0-1",
 		map[string]string{"usr/bin/widget": "widget v1"})
-	v2, _ := buildSignedPackage(t, priv, pub, "widget", "2.0-1",
+	v2, installed2 := buildSignedPackage(t, priv, pub, "widget", "2.0-1",
 		map[string]string{"usr/bin/widget": "widget v2"})
 	url1 := "/p/widget/1.0-1/widget_1.0-1_x86_64.peipkg"
 	url2 := "/p/widget/2.0-1/widget_2.0-1_x86_64.peipkg"
 	hash := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
 
-	entry := func(ver, hashHex, url string, size int) map[string]any {
+	// §5.33 makes every index field match the manifest, so size_installed
+	// has to be the real figure rather than a placeholder.
+	entry := func(ver, hashHex, url string, size int, installed int64) map[string]any {
 		return map[string]any{
 			"name": "widget", "version": ver, "architecture": "x86_64",
 			"dependencies": []any{}, "conflicts": []any{},
-			"size_compressed": size, "size_installed": 100,
+			"size_compressed": size, "size_installed": installed,
 			"hash": map[string]any{"algorithm": "sha256", "value": hashHex},
 			"url":  url,
 		}
@@ -421,14 +423,14 @@ func TestEndToEndDowngradeUndo(t *testing.T) {
 	active := mustMarshal(t, map[string]any{
 		"schema_version": 1, "repo": "test", "kind": "active",
 		"index_version": 2, "generated_at": daysAgo(2),
-		"packages": []any{entry("2.0-1", hash(v2), url2, len(v2))},
+		"packages": []any{entry("2.0-1", hash(v2), url2, len(v2), installed2)},
 	})
 	archive := mustMarshal(t, map[string]any{
 		"schema_version": 1, "repo": "test", "kind": "archive",
 		"index_version": 2, "generated_at": daysAgo(2),
 		"packages": []any{
-			entry("2.0-1", hash(v2), url2, len(v2)),
-			entry("1.0-1", hash(v1), url1, len(v1)),
+			entry("2.0-1", hash(v2), url2, len(v2), installed2),
+			entry("1.0-1", hash(v1), url1, len(v1), installed1),
 		},
 	})
 	sign := func(b []byte) []byte {
