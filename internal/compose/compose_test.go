@@ -16,6 +16,7 @@ import (
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/resolver"
+	"github.com/peios/peipkg/internal/version"
 )
 
 // TestFetchAndAssemble runs the fetch and assemble stages end to end
@@ -566,4 +567,70 @@ func TestPackageRootKey(t *testing.T) {
 			t.Errorf("%+v: got %q err %v, want %q", tc.req, got, err, tc.want)
 		}
 	}
+}
+
+// A compose manifest may request the same package name in more than one
+// root with different constraints — package identity in the manifest
+// layer is (root, name), not name. applyManifestPins collected them into
+// a name-keyed map, so the last request overwrote the first and *both*
+// roots were filtered by the last-declared constraint.
+func TestManifestPinsForTheSameNameInTwoRootsDoNotOverwrite(t *testing.T) {
+	candidates := []resolver.Candidate{
+		{Name: "fsbase", Version: pinVersion(t, "1.0-1"), Repo: "official"},
+		{Name: "fsbase", Version: pinVersion(t, "3.0-1"), Repo: "official"},
+	}
+	reqs := []PackageRequest{
+		{Name: "fsbase", Constraint: pinConstraint(t, "< 2.0"), Root: "initramfs"},
+		{Name: "fsbase", Constraint: pinConstraint(t, ">= 3.0"), Root: ""},
+	}
+
+	out, err := applyManifestPins(candidates, reqs)
+	if err != nil {
+		t.Fatalf("applyManifestPins: %v", err)
+	}
+	// Both versions must survive: one satisfies each pin, and the
+	// resolver — which knows the roots — decides per root.
+	var got []string
+	for _, c := range out {
+		got = append(got, c.Version.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("surviving candidates = %v, want both 1.0-1 and 3.0-1", got)
+	}
+}
+
+// A pin that genuinely cannot be satisfied must still be reported here,
+// with a clearer message than the resolver's later "no candidate".
+func TestAnUnsatisfiableManifestPinIsStillReported(t *testing.T) {
+	candidates := []resolver.Candidate{
+		{Name: "fsbase", Version: pinVersion(t, "1.0-1"), Repo: "official"},
+	}
+	reqs := []PackageRequest{
+		{Name: "fsbase", Constraint: pinConstraint(t, ">= 9.0"), Root: "initramfs"},
+	}
+	_, err := applyManifestPins(candidates, reqs)
+	if err == nil {
+		t.Fatal("an unsatisfiable pin was accepted")
+	}
+	if !strings.Contains(err.Error(), "initramfs") {
+		t.Errorf("error %q does not name the root the pin came from", err)
+	}
+}
+
+func pinVersion(t *testing.T, v string) version.Version {
+	t.Helper()
+	parsed, err := version.Parse(v)
+	if err != nil {
+		t.Fatalf("version.Parse(%q): %v", v, err)
+	}
+	return parsed
+}
+
+func pinConstraint(t *testing.T, c string) version.Constraint {
+	t.Helper()
+	parsed, err := version.ParseConstraint(c)
+	if err != nil {
+		t.Fatalf("ParseConstraint(%q): %v", c, err)
+	}
+	return parsed
 }

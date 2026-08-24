@@ -329,40 +329,73 @@ func localCandidate(abs string) (resolver.Candidate, error) {
 func applyManifestPins(candidates []resolver.Candidate, reqs []PackageRequest) (
 	[]resolver.Candidate, error) {
 
-	pins := make(map[string]PackageRequest, len(reqs))
+	// A manifest may request the same package name in more than one root
+	// with different constraints — package identity in the manifest layer
+	// is (root, name), not name. Collecting the pins into a single
+	// name-keyed entry let the last one win, so *both* roots were filtered
+	// by the last-declared constraint and repository pin.
+	//
+	// Keying by (root, name) does not help here: this filter runs over one
+	// shared, root-agnostic candidate list, so a candidate cannot be
+	// attributed to a root. A candidate therefore survives if it satisfies
+	// **any** pin on its name, and the per-root constraint is left to the
+	// resolver, which does know the roots. The filter keeps its purpose —
+	// reporting an unsatisfiable pin here, more clearly than the
+	// resolver's later "no candidate" — without over-filtering.
+	pins := make(map[string][]PackageRequest, len(reqs))
 	for _, r := range reqs {
-		pins[r.Name] = r
+		pins[r.Name] = append(pins[r.Name], r)
 	}
+	// satisfied[i] tracks whether reqs[i] has at least one live candidate.
+	satisfied := make([]bool, len(reqs))
+	pinIndex := make(map[string][]int, len(reqs))
+	for i, r := range reqs {
+		pinIndex[r.Name] = append(pinIndex[r.Name], i)
+	}
+
 	existed := map[string]bool{}
-	survived := map[string]bool{}
 	out := make([]resolver.Candidate, 0, len(candidates))
 	for _, c := range candidates {
-		pin, pinned := pins[c.Name]
-		if pinned {
-			existed[c.Name] = true
-			if !pin.Constraint.Matches(c.Version) {
-				continue
-			}
-			if pin.Repository != "" && c.Repo != pin.Repository {
-				continue
-			}
-			survived[c.Name] = true
-		}
-		out = append(out, c)
-	}
-	for name := range existed {
-		if survived[name] {
+		idxs, pinned := pinIndex[c.Name]
+		if !pinned {
+			out = append(out, c)
 			continue
 		}
-		pin := pins[name]
-		detail := "version " + pin.Constraint.String()
-		if pin.Repository != "" {
-			detail += ", repository " + pin.Repository
+		existed[c.Name] = true
+		var keep bool
+		for _, i := range idxs {
+			if matchesPin(reqs[i], c) {
+				satisfied[i] = true
+				keep = true
+			}
+		}
+		if keep {
+			out = append(out, c)
+		}
+	}
+	for i, r := range reqs {
+		if satisfied[i] || !existed[r.Name] {
+			continue
+		}
+		detail := "version " + r.Constraint.String()
+		if r.Repository != "" {
+			detail += ", repository " + r.Repository
+		}
+		if r.Root != "" {
+			detail += ", root " + r.Root
 		}
 		return nil, fmt.Errorf("peipkg/compose: package %q: no available version satisfies the "+
-			"manifest pin (%s)", name, detail)
+			"manifest pin (%s)", r.Name, detail)
 	}
 	return out, nil
+}
+
+// matchesPin reports whether a candidate satisfies one manifest pin.
+func matchesPin(pin PackageRequest, c resolver.Candidate) bool {
+	if !pin.Constraint.Matches(c.Version) {
+		return false
+	}
+	return pin.Repository == "" || c.Repo == pin.Repository
 }
 
 // resolvePackageURL resolves a package URL appearing in a repository

@@ -624,14 +624,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 
 	results, err := install.ExecuteCrossRoot(ctx, plan, envs, crossRootID)
 	if err != nil {
-		var txnID int64
-		for _, r := range results {
-			if r.TxnID != 0 {
-				txnID = r.TxnID
-				break
-			}
-		}
-		app.emit(audit.Event{Type: audit.TypeTxnFailed, TxnID: txnID,
+		app.emit(audit.Event{Type: audit.TypeTxnFailed, TxnID: firstTxnID(results),
 			Outcome: audit.OutcomeRollback, Packages: auditPackages(plan), Detail: err.Error()})
 		return err
 	}
@@ -640,7 +633,18 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 			fmt.Fprintf(app.errOut, "peipkg: warning: %s\n", w)
 		}
 	}
-	app.emit(audit.Event{Type: eventType, Outcome: audit.OutcomeSuccess,
+	// §7.6.3: an emitted event includes the transaction identifier. The
+	// failure path above scans results for one; the success path did not,
+	// so encodeEvent wrote txn_id: 0 — leaving a committed cross-root
+	// operation, the highest-blast-radius thing peipkg does, as the one
+	// event that could not be joined to the txn ledger rows.
+	//
+	// A cross-root transaction genuinely has N per-root identifiers and
+	// one crossRootID. This reports one per-root id, matching the failure
+	// path; carrying crossRootID as well would need a new event field,
+	// which is an audit-schema change rather than a fix.
+	app.emit(audit.Event{Type: eventType, TxnID: firstTxnID(results),
+		Outcome:  audit.OutcomeSuccess,
 		Packages: auditPackages(plan), Detail: operationCount(plan)})
 	app.printf("done — %s across %d roots\n", operationCount(plan), len(envs))
 	return nil
@@ -1217,4 +1221,22 @@ func archiveCandidates(ctx context.Context, app *App, store *db.DB,
 		}
 	}
 	return candidates, nil
+}
+
+// firstTxnID returns a per-root transaction identifier from a cross-root
+// result set, for §7.6.3's requirement that an event carry one. Zero when
+// no root reached the point of opening a transaction.
+//
+// The lowest is chosen rather than the first encountered: results is a
+// map keyed by root, so ranging it and breaking — which the failure path
+// used to do — picked a different identifier on different runs of the
+// same operation, and an audit record that varies run to run is not one.
+func firstTxnID(results map[string]install.Result) int64 {
+	var lowest int64
+	for _, r := range results {
+		if r.TxnID != 0 && (lowest == 0 || r.TxnID < lowest) {
+			lowest = r.TxnID
+		}
+	}
+	return lowest
 }
