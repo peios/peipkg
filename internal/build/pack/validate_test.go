@@ -379,3 +379,94 @@ func TestValidateRejectsBareUsrSrc(t *testing.T) {
 		t.Errorf("expected bare /usr/src rejection, got %v", err)
 	}
 }
+
+// §5.15's positive half: a package whose architecture is not noarch installs
+// *all* shared libraries, static libraries and loadable modules under
+// /usr/lib/<triplet>/, and a noarch package containing any of them is invalid.
+//
+// validateLibPath only ever ran for paths already under usr/lib/, so nothing
+// looked at file *kind* anywhere else in the tree. These are exactly the files
+// that collide across architectures, which is what the triplet convention
+// exists to prevent.
+func TestValidateRejectsALibraryOutsideTheTripletDirectory(t *testing.T) {
+	for _, path := range []string{
+		"usr/share/mypkg/libfoo.so",
+		"usr/libexec/plugins/bar.so",
+		"usr/bin/libbaz.a",
+		"usr/share/mypkg/libfoo.so.1",
+		"usr/share/mypkg/libfoo.so.1.2.3",
+	} {
+		err := validateEntries("x86_64", []entry{{path: path, kind: kindFile}})
+		if err == nil {
+			t.Errorf("expected rejection of %s", path)
+		}
+	}
+}
+
+// A noarch package may not ship one anywhere at all, including in the
+// subtrees an arch package is allowed to use.
+func TestValidateRejectsALibraryInANoarchPackage(t *testing.T) {
+	for _, path := range []string{
+		"usr/share/py/_native.so",
+		"usr/lib/debug/usr/bin/foo.so",
+		"usr/lib/firmware/thing.so",
+	} {
+		err := validateEntries("noarch", []entry{{path: path, kind: kindFile}})
+		if err == nil {
+			t.Errorf("expected noarch rejection of %s", path)
+		}
+	}
+}
+
+// The rule must not fire on files merely *named after* a library. Two ship
+// today: usr/share/gdb/auto-load/.../libisl.so.23.4.0-gdb.py and the
+// libstdc++ equivalent are Python scripts, and a naive `.so.` test rejects
+// them.
+func TestValidateAcceptsAFileNamedAfterALibrary(t *testing.T) {
+	for _, path := range []string{
+		"usr/share/gdb/auto-load/usr/lib/x86_64-linux-peios/libisl.so.23.4.0-gdb.py",
+		"usr/share/gdb/auto-load/usr/lib/x86_64-linux-peios/libstdc++.so.6.0.35-gdb.py",
+		"usr/share/mypkg/notes.so.txt",
+		"usr/share/mypkg/libfoo.sources",
+	} {
+		if err := validateEntries("x86_64", []entry{{path: path, kind: kindFile}}); err != nil {
+			t.Errorf("%s should be accepted: %v", path, err)
+		}
+	}
+}
+
+// A symlink is exempt: §5.17 blesses a link whose target resolves into the
+// triplet directory, which is the conventional library split. glibc-bin's
+// usr/bin/ld.so -> ../lib/<triplet>/ld-linux-x86-64.so.2 is exactly that, and
+// it is the one thing in the whole shipped package set this rule would
+// otherwise have rejected.
+func TestValidateAcceptsASymlinkNamedLikeALibrary(t *testing.T) {
+	leaves := []entry{
+		{path: "usr/lib/x86_64-linux-peios/ld-linux-x86-64.so.2", kind: kindFile},
+		{
+			path:       "usr/bin/ld.so",
+			kind:       kindSymlink,
+			linkTarget: "../lib/x86_64-linux-peios/ld-linux-x86-64.so.2",
+		},
+	}
+	if err := validateEntries("x86_64", leaves); err != nil {
+		t.Errorf("the conventional loader symlink should be accepted: %v", err)
+	}
+}
+
+// A directory used to return before the usr/lib/ checks ran, so a noarch
+// package could ship an empty triplet directory and an x86_64 one could ship
+// another architecture's. Empty directories only, so the severity is low —
+// but it was an unconditional bypass of the rule.
+func TestValidateChecksTheTripletOnDirectoriesToo(t *testing.T) {
+	if err := validateEntries("noarch", []entry{
+		{path: "usr/lib/x86_64-linux-peios/foo", kind: kindDir},
+	}); err == nil {
+		t.Error("a noarch package shipping a triplet directory should be rejected")
+	}
+	if err := validateEntries("x86_64", []entry{
+		{path: "usr/lib/aarch64-linux-peios", kind: kindDir},
+	}); err == nil {
+		t.Error("an x86_64 package shipping another architecture's directory should be rejected")
+	}
+}

@@ -101,7 +101,38 @@ func validateEntryPath(architecture string, l entry) error {
 	}
 
 	if l.kind == kindDir {
+		// A directory used to return here, before the var/ and usr/lib/
+		// checks below — so a noarch package could ship the empty
+		// directory usr/lib/x86_64-linux-peios/foo/, and an x86_64 one
+		// usr/lib/aarch64-linux-peios/. Empty directories only, so the
+		// severity is low, but it was an unconditional bypass of the rule.
+		if strings.HasPrefix(l.path, "usr/lib/") {
+			return validateLibPath(architecture, l.path)
+		}
 		return nil
+	}
+
+	// §5.15's positive half: a package whose architecture is not noarch
+	// installs *all* shared libraries, static libraries and loadable modules
+	// under /usr/lib/<triplet>/, and a noarch package containing any of them
+	// is invalid.
+	//
+	// validateLibPath only ever ran for paths already under usr/lib/, so
+	// nothing looked at file *kind* anywhere else in the tree:
+	// usr/share/mypkg/libfoo.so, usr/libexec/plugins/bar.so and
+	// usr/bin/libbaz.a all passed. Those are exactly the files that collide
+	// across architectures, which is what the triplet convention exists to
+	// prevent — so the forward-compatibility guarantee of §5.16 was defeated
+	// precisely where it matters.
+	//
+	// A symlink is exempt. §5.17 blesses a link whose target resolves into
+	// the triplet directory — that is the conventional library split, and
+	// glibc-bin's usr/bin/ld.so -> ../lib/<triplet>/ld-linux-x86-64.so.2 is
+	// exactly it. The rule is about where the *file* lives.
+	if l.kind != kindSymlink {
+		if err := validateArchDependentKind(architecture, l.path); err != nil {
+			return err
+		}
 	}
 
 	if strings.HasPrefix(l.path, "var/") {
@@ -289,4 +320,89 @@ func ValidateInstallPaths(architecture string, entries []InstallEntry) error {
 		leaves = append(leaves, l)
 	}
 	return validateEntries(architecture, leaves)
+}
+
+// archDependentExemptions are the subtrees where an arch-dependent file
+// legitimately sits outside /usr/lib/<triplet>/, mirroring the exemptions
+// validateLibPath already documents.
+var archDependentExemptions = []string{
+	"usr/lib/debug/",
+	"usr/lib/modules/",
+	"usr/lib/firmware/",
+}
+
+// validateArchDependentKind rejects a shared library, static library or
+// loadable module outside /usr/lib/<triplet>/ — and rejects one anywhere at
+// all for a noarch package.
+//
+// Suffix matching rather than an ELF sniff. An ELF sniff would be stronger,
+// and peipkg/pack/derive.go already reads ELF headers for capability
+// derivation, so the machinery exists — but suffix matching catches the
+// realistic cases and cannot mistake a data file whose contents happen to
+// begin with the magic. A producer determined to evade the rule can, and the
+// rule is a layout convention rather than a security boundary.
+func validateArchDependentKind(architecture, path string) error {
+	if !isArchDependentLeaf(path) {
+		return nil
+	}
+	if architecture == "noarch" {
+		return fmt.Errorf(
+			"%s is a shared or static library, which a noarch package may not ship (§3.4.2)",
+			path)
+	}
+	for _, exempt := range archDependentExemptions {
+		if strings.HasPrefix(path, exempt) {
+			return nil
+		}
+	}
+	if strings.HasPrefix(path, "usr/lib/") {
+		// validateLibPath owns the triplet rule for this subtree and gives a
+		// better message than this function could.
+		return nil
+	}
+	return fmt.Errorf(
+		"%s is a shared or static library outside /usr/lib/<triplet>/ (§3.4.2)", path)
+}
+
+// isArchDependentLeaf reports whether a payload path names a shared library,
+// a static library or a loadable module by suffix: `.so`, `.so.<version>` or
+// `.a`.
+func isArchDependentLeaf(path string) bool {
+	name := path
+	if index := strings.LastIndexByte(path, '/'); index >= 0 {
+		name = path[index+1:]
+	}
+	if strings.HasSuffix(name, ".so") || strings.HasSuffix(name, ".a") {
+		return true
+	}
+	// libfoo.so.1, libfoo.so.1.2.3 — the test is on the `.so.` infix rather
+	// than the suffix, but only where what follows really is a version.
+	//
+	// Without that qualifier the rule fires on files merely *named after* a
+	// library: usr/share/gdb/auto-load/.../libisl.so.23.4.0-gdb.py is a
+	// Python script, and two of those ship today.
+	index := strings.Index(name, ".so.")
+	if index < 0 {
+		return false
+	}
+	return isVersionSuffix(name[index+len(".so."):])
+}
+
+// isVersionSuffix reports whether s is a non-empty run of digits separated by
+// dots — the tail of a versioned shared library's name.
+func isVersionSuffix(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, component := range strings.Split(s, ".") {
+		if component == "" {
+			return false
+		}
+		for i := 0; i < len(component); i++ {
+			if component[i] < '0' || component[i] > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
