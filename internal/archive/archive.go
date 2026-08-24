@@ -333,6 +333,16 @@ func payloadEntry(hdr *tar.Header) (PayloadEntry, error) {
 		name = strings.TrimSuffix(name, "/") // tar directory entries carry a trailing slash
 	case tar.TypeSymlink:
 		entry.Type = EntrySymlink
+		// §5.17 requires a consumer to validate every symlink target
+		// before extracting the entry. Validating here rather than at
+		// install time is what makes Verify alone sufficient: the
+		// linkname was previously copied through untouched, so
+		// `peipkg verify`, publication and repository ingest never
+		// looked at it at all.
+		if err := validateSymlinkTargetPath(hdr.Linkname); err != nil {
+			return PayloadEntry{}, fmt.Errorf(
+				"peipkg/archive: payload entry %q: %w", hdr.Name, err)
+		}
 		entry.LinkTarget = hdr.Linkname
 	default:
 		return PayloadEntry{}, fmt.Errorf(

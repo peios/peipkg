@@ -2,6 +2,7 @@ package pack
 
 import (
 	"fmt"
+	"github.com/peios/peipkg/internal/archive"
 	"path"
 	"path/filepath"
 	"sort"
@@ -201,8 +202,12 @@ func validateSymlinkTarget(l entry) error {
 	if filepath.IsAbs(l.linkTarget) {
 		return fmt.Errorf("symlink %s -> %s: absolute targets forbidden (§3.4 requires relative)", l.path, l.linkTarget)
 	}
-	if strings.ContainsAny(l.linkTarget, "\x00") || strings.Contains(l.linkTarget, "\\") {
-		return fmt.Errorf("symlink %s -> %q: target contains forbidden bytes (§3.4 path-validity)", l.path, l.linkTarget)
+	// §5.17 subjects a target to the same path-validity constraints as a
+	// payload path: valid UTF-8, no NUL bytes, no ASCII control
+	// characters, no backslashes, NFC normalisation, and the length
+	// limits. Shared with the consumer so there is one copy of the rules.
+	if err := archive.ValidateSymlinkTarget(l.linkTarget); err != nil {
+		return fmt.Errorf("symlink %s -> %q: %w", l.path, l.linkTarget, err)
 	}
 
 	parent := path.Dir(l.path)

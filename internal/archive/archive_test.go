@@ -418,3 +418,132 @@ func TestExtract(t *testing.T) {
 		t.Errorf("extracted file content: got %q", files["usr/bin/testpkg"])
 	}
 }
+
+// PSPU §5.17 subjects a symlink target to the same path-validity
+// constraints as a payload path, and requires a consumer to validate
+// every target before extracting the entry.
+//
+// The linkname was previously copied out of the tar header untouched, so
+// Verify — which is what `peipkg verify`, publication and repository
+// ingest all use — never looked at a target at all. A target carrying an
+// escape sequence, invalid UTF-8 or an NFD-normalised name passed
+// verification and was created verbatim.
+func TestVerifyRejectsNonConformingSymlinkTargets(t *testing.T) {
+	// U+00E9 decomposed: "e" followed by COMBINING ACUTE ACCENT. It
+	// silently fails to resolve against an NFC-normalised payload path,
+	// producing a dangling link that verification called clean.
+	nfd := "usr/share/café/data"
+
+	cases := map[string]string{
+		"absolute":            "/etc/passwd",
+		"empty":               "",
+		"backslash":           "usr\\bin\\testpkg",
+		"terminal escape":     "usr/bin/\x1b[2Jtestpkg",
+		"DEL":                 "usr/bin/\x7ftestpkg",
+		"invalid UTF-8":       "usr/bin/\xff\xfe",
+		"NFD normalisation":   nfd,
+		"over 4096 bytes":     strings.Repeat("a", 4097),
+		"component over 255":  "usr/bin/" + strings.Repeat("b", 256),
+		"over 256 components": strings.Repeat("a/", 257) + "x",
+	}
+	// A NUL is absent from this table only because Go's tar writer
+	// refuses to encode one in a linkname; the rule itself is covered by
+	// TestValidateSymlinkTarget below.
+	for name, target := range cases {
+		t.Run(name, func(t *testing.T) {
+			data := buildPkg(t, pkgSpec{
+				manifest: validManifest(),
+				files:    []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
+				symlinks: []pkgSymlink{{"usr/bin/testpkg-link", target}},
+				unsigned: true,
+			})
+			if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+				t.Errorf("VerifyFormat accepted symlink target %q", target)
+			}
+		})
+	}
+}
+
+// A target legitimately contains "..": that is how the conventional
+// library split reaches a sibling directory. The component rules a
+// payload path adds must not be applied to targets.
+func TestVerifyAcceptsConformingSymlinkTargets(t *testing.T) {
+	for name, target := range map[string]string{
+		"sibling":          "testpkg",
+		"parent traversal": "../lib/libtestpkg.so.1",
+		"deeper traversal": "../../usr/lib/libtestpkg.so.1",
+		"dot component":    "./testpkg",
+		"NFC non-ASCII":    "usr/share/café/data",
+		// 16 components of 254 bytes plus separators: 4079 bytes, inside
+		// both the 4096-byte total and the 255-byte component limit.
+		"long but legal": strings.TrimSuffix(strings.Repeat(strings.Repeat("a", 254)+"/", 16), "/"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := buildPkg(t, pkgSpec{
+				manifest: validManifest(),
+				files:    []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
+				symlinks: []pkgSymlink{{"usr/bin/testpkg-link", target}},
+				unsigned: true,
+			})
+			pkg, err := archive.VerifyFormat(bytes.NewReader(data))
+			if err != nil {
+				t.Fatalf("VerifyFormat rejected target %q: %v", target, err)
+			}
+			var found bool
+			for _, e := range pkg.Payload {
+				if e.Type == archive.EntrySymlink {
+					found = true
+					if e.LinkTarget != target {
+						t.Errorf("LinkTarget: got %q, want %q", e.LinkTarget, target)
+					}
+				}
+			}
+			if !found {
+				t.Error("no symlink entry in the verified payload")
+			}
+		})
+	}
+}
+
+// The §5.17 rules themselves, exercised directly. The producer side
+// shares this function, so a target rejected here is rejected at pack
+// time as well as at verification.
+func TestValidateSymlinkTarget(t *testing.T) {
+	bad := map[string]string{
+		"empty":               "",
+		"absolute":            "/etc/passwd",
+		"NUL byte":            "usr/bin/\x00testpkg",
+		"backslash":           "usr\\bin\\testpkg",
+		"C0 control":          "usr/bin/\x01testpkg",
+		"ESC":                 "usr/bin/\x1btestpkg",
+		"DEL":                 "usr/bin/\x7ftestpkg",
+		"invalid UTF-8":       "usr/bin/\xff\xfe",
+		"NFD":                 "usr/share/cafe\u0301/data",
+		"total over 4096":     strings.Repeat("a", 4097),
+		"component over 255":  strings.Repeat("b", 256),
+		"over 256 components": strings.Repeat("a/", 257) + "x",
+	}
+	for name, target := range bad {
+		t.Run("reject/"+name, func(t *testing.T) {
+			if err := archive.ValidateSymlinkTarget(target); err == nil {
+				t.Errorf("ValidateSymlinkTarget(%q) = nil, want an error", target)
+			}
+		})
+	}
+
+	good := map[string]string{
+		"sibling":          "testpkg",
+		"parent traversal": "../lib/libtestpkg.so.1",
+		"dot component":    "./testpkg",
+		"NFC non-ASCII":    "usr/share/caf\u00e9/data",
+		"component at 255": strings.Repeat("b", 255),
+		"256 components":   strings.Repeat("a/", 255) + "x",
+	}
+	for name, target := range good {
+		t.Run("accept/"+name, func(t *testing.T) {
+			if err := archive.ValidateSymlinkTarget(target); err != nil {
+				t.Errorf("ValidateSymlinkTarget(%q) = %v, want nil", target, err)
+			}
+		})
+	}
+}
