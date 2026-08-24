@@ -180,6 +180,14 @@ func TestPackSDOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rawDescriptor, err := sddl.Parse("O:SYG:SY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawDescriptorBytes, err := rawDescriptor.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantBinary, err := d.Marshal()
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +196,11 @@ func TestPackSDOverrides(t *testing.T) {
 	m := helloNoarchManifest()
 	m.SDOverrides = []pack.SDOverride{
 		{Path: "usr/share/hello/MESSAGE", SDDL: sddlText},
-		{Path: "usr/share/hello", SD: []byte("raw descriptor bytes")},
+		// A real self-relative descriptor, not filler: §5.20 requires `sd`
+		// to decode to one, and the consumer now checks it (PEI-385). The
+		// producer's SDDL path always guaranteed that; the raw byte form
+		// passed through unvalidated, which is what this fixture relied on.
+		{Path: "usr/share/hello", SD: rawDescriptorBytes},
 	}
 
 	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
@@ -214,7 +226,7 @@ func TestPackSDOverrides(t *testing.T) {
 		t.Fatalf("got %d sd_overrides, want 2", len(manifest.SDOverrides))
 	}
 	// Sorted by path: "usr/share/hello" (raw) before ".../MESSAGE" (SDDL).
-	if got, want := manifest.SDOverrides[0].SD, base64.RawStdEncoding.EncodeToString([]byte("raw descriptor bytes")); got != want {
+	if got, want := manifest.SDOverrides[0].SD, base64.RawStdEncoding.EncodeToString(rawDescriptorBytes); got != want {
 		t.Errorf("raw-form sd = %q, want %q", got, want)
 	}
 	if got, want := manifest.SDOverrides[1].SD, base64.RawStdEncoding.EncodeToString(wantBinary); got != want {

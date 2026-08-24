@@ -1,11 +1,13 @@
 package manifest_test
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/peios/libp-go/sddl"
 	"github.com/peios/peipkg/internal/manifest"
 )
 
@@ -104,7 +106,7 @@ func TestDecodeOptionalFields(t *testing.T) {
 	m["sd_overrides"] = []any{
 		map[string]any{
 			"path": "usr/bin/nginx",
-			"sd":   base64.RawStdEncoding.EncodeToString([]byte("a security descriptor")),
+			"sd":   base64.RawStdEncoding.EncodeToString(descriptorBytes(t)),
 		},
 	}
 
@@ -124,7 +126,7 @@ func TestDecodeOptionalFields(t *testing.T) {
 	if len(got.SideEffects) != 2 || got.SideEffects[0] != manifest.SideEffectDepmod {
 		t.Errorf("SideEffects: got %v", got.SideEffects)
 	}
-	if len(got.SDOverrides) != 1 || string(got.SDOverrides[0].SD) != "a security descriptor" {
+	if len(got.SDOverrides) != 1 || !bytes.Equal(got.SDOverrides[0].SD, descriptorBytes(t)) {
 		t.Errorf("SDOverrides: got %+v", got.SDOverrides)
 	}
 }
@@ -565,4 +567,70 @@ func TestManifestRejectsUnpairedSurrogate(t *testing.T) {
 	if got, err := manifest.Decode([]byte(raw)); err == nil {
 		t.Errorf("Decode accepted an unpaired surrogate, got %+v", got)
 	}
+}
+
+// descriptorBytes returns a real self-relative security descriptor.
+//
+// §5.20 requires `sd` to decode to one, and the consumer checks it now — the
+// field used to be free text, so fixtures could carry anything.
+func descriptorBytes(t *testing.T) []byte {
+	t.Helper()
+	d, err := sddl.Parse("O:BAG:SY")
+	if err != nil {
+		t.Fatalf("sddl.Parse: %v", err)
+	}
+	raw, err := d.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return raw
+}
+
+// §5.20 requires `sd` to decode to a syntactically valid self-relative
+// security descriptor. Checking only that it was base64 left the field free
+// text: two bytes were accepted, as was an entry with nothing in it.
+func TestSDOverrideRejectsSomethingThatIsNotADescriptor(t *testing.T) {
+	for name, raw := range map[string][]byte{
+		"two bytes":        {0x01, 0x00},
+		"plausible text":   []byte("a security descriptor"),
+		"empty":            {},
+		"truncated header": {0x01, 0x00, 0x80, 0x14},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := baseManifest()
+			m["sd_overrides"] = []any{
+				map[string]any{
+					"path": "usr/bin/nginx",
+					"sd":   base64.RawStdEncoding.EncodeToString(raw),
+				},
+			}
+			wantReject(t, m)
+		})
+	}
+}
+
+// An override with no path names nothing, which the array's own sort order
+// cannot catch.
+func TestSDOverrideRejectsAnEmptyPath(t *testing.T) {
+	m := baseManifest()
+	m["sd_overrides"] = []any{
+		map[string]any{
+			"path": "",
+			"sd":   base64.RawStdEncoding.EncodeToString(descriptorBytes(t)),
+		},
+	}
+	wantReject(t, m)
+}
+
+// A real descriptor must still decode, or the check would be a refusal of the
+// whole feature.
+func TestSDOverrideAcceptsARealDescriptor(t *testing.T) {
+	m := baseManifest()
+	m["sd_overrides"] = []any{
+		map[string]any{
+			"path": "usr/bin/nginx",
+			"sd":   base64.RawStdEncoding.EncodeToString(descriptorBytes(t)),
+		},
+	}
+	mustDecode(t, m)
 }

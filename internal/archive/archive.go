@@ -325,7 +325,45 @@ walkLoop:
 	if err := checkInstalledSize(res.manifest.SizeInstalled, files); err != nil {
 		return res, err
 	}
+	if err := checkSDOverrideTargets(&res); err != nil {
+		return res, err
+	}
 	return res, nil
+}
+
+// checkSDOverrideTargets enforces the two §5.20 conditions on an override
+// that only a reader of both the manifest and the payload can check: that
+// `path` names a real payload entry, and that the entry is a regular file
+// or a directory rather than a symlink.
+//
+// walk is the only place that sees both, and it never consulted
+// SDOverrides — so an override could name a path the package does not
+// ship, or a symlink, and be accepted. A symlink carries no independent
+// descriptor at all (§5.17: access to a symlink is governed by access to
+// its target), so an override on one is not merely useless, it names
+// something that cannot hold what it is assigning.
+func checkSDOverrideTargets(res *walkResult) error {
+	if len(res.manifest.SDOverrides) == 0 {
+		return nil
+	}
+	kinds := make(map[string]EntryType, len(res.payload))
+	for _, entry := range res.payload {
+		kinds[entry.Path] = entry.Type
+	}
+	for _, override := range res.manifest.SDOverrides {
+		kind, ok := kinds[override.Path]
+		if !ok {
+			return fmt.Errorf(
+				"peipkg/archive: sd_override names %q, which is not a payload entry",
+				override.Path)
+		}
+		if kind == EntrySymlink {
+			return fmt.Errorf(
+				"peipkg/archive: sd_override names %q, which is a symlink; a symlink "+
+					"carries no independent security descriptor", override.Path)
+		}
+	}
+	return nil
 }
 
 // signedDigest re-reads the archive and returns the SHA-256 of its

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/peios/libp-go/sddl"
 	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/signature"
@@ -681,4 +682,82 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return b
+}
+
+// §5.20 requires an override's `path` to name a real payload entry, and that
+// entry to be a regular file or a directory rather than a symlink.
+//
+// walk is the only place that sees both the manifest and the tar entries, and
+// it never consulted SDOverrides — so an override could name a path the
+// package does not ship, or a symlink, and be accepted.
+func TestVerifyRejectsAnSDOverrideThatNamesNoPayloadEntry(t *testing.T) {
+	m := validManifest()
+	m["sd_overrides"] = []any{
+		map[string]any{
+			"path": "usr/bin/not-shipped",
+			"sd":   base64.RawStdEncoding.EncodeToString(testDescriptor(t)),
+		},
+	}
+	data := buildPkg(t, pkgSpec{
+		manifest: m,
+		files:    []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
+		unsigned: true,
+	})
+	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+		t.Error("an override naming a path the package does not ship was accepted")
+	}
+}
+
+// A symlink carries no independent descriptor — §5.17 makes access to one
+// governed by access to its target — so an override on a symlink is not merely
+// useless, it names something that cannot hold what it assigns.
+func TestVerifyRejectsAnSDOverrideOnASymlink(t *testing.T) {
+	m := validManifest()
+	m["sd_overrides"] = []any{
+		map[string]any{
+			"path": "usr/bin/testpkg-link",
+			"sd":   base64.RawStdEncoding.EncodeToString(testDescriptor(t)),
+		},
+	}
+	data := buildPkg(t, pkgSpec{
+		manifest: m,
+		files:    []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
+		symlinks: []pkgSymlink{{"usr/bin/testpkg-link", "testpkg"}},
+		unsigned: true,
+	})
+	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+		t.Error("an override on a symlink was accepted")
+	}
+}
+
+// An override naming a real file must still verify.
+func TestVerifyAcceptsAnSDOverrideOnAFile(t *testing.T) {
+	m := validManifest()
+	m["sd_overrides"] = []any{
+		map[string]any{
+			"path": "usr/bin/testpkg",
+			"sd":   base64.RawStdEncoding.EncodeToString(testDescriptor(t)),
+		},
+	}
+	data := buildPkg(t, pkgSpec{
+		manifest: m,
+		files:    []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
+		unsigned: true,
+	})
+	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err != nil {
+		t.Errorf("an override on a real file was rejected: %v", err)
+	}
+}
+
+func testDescriptor(t *testing.T) []byte {
+	t.Helper()
+	d, err := sddl.Parse("O:BAG:SY")
+	if err != nil {
+		t.Fatalf("sddl.Parse: %v", err)
+	}
+	raw, err := d.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return raw
 }

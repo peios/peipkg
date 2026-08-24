@@ -10,6 +10,8 @@ import (
 
 	"github.com/peios/peipkg/internal/capability"
 	"github.com/peios/peipkg/internal/version"
+
+	sdpkg "github.com/peios/libp-go/sd"
 )
 
 // validate checks every field of a decoded wireManifest against the
@@ -524,6 +526,23 @@ func validateSDOverrides(wires []wireSDOverride) ([]SDOverride, error) {
 			return nil, fmt.Errorf(
 				"peipkg/manifest: sd_overrides[%d]: decoded sd is %d bytes, the limit is %d",
 				i, len(sd), maxSDOverride)
+		}
+		// §5.20: `sd` decodes to a *syntactically valid self-relative
+		// security descriptor*. Checking only that it is base64 left the
+		// field free text — `{"path":"usr/bin/x","sd":"AQA"}` is two bytes
+		// and was accepted, as was an entry with both fields empty.
+		//
+		// The same parser the producer compiles SDDL through, so the two
+		// halves agree on what a descriptor is. The producer's SDDL path was
+		// already stronger than this: it guarantees a parseable result, while
+		// the raw `SD []byte` form passed through untouched.
+		if _, err := sdpkg.ParseDescriptor(sd); err != nil {
+			return nil, fmt.Errorf(
+				"peipkg/manifest: sd_overrides[%d]: sd is not a valid security descriptor: %w",
+				i, err)
+		}
+		if *w.Path == "" {
+			return nil, fmt.Errorf("peipkg/manifest: sd_overrides[%d]: path is empty", i)
 		}
 		overrides = append(overrides, SDOverride{Path: *w.Path, SD: sd})
 	}
