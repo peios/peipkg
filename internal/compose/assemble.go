@@ -265,8 +265,9 @@ func writeRepositoryConfig(root string, repos []config.RepoConfig) error {
 	return nil
 }
 
-// checkComposeLayout enforces the §3.4 payload layout rules over one
-// fetched package as it is assembled into the anchor root.
+// checkComposeLayout enforces the §5.14 payload layout rules over one
+// fetched package as it is assembled — into whichever root it is placed
+// in, not only the anchor.
 //
 // This is compose's half of the same control `peipkg install` applies:
 // a composed image is built from .peipkg files that need not have come
