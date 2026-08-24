@@ -103,9 +103,17 @@ func buildSignedPackageEx(t *testing.T, priv ed25519.PrivateKey, pub ed25519.Pub
 
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
+	// §5.11 pins uid/gid, uname/gname, format and mtime as well as the
+	// mode, and the mtime must equal the manifest's build.timestamp.
+	buildTS, err := time.Parse(time.RFC3339,
+		manifestMap["build"].(map[string]any)["timestamp"].(string))
+	if err != nil {
+		t.Fatalf("parse fixture build.timestamp: %v", err)
+	}
 	write := func(name string, content []byte) {
 		hdr := &tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o777,
-			Size: int64(len(content)), ModTime: time.Unix(0, 0)}
+			Uid: 0, Gid: 0, Uname: "root", Gname: "root", Format: tar.FormatPAX,
+			Size: int64(len(content)), ModTime: buildTS}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatalf("WriteHeader %q: %v", name, err)
 		}

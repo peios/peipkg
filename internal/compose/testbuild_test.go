@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -65,9 +66,14 @@ func buildPeipkg(t *testing.T, manifestJSON []byte, entries []testEntry) []byte 
 	}
 	tw := tar.NewWriter(zw)
 
+	// §5.11 pins mode, ownership, format and mtime; §5.16 makes the mode
+	// rule an explicit rejection condition.
+	buildTS := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	writeReg := func(name string, data []byte) {
 		if err := tw.WriteHeader(&tar.Header{
-			Name: name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg,
+			Name: name, Mode: 0o777, Size: int64(len(data)), Typeflag: tar.TypeReg,
+			Uid: 0, Gid: 0, Uname: "root", Gname: "root",
+			Format: tar.FormatPAX, ModTime: buildTS,
 		}); err != nil {
 			t.Fatalf("tar header %s: %v", name, err)
 		}
@@ -83,13 +89,17 @@ func buildPeipkg(t *testing.T, manifestJSON []byte, entries []testEntry) []byte 
 		switch {
 		case e.IsDir:
 			if err := tw.WriteHeader(&tar.Header{
-				Name: e.Path + "/", Mode: 0o755, Typeflag: tar.TypeDir,
+				Name: e.Path + "/", Mode: 0o777, Typeflag: tar.TypeDir,
+				Uid: 0, Gid: 0, Uname: "root", Gname: "root",
+				Format: tar.FormatPAX, ModTime: buildTS,
 			}); err != nil {
 				t.Fatalf("tar dir %s: %v", e.Path, err)
 			}
 		case e.Symlink != "":
 			if err := tw.WriteHeader(&tar.Header{
 				Name: e.Path, Typeflag: tar.TypeSymlink, Linkname: e.Symlink,
+				Mode: 0o777, Uid: 0, Gid: 0, Uname: "root", Gname: "root",
+				Format: tar.FormatPAX, ModTime: buildTS,
 			}); err != nil {
 				t.Fatalf("tar symlink %s: %v", e.Path, err)
 			}

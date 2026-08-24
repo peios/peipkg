@@ -81,7 +81,9 @@ func archiveBytes(t *testing.T, p testPkg) []byte {
 	for _, e := range entries {
 		hdr := &tar.Header{
 			Name: e.name, Typeflag: e.typ, Mode: 0o777,
-			Size: int64(len(e.content)), Linkname: e.link, ModTime: time.Unix(0, 0),
+			Uid: 0, Gid: 0, Uname: "root", Gname: "root", Format: tar.FormatPAX,
+			Size: int64(len(e.content)), Linkname: e.link,
+			ModTime: time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC),
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatalf("WriteHeader %q: %v", e.name, err)

@@ -10,6 +10,8 @@ package manifest
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -132,6 +134,18 @@ type Build struct {
 // entry's modification time (§3.1.4 rule #2). Producers and consumers MUST
 // agree on this conversion.
 func (b Build) ModTime() (time.Time, error) {
+	// §5.11 rule 2 forbids sub-second precision, and this conversion is
+	// where it would take effect: a non-zero nanosecond field makes Go's
+	// tar writer prefer PAX, putting a forbidden extended header on every
+	// entry. Caught here so the build fails rather than the consumer.
+	if strings.ContainsRune(b.Timestamp, '.') {
+		return time.Time{}, fmt.Errorf(
+			"build.timestamp %q carries sub-second precision", b.Timestamp)
+	}
+	if !strings.HasSuffix(b.Timestamp, "Z") {
+		return time.Time{}, fmt.Errorf(
+			"build.timestamp %q must be UTC (end with Z)", b.Timestamp)
+	}
 	return time.Parse(time.RFC3339, b.Timestamp)
 }
 

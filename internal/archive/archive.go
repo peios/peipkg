@@ -25,12 +25,12 @@ import (
 
 // Resource limits (§3.2.7, §3.5.4).
 const (
+	tarBlock          = 512
 	maxDecompressed   = 4 << 30  // §3.5.4 absolute decompression cap: 4 GiB
 	maxManifest       = 16 << 20 // §3.2.7: .peipkg/manifest.json
 	maxFiles          = 64 << 20 // §3.2.7: .peipkg/files.json
 	maxSignature      = 64 << 10 // §3.2.7: .peipkg/signature
 	maxPayloadEntries = 100_000  // §3.2.7
-	tarBlock          = 512
 )
 
 // decompressionAllowance bounds the decompressed tar above the manifest's
@@ -185,6 +185,18 @@ walkLoop:
 			return res, fmt.Errorf("peipkg/archive: reading tar: %w", err)
 		}
 
+		// §5.11 determinism, on every entry — metadata and payload alike.
+		if err := checkCanonicalHeader(hdr); err != nil {
+			return res, fmt.Errorf("peipkg/archive: %w", err)
+		}
+		// The mtime rule needs build.timestamp, which arrives with the
+		// first entry. Entry 0 is checked just after it is decoded.
+		if index > 0 || res.manifest.Name != "" {
+			if err := checkCanonicalModTime(hdr, res.manifest.Build.Timestamp); err != nil {
+				return res, fmt.Errorf("peipkg/archive: %w", err)
+			}
+		}
+
 		switch {
 		case index == 0:
 			if hdr.Name != metadataManifest {
@@ -200,6 +212,11 @@ walkLoop:
 				return res, fmt.Errorf("peipkg/archive: %w", err)
 			}
 			res.manifestJSON = data
+			// The manifest entry's own mtime, now that build.timestamp is
+			// known. Every later entry is checked before its switch arm.
+			if err := checkCanonicalModTime(hdr, res.manifest.Build.Timestamp); err != nil {
+				return res, fmt.Errorf("peipkg/archive: %w", err)
+			}
 			// size_installed is now known; tighten the decompression cap.
 			capped.limit = min(maxDecompressed, res.manifest.SizeInstalled+decompressionAllowance)
 
@@ -218,12 +235,25 @@ walkLoop:
 			}
 
 		case hdr.Name == metadataSignature:
-			// Capture the signed-byte length now, before the entry's
-			// content is read: at this point capped.read is exactly the
-			// end of the signature entry's header. The signed bytes are
-			// everything before that header. `.peipkg/signature` has a
-			// short name, so its header is a single 512-byte ustar block
-			// (§3.1.12 — no PAX extended header).
+			// The signed bytes are everything before this entry's header,
+			// and capped.read is currently the end of that header — so
+			// the arithmetic below depends on the header being exactly one
+			// 512-byte ustar block.
+			//
+			// §5.11 rule 12 guarantees that: an extended header appears
+			// only for an over-long path or linkname, and
+			// `.peipkg/signature` is neither. But when the guarantee was
+			// merely assumed, a producer emitting a PAX record here made
+			// the header three blocks, signedLen overshot by 1024, the
+			// digest covered bytes it must not, and Verify failed with
+			// "signature verification failed" — pointing at the key rather
+			// than at the real cause. Check the assumption so the archive
+			// is rejected for what is actually wrong with it.
+			if len(hdr.PAXRecords) > 0 {
+				return res, fmt.Errorf(
+					"peipkg/archive: %s carries a PAX extended header, which §5.11 rule 12 "+
+						"permits only for an over-long path or linkname", metadataSignature)
+			}
 			res.signedLen = capped.read - tarBlock
 			data, err := readMetadata(tr, hdr, maxSignature, "signature")
 			if err != nil {

@@ -552,6 +552,16 @@ func validateBuild(w wireBuild) (Build, error) {
 		return Build{}, fmt.Errorf(
 			"peipkg/manifest: build: timestamp %q must be UTC (end with Z)", *w.Timestamp)
 	}
+	// §5.11 rule 2: no sub-second precision. The timestamp *is* every
+	// entry's mtime, and Go's tar writer sets preferPAX for a non-zero
+	// nanosecond field — which forces an extended header onto every entry,
+	// violating rule 12, and makes the signature entry's header three
+	// blocks instead of one. Rejecting beats truncating, which would
+	// silently change the value that becomes the mtime.
+	if strings.ContainsRune(*w.Timestamp, '.') {
+		return Build{}, fmt.Errorf(
+			"peipkg/manifest: build: timestamp %q carries sub-second precision", *w.Timestamp)
+	}
 	ts, err := time.Parse(time.RFC3339, *w.Timestamp)
 	if err != nil {
 		return Build{}, fmt.Errorf("peipkg/manifest: build: timestamp: %w", err)

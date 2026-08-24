@@ -17,6 +17,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/peios/peipkg/internal/archive"
+	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/signature"
 )
 
@@ -47,6 +48,10 @@ type pkgSpec struct {
 	wrongFileHash    bool   // record a wrong hash for the first file in files.json
 	orphanFilesEntry bool   // add a files.json entry with no payload file
 	hardlinkPath     string // add a hardlink payload entry at this path
+
+	// tweakHeader mutates every tar header just before it is written, so
+	// a test can build a deliberately non-canonical archive (§5.11).
+	tweakHeader func(*tar.Header)
 }
 
 // validManifest returns a minimal valid manifest map. buildPkg fills in
@@ -81,10 +86,23 @@ func buildPkg(t *testing.T, spec pkgSpec) []byte {
 
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
+	// §5.11 pins every one of these. The fixtures used to set only Mode
+	// and an epoch ModTime, which is precisely the non-conformance the
+	// read-side determinism check now rejects.
+	buildTS, err := time.Parse(time.RFC3339,
+		spec.manifest["build"].(map[string]any)["timestamp"].(string))
+	if err != nil {
+		t.Fatalf("parse fixture build.timestamp: %v", err)
+	}
 	write := func(name string, typ byte, content []byte, linkname string) {
 		hdr := &tar.Header{
 			Name: name, Typeflag: typ, Mode: 0o777,
-			Size: int64(len(content)), Linkname: linkname, ModTime: time.Unix(0, 0),
+			Uid: 0, Gid: 0, Uname: "root", Gname: "root",
+			Format: tar.FormatPAX,
+			Size:   int64(len(content)), Linkname: linkname, ModTime: buildTS,
+		}
+		if spec.tweakHeader != nil {
+			spec.tweakHeader(hdr)
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatalf("WriteHeader %q: %v", name, err)
@@ -546,4 +564,121 @@ func TestValidateSymlinkTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+// PSPU §5.11's twelve determinism rules constrain the archive's bytes,
+// and a consumer rejects a package violating any of them. §5.16 makes the
+// mode rule an explicit rejection condition: "Every payload entry's
+// permission bits MUST be 0777. Any other value MUST cause the package to
+// be rejected."
+//
+// Entry ordering was the only rule enforced on read. So a hand-built
+// .peipkg with mode 04755, uid 1000, uname "attacker", an mtime unrelated
+// to its manifest and SCHILY.xattr records installed cleanly and `peipkg
+// verify` reported it clean.
+//
+// There is no escalation on Peios — extraction ignores modes entirely —
+// but the package is non-conformant, and a non-Peios consumer extracting
+// the same file with GNU tar honours the setuid bit. It also defeats the
+// reproducibility claim §5.11 exists to make: a repacked archive whose
+// mtimes diverge from build.timestamp verified successfully, so a third
+// party re-running the build and diffing bytes got a mismatch peipkg
+// itself would have accepted.
+func TestVerifyRejectsNonCanonicalHeaders(t *testing.T) {
+	cases := map[string]func(*tar.Header){
+		"setuid mode":       func(h *tar.Header) { h.Mode = 0o4755 },
+		"setgid mode":       func(h *tar.Header) { h.Mode = 0o2777 },
+		"plain 0644":        func(h *tar.Header) { h.Mode = 0o644 },
+		"sticky bit":        func(h *tar.Header) { h.Mode = 0o1777 },
+		"non-zero uid":      func(h *tar.Header) { h.Uid = 1000 },
+		"non-zero gid":      func(h *tar.Header) { h.Gid = 1000 },
+		"attacker uname":    func(h *tar.Header) { h.Uname = "attacker" },
+		"empty gname":       func(h *tar.Header) { h.Gname = "" },
+		"xattrs":            func(h *tar.Header) { h.PAXRecords = map[string]string{"SCHILY.xattr.security.capability": "x"} },
+		"libarchive xattrs": func(h *tar.Header) { h.PAXRecords = map[string]string{"LIBARCHIVE.xattr.user.foo": "x"} },
+		"devmajor":          func(h *tar.Header) { h.Devmajor = 8 },
+		"devminor":          func(h *tar.Header) { h.Devminor = 1 },
+		"epoch mtime":       func(h *tar.Header) { h.ModTime = time.Unix(0, 0) },
+		"mtime off by 1s": func(h *tar.Header) {
+			h.ModTime = h.ModTime.Add(time.Second)
+		},
+	}
+	for name, tweak := range cases {
+		t.Run(name, func(t *testing.T) {
+			data := buildPkg(t, pkgSpec{
+				manifest:    validManifest(),
+				files:       []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
+				unsigned:    true,
+				tweakHeader: tweak,
+			})
+			if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+				t.Errorf("VerifyFormat accepted a non-canonical header (%s)", name)
+			}
+		})
+	}
+}
+
+// The determinism rules must not reject a conformant archive, including
+// the metadata entries, which are checked on the same terms as the
+// payload.
+func TestVerifyAcceptsCanonicalHeaders(t *testing.T) {
+	data := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files: []pkgFile{
+			{"usr/bin/testpkg", []byte("hi\n")},
+			{"usr/share/testpkg/data", []byte("data")},
+		},
+		dirs:     []string{"usr/share/testpkg"},
+		symlinks: []pkgSymlink{{"usr/bin/testpkg-link", "testpkg"}},
+		unsigned: true,
+	})
+	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err != nil {
+		t.Fatalf("VerifyFormat rejected a canonical archive: %v", err)
+	}
+}
+
+// §5.11 rule 2 forbids sub-second precision on build.timestamp, and rule
+// 12 permits a PAX extended header only for an over-long path or
+// linkname. The two interact badly: the timestamp *is* every entry's
+// mtime, and Go's tar writer sets preferPAX for a non-zero nanosecond
+// field, so a fractional timestamp puts a forbidden `x` header on every
+// entry in the archive.
+//
+// The severe consequence is that a signed package built this way fails
+// its own signature check — the signature entry's header becomes three
+// blocks instead of one, signedLen overshoots by 1024, and Verify reports
+// "signature verification failed", pointing at the key rather than at the
+// timestamp.
+func TestSubSecondBuildTimestampIsRejected(t *testing.T) {
+	for _, ts := range []string{
+		"2026-05-19T00:00:00.5Z",
+		"2026-05-19T00:00:00.000000001Z",
+		"2026-05-19T00:00:00.999Z",
+	} {
+		t.Run(ts, func(t *testing.T) {
+			m := validManifest()
+			m["size_installed"] = 0
+			m["build"].(map[string]any)["timestamp"] = ts
+			if _, err := manifest.Decode(mustJSON(t, m)); err == nil {
+				t.Errorf("Decode accepted build.timestamp %q", ts)
+			}
+		})
+	}
+
+	// Whole seconds must still decode.
+	m := validManifest()
+	m["size_installed"] = 0
+	m["build"].(map[string]any)["timestamp"] = "2026-05-19T00:00:00Z"
+	if _, err := manifest.Decode(mustJSON(t, m)); err != nil {
+		t.Errorf("Decode rejected a whole-second timestamp: %v", err)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
 }
