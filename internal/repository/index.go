@@ -37,6 +37,10 @@ type IndexEntry struct {
 	Architecture string
 	Description  string
 	License      string
+	// LicenseClass is the package's licence class (§3.3.6), carried in
+	// the index (§6.2.4) so a consumer can apply a licence policy before
+	// fetching anything.
+	LicenseClass manifest.LicenseClass
 	Homepage     string
 	// DefaultRoot is the package's top-level placement preference, carried
 	// in the index (§6.2.4) so a consumer can plan placement before
@@ -86,6 +90,7 @@ type wireIndexEntry struct {
 	Architecture *string `json:"architecture"`
 	Description  string  `json:"description"`
 	License      string  `json:"license"`
+	LicenseClass string  `json:"license_class"`
 	Homepage     string  `json:"homepage"`
 	DefaultRoot  string  `json:"default_root"`
 
@@ -217,6 +222,12 @@ func decodeIndexEntry(w wireIndexEntry) (IndexEntry, error) {
 		DefaultRoot:  w.DefaultRoot,
 		URL:          *w.URL,
 	}
+	// §6.2.4: license_class is the closed set of §3.3.6; absent is unknown.
+	lc, err := manifest.ParseLicenseClass(w.LicenseClass)
+	if err != nil {
+		return IndexEntry{}, err
+	}
+	entry.LicenseClass = lc
 	// §6.2.4: default_root is a root reference (§3.3.6) when present.
 	if w.DefaultRoot != "" {
 		if err := manifest.ValidateRootRef(w.DefaultRoot); err != nil {

@@ -162,6 +162,7 @@ func sampleEntry(t *testing.T, name, ver string) repository.IndexEntry {
 		Architecture: "x86_64",
 		Description:  "a package",
 		License:      "MIT",
+		LicenseClass: manifest.LicenseClassFree,
 		Homepage:     "https://example.org/?a=1&b=2",
 		DefaultRoot:  "initramfs",
 		Dependencies: []manifest.Dependency{
@@ -217,7 +218,7 @@ func TestIndexRoundTrip(t *testing.T) {
 	a, b := want.Packages[0], got.Packages[0]
 	if a.Name != b.Name || a.Version.String() != b.Version.String() ||
 		a.Architecture != b.Architecture || a.Description != b.Description ||
-		a.License != b.License || a.Homepage != b.Homepage ||
+		a.License != b.License || a.LicenseClass != b.LicenseClass || a.Homepage != b.Homepage ||
 		a.DefaultRoot != b.DefaultRoot || a.Hash != b.Hash || a.URL != b.URL ||
 		a.SizeCompressed != b.SizeCompressed || a.SizeInstalled != b.SizeInstalled ||
 		a.BuildFarmID != b.BuildFarmID || !a.BuildTimestamp.Equal(b.BuildTimestamp) {

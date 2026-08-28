@@ -131,6 +131,29 @@ func TestDecodeOptionalFields(t *testing.T) {
 	}
 }
 
+// §3.3.6: license_class is a closed set; absent means unknown, so a
+// package that predates the field decodes exactly as before.
+func TestLicenseClass(t *testing.T) {
+	if got := mustDecode(t, baseManifest()).LicenseClass; got != manifest.LicenseClassUnknown {
+		t.Errorf("absent license_class: got %q, want unknown", got)
+	}
+	for _, want := range []manifest.LicenseClass{
+		manifest.LicenseClassUnknown, manifest.LicenseClassFree,
+		manifest.LicenseClassFirmware, manifest.LicenseClassProprietary,
+	} {
+		m := baseManifest()
+		m["license_class"] = string(want)
+		if got := mustDecode(t, m).LicenseClass; got != want {
+			t.Errorf("license_class %q: got %q", want, got)
+		}
+	}
+	for _, bad := range []any{"nonfree", "Free", "FIRMWARE", " free", 1, true} {
+		m := baseManifest()
+		m["license_class"] = bad
+		wantReject(t, m)
+	}
+}
+
 func TestDefaultRootAndDependencyRoot(t *testing.T) {
 	m := baseManifest()
 	m["default_root"] = "initramfs"

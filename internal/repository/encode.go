@@ -215,6 +215,7 @@ type wireIndexEntryOut struct {
 	Architecture string `json:"architecture"`
 	Description  string `json:"description,omitempty"`
 	License      string `json:"license,omitempty"`
+	LicenseClass string `json:"license_class,omitempty"`
 	Homepage     string `json:"homepage,omitempty"`
 	DefaultRoot  string `json:"default_root,omitempty"`
 
@@ -352,6 +353,14 @@ func encodeIndexEntry(e IndexEntry) (wireIndexEntryOut, error) {
 			return wireIndexEntryOut{}, fmt.Errorf("default_root: %w", err)
 		}
 	}
+	// The zero LicenseClass (an entry built without one) and the explicit
+	// unknown both mean unknown; neither is worth bytes in the index.
+	licenseClass := string(e.LicenseClass)
+	if licenseClass == string(manifest.LicenseClassUnknown) {
+		licenseClass = ""
+	} else if _, err := manifest.ParseLicenseClass(licenseClass); err != nil {
+		return wireIndexEntryOut{}, err
+	}
 
 	out := wireIndexEntryOut{
 		Name:           e.Name,
@@ -359,6 +368,7 @@ func encodeIndexEntry(e IndexEntry) (wireIndexEntryOut, error) {
 		Architecture:   e.Architecture,
 		Description:    e.Description,
 		License:        e.License,
+		LicenseClass:   licenseClass,
 		Homepage:       e.Homepage,
 		DefaultRoot:    e.DefaultRoot,
 		SizeCompressed: e.SizeCompressed,

@@ -41,6 +41,9 @@ type Manifest struct {
 	Architecture string
 	Description  string
 	License      string
+	// LicenseClass is the licence class (§3.3.6): "", "unknown", "free",
+	// "firmware" or "proprietary". "" is not emitted and reads as unknown.
+	LicenseClass string
 	Homepage     string
 
 	// DefaultRoot is the package's top-level placement preference — the
@@ -333,6 +336,7 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 		Architecture:         m.Architecture,
 		Description:          m.Description,
 		License:              m.License,
+		LicenseClass:         m.LicenseClass,
 		Homepage:             m.Homepage,
 		DefaultRoot:          m.DefaultRoot,
 		SpecialSystemPackage: m.SpecialSystemPackage,

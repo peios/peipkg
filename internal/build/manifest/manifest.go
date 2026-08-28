@@ -33,7 +33,12 @@ type Manifest struct {
 	Architecture  string `json:"architecture"`
 	Description   string `json:"description"`
 	License       string `json:"license"`
-	Homepage      string `json:"homepage"`
+	// LicenseClass is the licence class (§3.3.6). omitempty for the same
+	// reason as DefaultRoot: it post-dates the format, and absent already
+	// means "unknown", so a package that declares none emits bytes
+	// identical to a pre-license_class manifest.
+	LicenseClass string `json:"license_class,omitempty"`
+	Homepage     string `json:"homepage"`
 	// DefaultRoot is the top-level placement preference (§3.3.6). Unlike
 	// the other optional fields it uses omitempty: it post-dates the
 	// format, so a package that declares none must emit bytes identical to

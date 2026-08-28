@@ -106,10 +106,11 @@ func TestFetchAndAssemble(t *testing.T) {
 		SchemaVersion int    `json:"schema_version"`
 		SourceDate    string `json:"source_date"`
 		Packages      []struct {
-			Name      string `json:"name"`
-			Version   string `json:"version"`
-			SourceRef string `json:"source_ref"`
-			Root      string `json:"root"`
+			Name         string `json:"name"`
+			Version      string `json:"version"`
+			LicenseClass string `json:"license_class"`
+			SourceRef    string `json:"source_ref"`
+			Root         string `json:"root"`
 		} `json:"packages"`
 	}
 	invData, err := os.ReadFile(filepath.Join(root, "usr/share/licenses.json"))
@@ -124,7 +125,7 @@ func TestFetchAndAssemble(t *testing.T) {
 	}
 	if len(inventory.Packages) != 1 || inventory.Packages[0].Name != "foo" ||
 		inventory.Packages[0].Version != "1.0-1" || inventory.Packages[0].SourceRef != "test" ||
-		inventory.Packages[0].Root != "" {
+		inventory.Packages[0].Root != "" || inventory.Packages[0].LicenseClass != "unknown" {
 		t.Errorf("licenses.json packages = %+v", inventory.Packages)
 	}
 

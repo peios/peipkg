@@ -129,6 +129,9 @@ func cmdInfo(app *App, args []string) error {
 		if m.License != "" {
 			app.printf("license:      %s\n", m.License)
 		}
+		if m.LicenseClass != "" && m.LicenseClass != manifest.LicenseClassUnknown {
+			app.printf("license-class: %s\n", m.LicenseClass)
+		}
 		if m.Homepage != "" {
 			app.printf("homepage:     %s\n", m.Homepage)
 		}

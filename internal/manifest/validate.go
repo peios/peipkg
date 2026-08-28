@@ -69,6 +69,9 @@ func (wm wireManifest) validate() (Manifest, error) {
 	}
 	m.Homepage = wm.Homepage
 	m.License = wm.License // not validated — §3.3.6 leaves license strings unchecked
+	if m.LicenseClass, err = ParseLicenseClass(wm.LicenseClass); err != nil {
+		return Manifest{}, fmt.Errorf("peipkg/manifest: %w", err)
+	}
 
 	// §3.3.6: default_root, when present, is a root reference — a named
 	// reference, never a filesystem path.

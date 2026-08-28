@@ -137,6 +137,7 @@ func TestEncodeFieldOrder(t *testing.T) {
 		Name:         "n",
 		Version:      "v",
 		Architecture: "a",
+		LicenseClass: "free",
 		Build:        Build{Timestamp: "2026-01-01T00:00:00Z", FarmID: "f", SourceRef: "r"},
 	}
 	got, err := Encode(m)
@@ -145,7 +146,7 @@ func TestEncodeFieldOrder(t *testing.T) {
 	}
 	wantOrder := []string{
 		`"schema_version"`, `"name"`, `"version"`, `"architecture"`,
-		`"description"`, `"license"`, `"homepage"`,
+		`"description"`, `"license"`, `"license_class"`, `"homepage"`,
 		`"dependencies"`, `"optional_dependencies"`, `"conflicts"`,
 		`"provides"`, `"replaces"`, `"side_effects"`,
 		`"size_installed"`, `"sd_overrides"`, `"build"`,
@@ -247,5 +248,26 @@ func TestEncodeRecipeRefAndBuilder(t *testing.T) {
 	}
 	if strings.Contains(string(got), "recipe_ref") || strings.Contains(string(got), "builder") {
 		t.Errorf("empty recipe_ref/builder leaked into the wire form: %s", got)
+	}
+}
+
+// license_class post-dates the format: a package that declares none must
+// emit bytes identical to a pre-license_class manifest.
+func TestEncodeOmitsAbsentLicenseClass(t *testing.T) {
+	m := Manifest{Name: "n", Version: "v", Architecture: "a",
+		Build: Build{Timestamp: "2026-01-01T00:00:00Z", FarmID: "f", SourceRef: "r"}}
+	got, err := Encode(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(got, []byte("license_class")) {
+		t.Errorf("absent license_class was emitted: %s", got)
+	}
+	m.LicenseClass = "firmware"
+	if got, err = Encode(m); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(got, []byte(`"license_class":"firmware"`)) {
+		t.Errorf("license_class not emitted: %s", got)
 	}
 }

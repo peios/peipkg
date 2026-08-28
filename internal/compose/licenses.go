@@ -25,10 +25,14 @@ type licenseManifest struct {
 }
 
 type licenseEntry struct {
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	Architecture  string `json:"architecture"`
-	License       string `json:"license"`
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+	Architecture string `json:"architecture"`
+	License      string `json:"license"`
+	// LicenseClass is the §3.3.6 class, always present so a reader of the
+	// inventory sees "unknown" spelled out rather than having to know the
+	// absent-means-unknown rule.
+	LicenseClass  string `json:"license_class"`
 	Homepage      string `json:"homepage,omitempty"`
 	SourceRef     string `json:"source_ref,omitempty"`
 	SourcePackage string `json:"source_package,omitempty"`
@@ -52,6 +56,7 @@ func writeLicenseManifest(out string, m Manifest, fetched []fetchedPackage) erro
 			Version:       mf.Version.String(),
 			Architecture:  mf.Architecture,
 			License:       mf.License,
+			LicenseClass:  string(mf.LicenseClass),
 			Homepage:      mf.Homepage,
 			SourceRef:     mf.Build.SourceRef,
 			SourcePackage: mf.Build.SourcePackage,

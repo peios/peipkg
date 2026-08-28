@@ -6,6 +6,7 @@
 package manifest
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/peios/peipkg/internal/version"
@@ -20,7 +21,13 @@ type Manifest struct {
 
 	Description string
 	License     string
-	Homepage    string
+	// LicenseClass is the package's licence class (§3.3.6): whether its
+	// terms make it free software, redistributable device firmware, or
+	// proprietary — the machine-readable fact a SPDX expression with a
+	// LicenseRef- term cannot convey. LicenseClassUnknown when the
+	// manifest declares none.
+	LicenseClass LicenseClass
+	Homepage     string
 
 	// DefaultRoot is the named root a top-level install of this package
 	// lands in when no --root is given (§3.3.6, DESIGN-named-roots.md). ""
@@ -50,6 +57,41 @@ type Manifest struct {
 	SizeInstalled int64
 	SDOverrides   []SDOverride
 	Build         Build
+}
+
+// LicenseClass is the closed set of licence classes (§3.3.6). Absent in
+// a manifest means [LicenseClassUnknown]: nothing has been asserted
+// either way, which is the state of every package that predates the
+// field.
+type LicenseClass string
+
+const (
+	// LicenseClassUnknown: no class has been declared.
+	LicenseClassUnknown LicenseClass = "unknown"
+	// LicenseClassFree: free and open-source software under the usual
+	// OSI/FSF sense.
+	LicenseClassFree LicenseClass = "free"
+	// LicenseClassFirmware: redistributable device firmware — no source,
+	// executes on a device rather than the CPU, needed to use hardware
+	// the user owns. The class Debian's non-free-firmware and Fedora's
+	// firmware exception carve out.
+	LicenseClassFirmware LicenseClass = "firmware"
+	// LicenseClassProprietary: non-free software that runs on the CPU.
+	LicenseClassProprietary LicenseClass = "proprietary"
+)
+
+// ParseLicenseClass maps the manifest's license_class string to a
+// [LicenseClass]. The empty string is the absent field and yields
+// [LicenseClassUnknown]; any string outside the closed set is an error,
+// since §5.a2 marks every enumerated set closed.
+func ParseLicenseClass(s string) (LicenseClass, error) {
+	switch LicenseClass(s) {
+	case "", LicenseClassUnknown:
+		return LicenseClassUnknown, nil
+	case LicenseClassFree, LicenseClassFirmware, LicenseClassProprietary:
+		return LicenseClass(s), nil
+	}
+	return "", fmt.Errorf("license_class %q is not one of unknown, free, firmware, proprietary", s)
 }
 
 // Dependency is one entry of the dependencies, optional_dependencies, or
