@@ -133,6 +133,11 @@ func reconcileWithIndexEntry(c resolver.Candidate, pkg *archive.Package, label s
 		return fmt.Errorf("%s: default_root in the manifest is %q, but the index entry "+
 			"declared %q", label, m.DefaultRoot, c.DefaultRoot)
 	}
+	// Absent and "unknown" are the same claim (§3.3.6), on both sides.
+	if normLicenseClass(c.LicenseClass) != normLicenseClass(m.LicenseClass) {
+		return fmt.Errorf("%s: license_class in the manifest is %q, but the index entry "+
+			"declared %q", label, m.LicenseClass, c.LicenseClass)
+	}
 	// A candidate with no advertised installed size came from a path that
 	// does not carry one; only a stated disagreement is a mismatch.
 	if c.SizeInstalled != 0 && c.SizeInstalled != m.SizeInstalled {
@@ -174,4 +179,14 @@ func renderReplaces(in []manifest.Replaces) []string {
 		out = append(out, r.Name+"|"+r.Constraint.String())
 	}
 	return out
+}
+
+// normLicenseClass folds the zero value into the unknown class so a
+// candidate built without one compares equal to a manifest declaring
+// "unknown".
+func normLicenseClass(c manifest.LicenseClass) manifest.LicenseClass {
+	if c == "" {
+		return manifest.LicenseClassUnknown
+	}
+	return c
 }

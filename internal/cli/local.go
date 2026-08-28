@@ -62,6 +62,7 @@ func readLocalPackage(path string) (resolver.Candidate, error) {
 		Repo:           "", // an empty Repo marks a local-file candidate
 		RepoPriority:   0,  // an explicit local file outranks repo versions
 		DefaultRoot:    m.DefaultRoot,
+		LicenseClass:   m.LicenseClass,
 		URL:            abs,
 		Hash:           hex.EncodeToString(sum[:]),
 		SizeCompressed: int64(len(raw)),

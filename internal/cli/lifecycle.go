@@ -920,8 +920,8 @@ func availableSet(ctx context.Context, app *App, store *db.DB) (
 				Dependencies: e.Dependencies, Conflicts: e.Conflicts,
 				Provides: e.Provides, Replaces: e.Replaces,
 				Repo: cfg.Name, RepoPriority: cfg.Priority,
-				DefaultRoot: e.DefaultRoot,
-				URL:         e.URL, Hash: e.Hash,
+				DefaultRoot: e.DefaultRoot, LicenseClass: e.LicenseClass,
+				URL: e.URL, Hash: e.Hash,
 				SizeCompressed: e.SizeCompressed, SizeInstalled: e.SizeInstalled,
 			})
 		}

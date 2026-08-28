@@ -77,6 +77,12 @@ type Candidate struct {
 	// it — placement is a CLI concern, not a resolution one.
 	DefaultRoot string
 
+	// LicenseClass is the package's licence class (§3.3.6), carried from
+	// the index entry so a licence policy can be applied at planning time
+	// and the manifest's claim checked against it (§5.26 step 8).
+	// LicenseClassUnknown when the entry declares none.
+	LicenseClass manifest.LicenseClass
+
 	URL            string
 	Hash           string
 	SizeCompressed int64
