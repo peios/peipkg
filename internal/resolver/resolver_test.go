@@ -660,6 +660,38 @@ func TestGoalViaProvidesTieBreaksOnPackageName(t *testing.T) {
 	}
 }
 
+// Two versions of one package providing the same role version tie on
+// every §4.2.4 rule; the newer package must win regardless of candidate
+// order. Found when a farm listing loregd_0.21.4 before loregd_0.21.5 kept
+// composing the older registryd provider.
+func TestProvidesTieBetweenVersionsOfOnePackagePrefersNewer(t *testing.T) {
+	mk := func(pkgVer string) resolver.Candidate {
+		c := cand(t, "loregd", pkgVer)
+		rv := ver(t, "1-1")
+		c.Provides = []manifest.Provides{{Name: "registryd", Version: &rv}}
+		return c
+	}
+	older, newer := mk("0.21.4-1"), mk("0.21.5-1")
+
+	for _, order := range [][]resolver.Candidate{{older, newer}, {newer, older}} {
+		plan, err := resolver.Resolve(
+			[]resolver.Request{{Kind: resolver.Install, Name: "registryd"}},
+			nil, order, defaultOptions())
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if got := summary(plan); !slices.Equal(got, []string{"install loregd"}) {
+			t.Fatalf("plan: got %v, want [install loregd]", got)
+		}
+		for _, op := range plan.Operations {
+			if op.Name == "loregd" && op.ToVersion.String() != "0.21.5-1" {
+				t.Errorf("candidate order %s/%s: chose %s, want 0.21.5-1",
+					order[0].Version, order[1].Version, op.ToVersion)
+			}
+		}
+	}
+}
+
 // A name match beats a provides match for the same name only through the
 // ordinary rules — but it must never be skipped: a real package named
 // coreutils is a candidate for the coreutils goal.

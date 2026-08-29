@@ -218,6 +218,17 @@ func morePreferred(a, b match, primaryArch, dependerRepo string, dependerPriorit
 			return c > 0
 		}
 	}
+	// Two versions of the same package filling the same role tie on every
+	// rule above (a provides entry carries the role's version, not the
+	// package's), and the newer package must win — otherwise the choice
+	// falls to index order, and a farm directory lists 0.21.4 before
+	// 0.21.5. Different packages are still separated by name below, so this
+	// never overrides the name tiebreak between distinct providers.
+	if a.cand.Name == b.cand.Name {
+		if c := version.Compare(a.cand.Version, b.cand.Version); c != 0 {
+			return c > 0
+		}
+	}
 	// Total-order tiebreaks.
 	if a.cand.Name != b.cand.Name {
 		return a.cand.Name < b.cand.Name
