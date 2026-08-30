@@ -174,6 +174,12 @@ type InitOptions struct {
 	URLTemplate string
 	// GeneratedAt stamps the initial indexes.
 	GeneratedAt time.Time
+	// TrustedKeys are further public keys the repository lists as active
+	// from the start, without holding their private halves: the keys the
+	// packages it will carry were signed with. A package is accepted only
+	// if its signer is in the descriptor, so a repository that republishes
+	// packages signed elsewhere must trust the signer as well as itself.
+	TrustedKeys []ed25519.PublicKey
 }
 
 // Init creates an empty repository state at dir.
@@ -213,14 +219,29 @@ func Init(dir string, opts InitOptions) error {
 		return err
 	}
 
+	keys := []repository.DescriptorKey{{
+		Fingerprint: fingerprint,
+		URL:         "/" + path.Join(keysDir, fingerprint+".pub"),
+		Status:      repository.KeyActive,
+	}}
+	extra := map[string]ed25519.PublicKey{}
+	for _, k := range opts.TrustedKeys {
+		fp := signature.Fingerprint(k)
+		if fp == fingerprint || extra[fp] != nil {
+			continue
+		}
+		extra[fp] = k
+		keys = append(keys, repository.DescriptorKey{
+			Fingerprint: fp,
+			URL:         "/" + path.Join(keysDir, fp+".pub"),
+			Status:      repository.KeyActive,
+		})
+	}
+
 	desc := repository.Descriptor{
 		RepoName:    opts.Name,
 		Description: opts.Description,
-		Keys: []repository.DescriptorKey{{
-			Fingerprint: fingerprint,
-			URL:         "/" + path.Join(keysDir, fingerprint+".pub"),
-			Status:      repository.KeyActive,
-		}},
+		Keys:        keys,
 		ActiveIndex: repository.IndexPointer{
 			URL:          "/" + activeIndexFile,
 			SignatureURL: "/" + activeIndexFile + signatureSuffix,
@@ -258,6 +279,13 @@ func Init(dir string, opts InitOptions) error {
 		return err
 	}
 	w.add(path.Join(keysDir, fingerprint+".pub"), pubPEM)
+	for fp, k := range extra {
+		pem, err := signature.EncodePublicKey(k)
+		if err != nil {
+			return err
+		}
+		w.add(path.Join(keysDir, fp+".pub"), pem)
+	}
 
 	cfg, err := json.MarshalIndent(
 		Config{SchemaVersion: configSchemaVersion, URLTemplate: template}, "", "  ")

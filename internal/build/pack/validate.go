@@ -184,7 +184,7 @@ func validateLibPath(architecture, leafPath string) error {
 		// external contract the ecosystem hard-codes, and the file is
 		// arch-independent — so it is exempt from the §3.4.2 triplet layout and
 		// permitted directly under /usr/lib/, including in a noarch package
-		// (e.g. peios-release-meta, which owns OS identity).
+		// (e.g. the edition package peios-experimental, which owns OS identity).
 		if rest == "os-release" {
 			return nil
 		}

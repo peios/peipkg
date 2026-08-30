@@ -72,6 +72,13 @@ type App struct {
 	// itself declares special_system_package: the flag cannot exempt an
 	// ordinary package, and the declaration cannot exempt itself.
 	bypassPathRestrictions bool
+	// bypassAlternateUpgrade is the operator's §5.18 rule-3 override
+	// (--bypass-alternate-upgrade). Without it, install and upgrade
+	// refuse a package that declares alternate_upgrade, and an
+	// every-package upgrade holds such packages back. It is
+	// per-invocation and never persisted: the out-of-band tool that owns
+	// the package's upgrade path passes it to drive peipkg.
+	bypassAlternateUpgrade bool
 }
 
 // newPaths locates peipkg's files beneath an operating root.

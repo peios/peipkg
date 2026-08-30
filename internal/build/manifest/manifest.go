@@ -59,16 +59,31 @@ type Manifest struct {
 	//
 	// omitempty: it post-dates the format, so a package that does not
 	// declare it emits bytes identical to a pre-special-system manifest.
-	SpecialSystemPackage bool         `json:"special_system_package,omitempty"`
-	Dependencies         []Dependency `json:"dependencies"`
-	OptionalDependencies []Dependency `json:"optional_dependencies"`
-	Conflicts            []Dependency `json:"conflicts"`
-	Provides             []Provides   `json:"provides"`
-	Replaces             []Replaces   `json:"replaces"`
-	SideEffects          []string     `json:"side_effects"`
-	SizeInstalled        int64        `json:"size_installed"`
-	SDOverrides          []SDOverride `json:"sd_overrides"`
-	Build                Build        `json:"build"`
+	SpecialSystemPackage bool `json:"special_system_package,omitempty"`
+	// AlternateUpgrade declares an out-of-band upgrade path (§5.18): a
+	// consumer refuses a request naming the package and holds it back
+	// from an every-package upgrade unless the operator overrides. It
+	// grants nothing. A pointer with omitempty, so a package that does
+	// not declare it emits bytes identical to a pre-alternate_upgrade
+	// manifest. Declared after special_system_package to match the
+	// normative field order.
+	AlternateUpgrade     *AlternateUpgrade `json:"alternate_upgrade,omitempty"`
+	Dependencies         []Dependency      `json:"dependencies"`
+	OptionalDependencies []Dependency      `json:"optional_dependencies"`
+	Conflicts            []Dependency      `json:"conflicts"`
+	Provides             []Provides        `json:"provides"`
+	Replaces             []Replaces        `json:"replaces"`
+	SideEffects          []string          `json:"side_effects"`
+	SizeInstalled        int64             `json:"size_installed"`
+	SDOverrides          []SDOverride      `json:"sd_overrides"`
+	Build                Build             `json:"build"`
+}
+
+// AlternateUpgrade is the alternate_upgrade object (§5.18). Message is
+// required: non-empty UTF-8 of at most 1024 bytes, newlines permitted
+// and no other control character.
+type AlternateUpgrade struct {
+	Message string `json:"message"`
 }
 
 // Dependency is one entry in dependencies, optional_dependencies, or conflicts

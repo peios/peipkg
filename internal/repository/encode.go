@@ -210,14 +210,15 @@ type wireIndexOut struct {
 // absent and empty identically, so omitting is the smaller rendering of
 // the same fact.
 type wireIndexEntryOut struct {
-	Name         string `json:"name"`
-	Version      string `json:"version"`
-	Architecture string `json:"architecture"`
-	Description  string `json:"description,omitempty"`
-	License      string `json:"license,omitempty"`
-	LicenseClass string `json:"license_class,omitempty"`
-	Homepage     string `json:"homepage,omitempty"`
-	DefaultRoot  string `json:"default_root,omitempty"`
+	Name             string                   `json:"name"`
+	Version          string                   `json:"version"`
+	Architecture     string                   `json:"architecture"`
+	Description      string                   `json:"description,omitempty"`
+	License          string                   `json:"license,omitempty"`
+	LicenseClass     string                   `json:"license_class,omitempty"`
+	Homepage         string                   `json:"homepage,omitempty"`
+	DefaultRoot      string                   `json:"default_root,omitempty"`
+	AlternateUpgrade *wireAlternateUpgradeOut `json:"alternate_upgrade,omitempty"`
 
 	Dependencies         json.RawMessage `json:"dependencies,omitempty"`
 	OptionalDependencies json.RawMessage `json:"optional_dependencies,omitempty"`
@@ -231,6 +232,12 @@ type wireIndexEntryOut struct {
 	Hash           wireHashOut   `json:"hash"`
 	URL            string        `json:"url"`
 	Build          *wireBuildOut `json:"build,omitempty"`
+}
+
+// wireAlternateUpgradeOut is the alternate_upgrade object (§5.18) as
+// the index carries it (§5.33).
+type wireAlternateUpgradeOut struct {
+	Message string `json:"message"`
 }
 
 type wireHashOut struct {
@@ -353,6 +360,11 @@ func encodeIndexEntry(e IndexEntry) (wireIndexEntryOut, error) {
 			return wireIndexEntryOut{}, fmt.Errorf("default_root: %w", err)
 		}
 	}
+	if e.AlternateUpgrade != nil {
+		if err := manifest.ValidateAlternateUpgradeMessage(e.AlternateUpgrade.Message); err != nil {
+			return wireIndexEntryOut{}, fmt.Errorf("alternate_upgrade: message: %w", err)
+		}
+	}
 	// The zero LicenseClass (an entry built without one) and the explicit
 	// unknown both mean unknown; neither is worth bytes in the index.
 	licenseClass := string(e.LicenseClass)
@@ -378,6 +390,9 @@ func encodeIndexEntry(e IndexEntry) (wireIndexEntryOut, error) {
 	}
 	if out.Version == "" {
 		return wireIndexEntryOut{}, fmt.Errorf("missing version")
+	}
+	if e.AlternateUpgrade != nil {
+		out.AlternateUpgrade = &wireAlternateUpgradeOut{Message: e.AlternateUpgrade.Message}
 	}
 
 	var err error

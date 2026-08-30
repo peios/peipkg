@@ -135,6 +135,9 @@ func cmdInfo(app *App, args []string) error {
 		if m.Homepage != "" {
 			app.printf("homepage:     %s\n", m.Homepage)
 		}
+		if m.AlternateUpgrade != nil {
+			app.printf("Alternate upgrade path:\n%s\n", m.AlternateUpgrade.Message)
+		}
 	}
 	return nil
 }

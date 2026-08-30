@@ -34,6 +34,8 @@ func cmdInstall(app *App, args []string) error {
 		"proceed although a repository's trust state exceeds its maximum trusted age (§6.5.4)")
 	bypassPaths := fs.Bool("dangerously-bypass-path-restrictions", false,
 		"permit packages declaring special_system_package to install outside the §3.4 layout")
+	bypassAlt := fs.Bool("bypass-alternate-upgrade", false,
+		"proceed with packages declaring alternate_upgrade instead of refusing them (§5.18)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -42,6 +44,7 @@ func cmdInstall(app *App, args []string) error {
 		return fmt.Errorf("install: at least one package name or .peipkg file is required")
 	}
 	app.bypassPathRestrictions = *bypassPaths
+	app.bypassAlternateUpgrade = *bypassAlt
 	claimDir, err := claimDirective(*noClaim, *claimAll, *claimRoles)
 	if err != nil {
 		return err
@@ -192,10 +195,13 @@ func cmdUpgrade(app *App, args []string) error {
 	noRecurse := fs.Bool("no-recurse", false, "confine the upgrade to the current root")
 	allowStale := fs.Bool("allow-stale", false,
 		"proceed although a repository's trust state exceeds its maximum trusted age (§6.5.4)")
+	bypassAlt := fs.Bool("bypass-alternate-upgrade", false,
+		"upgrade packages declaring alternate_upgrade instead of refusing or holding them back (§5.18)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
 	}
+	app.bypassAlternateUpgrade = *bypassAlt
 	if err := ensureFreshTrust(app, *allowStale); err != nil {
 		return fmt.Errorf("upgrade: %w", err)
 	}
@@ -429,14 +435,26 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	// every reachable root, so a dependency placed `IN` another root is
 	// routed there (DESIGN-named-roots.md); every other verb resolves
 	// single-root, exactly as before.
-	var plan resolver.Plan
-	if crossRoot {
-		plan, err = app.resolveCrossRoot(ctx, reqs, store, available, configs, opts)
-	} else {
-		var installed []resolver.Installed
-		if installed, err = installedSet(ctx, store, configs); err == nil {
-			plan, err = resolver.Resolve(reqs, installed, available, opts)
+	resolve := func(ctx context.Context, reqs []resolver.Request) (resolver.Plan, error) {
+		if crossRoot {
+			return app.resolveCrossRoot(ctx, reqs, store, available, configs, opts)
 		}
+		installed, err := installedSet(ctx, store, configs)
+		if err != nil {
+			return resolver.Plan{}, err
+		}
+		return resolver.Resolve(reqs, installed, available, opts)
+	}
+	plan, err := resolve(ctx, reqs)
+	// §5.18: a package declaring alternate_upgrade is refused by install
+	// and named upgrade, and held back by an every-package upgrade, unless
+	// the operator passed --bypass-alternate-upgrade. Only these two verbs
+	// move a package forward on the operator's routine say-so; a downgrade
+	// or undo is a deliberate step back, which the declaration does not
+	// speak to.
+	if err == nil && !app.bypassAlternateUpgrade &&
+		(eventType == audit.TypeInstall || eventType == audit.TypeUpgrade) {
+		plan, err = app.enforceAlternateUpgrade(ctx, plan, reqs, resolve)
 	}
 	if err != nil {
 		app.emit(audit.Event{Type: audit.TypeTxnFailed,
@@ -920,8 +938,9 @@ func availableSet(ctx context.Context, app *App, store *db.DB) (
 				Dependencies: e.Dependencies, Conflicts: e.Conflicts,
 				Provides: e.Provides, Replaces: e.Replaces,
 				Repo: cfg.Name, RepoPriority: cfg.Priority,
-				DefaultRoot: e.DefaultRoot, LicenseClass: e.LicenseClass,
-				URL: e.URL, Hash: e.Hash,
+				DefaultRoot: e.DefaultRoot, AlternateUpgrade: e.AlternateUpgrade,
+				LicenseClass: e.LicenseClass,
+				URL:          e.URL, Hash: e.Hash,
 				SizeCompressed: e.SizeCompressed, SizeInstalled: e.SizeInstalled,
 			})
 		}

@@ -506,3 +506,51 @@ func TestPackRejectsNonConformingRootReferences(t *testing.T) {
 		})
 	}
 }
+
+// TestPackAlternateUpgrade verifies the alternate_upgrade object (§5.18)
+// reaches the wire when declared, is absent — not empty — when not, and
+// that a bad message is refused at pack time.
+func TestPackAlternateUpgrade(t *testing.T) {
+	caseDir := filepath.Join(testdataRoot(t), "cases", "hello-noarch")
+	packIt := func(m pack.Manifest) ([]byte, error) {
+		var buf bytes.Buffer
+		err := pack.Pack(pack.PackOptions{
+			Manifest: m, StagedRoot: filepath.Join(caseDir, "staged"), Out: &buf})
+		return buf.Bytes(), err
+	}
+
+	m := helloNoarchManifest()
+	m.AlternateUpgrade = &pack.AlternateUpgrade{Message: "Use upgrade-peios.\nSee the notes."}
+	out, err := packIt(m)
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	var manifest struct {
+		AlternateUpgrade *struct {
+			Message string `json:"message"`
+		} `json:"alternate_upgrade"`
+	}
+	raw := extractEntry(t, out, ".peipkg/manifest.json")
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.AlternateUpgrade == nil || manifest.AlternateUpgrade.Message != m.AlternateUpgrade.Message {
+		t.Errorf("alternate_upgrade: got %+v", manifest.AlternateUpgrade)
+	}
+
+	out, err = packIt(helloNoarchManifest())
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	if bytes.Contains(extractEntry(t, out, ".peipkg/manifest.json"), []byte("alternate_upgrade")) {
+		t.Error("a manifest without alternate_upgrade emitted the key")
+	}
+
+	for name, msg := range map[string]string{"empty": "", "control": "a\tb"} {
+		m := helloNoarchManifest()
+		m.AlternateUpgrade = &pack.AlternateUpgrade{Message: msg}
+		if _, err := packIt(m); err == nil {
+			t.Errorf("%s: packed a manifest with an invalid alternate_upgrade message", name)
+		}
+	}
+}

@@ -137,9 +137,13 @@ type LockedPackage struct {
 	Name         string
 	Version      string
 	Architecture string
-	Source       string
-	URL          string
-	Hash         string
+	// Root is the path, relative to the output root, of the named root
+	// this package is installed into; empty for the output root. A name
+	// may appear in more than one root, so a lock is keyed by (Name, Root).
+	Root   string
+	Source string
+	URL    string
+	Hash   string
 }
 
 // LocalSource is the source value used for packages supplied from local
@@ -194,6 +198,7 @@ func fromInternalLock(lock internalcompose.Lock) Lock {
 			Name:         p.Name,
 			Version:      p.Version,
 			Architecture: p.Architecture,
+			Root:         p.Root,
 			Source:       p.Source,
 			URL:          p.URL,
 			Hash:         p.Hash,
@@ -215,6 +220,7 @@ func toInternalLock(lock Lock) internalcompose.Lock {
 			Name:         p.Name,
 			Version:      p.Version,
 			Architecture: p.Architecture,
+			Root:         p.Root,
 			Source:       p.Source,
 			URL:          p.URL,
 			Hash:         p.Hash,

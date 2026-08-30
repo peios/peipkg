@@ -52,20 +52,21 @@ func readLocalPackage(path string) (resolver.Candidate, error) {
 	sum := sha256.Sum256(raw)
 	m := pkg.Manifest
 	return resolver.Candidate{
-		Name:           m.Name,
-		Version:        m.Version,
-		Architecture:   m.Architecture,
-		Dependencies:   m.Dependencies,
-		Conflicts:      m.Conflicts,
-		Provides:       m.Provides,
-		Replaces:       m.Replaces,
-		Repo:           "", // an empty Repo marks a local-file candidate
-		RepoPriority:   0,  // an explicit local file outranks repo versions
-		DefaultRoot:    m.DefaultRoot,
-		LicenseClass:   m.LicenseClass,
-		URL:            abs,
-		Hash:           hex.EncodeToString(sum[:]),
-		SizeCompressed: int64(len(raw)),
-		SizeInstalled:  m.SizeInstalled,
+		Name:             m.Name,
+		Version:          m.Version,
+		Architecture:     m.Architecture,
+		Dependencies:     m.Dependencies,
+		Conflicts:        m.Conflicts,
+		Provides:         m.Provides,
+		Replaces:         m.Replaces,
+		Repo:             "", // an empty Repo marks a local-file candidate
+		RepoPriority:     0,  // an explicit local file outranks repo versions
+		DefaultRoot:      m.DefaultRoot,
+		AlternateUpgrade: m.AlternateUpgrade,
+		LicenseClass:     m.LicenseClass,
+		URL:              abs,
+		Hash:             hex.EncodeToString(sum[:]),
+		SizeCompressed:   int64(len(raw)),
+		SizeInstalled:    m.SizeInstalled,
 	}, nil
 }

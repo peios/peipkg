@@ -47,6 +47,15 @@ type Manifest struct {
 	// installer can grant it.
 	SpecialSystemPackage bool
 
+	// AlternateUpgrade declares that the package is meant to be installed
+	// and upgraded by some means other than a routine package operation
+	// (§5.18) — an operating-system edition moved by a dedicated tool,
+	// for example. nil when absent. Like SpecialSystemPackage it grants
+	// nothing: its whole effect is that a consumer refuses a request
+	// naming the package and holds it back from an every-package
+	// upgrade, unless the operator passes --bypass-alternate-upgrade.
+	AlternateUpgrade *AlternateUpgrade
+
 	Dependencies         []Dependency
 	OptionalDependencies []Dependency
 	Conflicts            []Dependency
@@ -57,6 +66,15 @@ type Manifest struct {
 	SizeInstalled int64
 	SDOverrides   []SDOverride
 	Build         Build
+}
+
+// AlternateUpgrade is the alternate_upgrade object (§5.18): the
+// declaration that a package has an out-of-band upgrade path.
+type AlternateUpgrade struct {
+	// Message is the text shown to the operator in place of proceeding:
+	// non-empty UTF-8 of at most 1024 bytes, which may contain newlines
+	// but no other control characters.
+	Message string
 }
 
 // LicenseClass is the closed set of licence classes (§3.3.6). Absent in

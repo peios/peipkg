@@ -65,6 +65,19 @@ type Manifest struct {
 	// operator can grant it.
 	SpecialSystemPackage bool
 
+	// AlternateUpgrade declares that the package is meant to be
+	// installed and upgraded by some means other than a routine package
+	// operation (§5.18) — an operating-system edition moved by a
+	// dedicated tool, for example. nil for a package with none. Message
+	// is required: non-empty UTF-8 of at most 1024 bytes, newlines
+	// permitted and no other control character.
+	//
+	// It grants nothing. A consumer refuses a request that names the
+	// package and holds it back from an every-package upgrade unless
+	// the operator passes --bypass-alternate-upgrade; an image builder
+	// composing a root from nothing ignores it.
+	AlternateUpgrade *AlternateUpgrade
+
 	Dependencies         []Dependency
 	OptionalDependencies []Dependency
 	Conflicts            []Dependency
@@ -81,6 +94,16 @@ type Manifest struct {
 
 	// Build is the §3.3.4 build-provenance object. Required.
 	Build BuildInfo
+}
+
+// AlternateUpgrade is the alternate_upgrade object (§5.18): the
+// declaration that a package has an out-of-band upgrade path. See
+// [Manifest.AlternateUpgrade].
+type AlternateUpgrade struct {
+	// Message is the text a consumer shows the operator in place of
+	// proceeding. Required: non-empty UTF-8 of at most 1024 bytes,
+	// newlines permitted and no other control character.
+	Message string
 }
 
 // Dependency is one entry in Dependencies, OptionalDependencies, or
@@ -279,6 +302,14 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 			return internalmanifest.Manifest{}, fmt.Errorf("default_root: %w", err)
 		}
 	}
+	// §5.18: alternate_upgrade carries a required, bounded message.
+	var altUpgrade *internalmanifest.AlternateUpgrade
+	if m.AlternateUpgrade != nil {
+		if err := consumermanifest.ValidateAlternateUpgradeMessage(m.AlternateUpgrade.Message); err != nil {
+			return internalmanifest.Manifest{}, fmt.Errorf("alternate_upgrade: message: %w", err)
+		}
+		altUpgrade = &internalmanifest.AlternateUpgrade{Message: m.AlternateUpgrade.Message}
+	}
 	deps, err := convertDeps(m.Dependencies, "dependencies")
 	if err != nil {
 		return internalmanifest.Manifest{}, err
@@ -340,6 +371,7 @@ func toInternalManifest(m Manifest) (internalmanifest.Manifest, error) {
 		Homepage:             m.Homepage,
 		DefaultRoot:          m.DefaultRoot,
 		SpecialSystemPackage: m.SpecialSystemPackage,
+		AlternateUpgrade:     altUpgrade,
 		Dependencies:         deps,
 		OptionalDependencies: optDeps,
 		Conflicts:            conflicts,

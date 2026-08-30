@@ -77,6 +77,14 @@ type Candidate struct {
 	// it — placement is a CLI concern, not a resolution one.
 	DefaultRoot string
 
+	// AlternateUpgrade is the package's alternate_upgrade declaration
+	// (§5.18), carried from the index entry so the CLI can refuse a
+	// request naming the package or hold it back from an every-package
+	// upgrade. nil when the package declares none. The resolver itself
+	// does not act on it — the refusal is a CLI concern, not a
+	// resolution one.
+	AlternateUpgrade *manifest.AlternateUpgrade
+
 	// LicenseClass is the package's licence class (§3.3.6), carried from
 	// the index entry so a licence policy can be applied at planning time
 	// and the manifest's claim checked against it (§5.26 step 8).

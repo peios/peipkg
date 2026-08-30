@@ -165,6 +165,8 @@ func sampleEntry(t *testing.T, name, ver string) repository.IndexEntry {
 		LicenseClass: manifest.LicenseClassFree,
 		Homepage:     "https://example.org/?a=1&b=2",
 		DefaultRoot:  "initramfs",
+		AlternateUpgrade: &manifest.AlternateUpgrade{
+			Message: "Upgrade with upgrade-peios.\nSee the release notes."},
 		Dependencies: []manifest.Dependency{
 			{Name: "glibc", Constraint: mustConstraint(t, ">= 2.43-1")},
 			// No constraint: the encoder must OMIT the field rather than
@@ -223,6 +225,9 @@ func TestIndexRoundTrip(t *testing.T) {
 		a.SizeCompressed != b.SizeCompressed || a.SizeInstalled != b.SizeInstalled ||
 		a.BuildFarmID != b.BuildFarmID || !a.BuildTimestamp.Equal(b.BuildTimestamp) {
 		t.Errorf("scalar fields changed:\nwant %+v\ngot  %+v", a, b)
+	}
+	if b.AlternateUpgrade == nil || b.AlternateUpgrade.Message != a.AlternateUpgrade.Message {
+		t.Errorf("alternate_upgrade changed: want %+v, got %+v", a.AlternateUpgrade, b.AlternateUpgrade)
 	}
 	if len(b.Dependencies) != 3 {
 		t.Fatalf("got %d dependencies, want 3", len(b.Dependencies))
@@ -390,5 +395,41 @@ func TestGeneratedAtIsRenderedInUTC(t *testing.T) {
 	}
 	if _, err := repository.DecodeIndex(encoded); err != nil {
 		t.Fatalf("our own output does not decode: %v", err)
+	}
+}
+
+// TestIndexAlternateUpgradeValidated: the index validates the object
+// exactly as the manifest does (§5.33), and an entry without one emits
+// no alternate_upgrade key at all.
+func TestIndexAlternateUpgradeValidated(t *testing.T) {
+	for name, msg := range map[string]string{
+		"empty": "", "control": "a\tb", "too long": strings.Repeat("x", 1025),
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := sampleEntry(t, "disk-boot", "1.0.0-6")
+			e.AlternateUpgrade = &manifest.AlternateUpgrade{Message: msg}
+			idx := repository.Index{RepoName: "r", Kind: repository.IndexActive, IndexVersion: 1,
+				GeneratedAt: time.Now(), Packages: []repository.IndexEntry{e}}
+			if _, err := repository.EncodeIndex(idx); err == nil {
+				t.Error("encoded an entry with an invalid alternate_upgrade message")
+			}
+		})
+	}
+	e := sampleEntry(t, "disk-boot", "1.0.0-6")
+	e.AlternateUpgrade = nil
+	encoded, err := repository.EncodeIndex(repository.Index{RepoName: "r",
+		Kind: repository.IndexActive, IndexVersion: 1, GeneratedAt: time.Now(),
+		Packages: []repository.IndexEntry{e}})
+	if err != nil {
+		t.Fatalf("EncodeIndex: %v", err)
+	}
+	if strings.Contains(string(encoded), "alternate_upgrade") {
+		t.Errorf("an entry without alternate_upgrade emitted the key:\n%s", encoded)
+	}
+	// On parse: a present object without message is rejected.
+	bad := strings.Replace(string(encoded), `"name": "disk-boot"`,
+		`"name": "disk-boot", "alternate_upgrade": {}`, 1)
+	if _, err := repository.DecodeIndex([]byte(bad)); err == nil {
+		t.Error("decoded an index entry whose alternate_upgrade has no message")
 	}
 }

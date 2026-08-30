@@ -27,25 +27,30 @@ const (
 // present zero value — every required field, so a missing one is
 // reported precisely rather than silently defaulting.
 type wireManifest struct {
-	SchemaVersion        *int              `json:"schema_version"`
-	Name                 *string           `json:"name"`
-	Version              *string           `json:"version"`
-	Architecture         *string           `json:"architecture"`
-	Description          string            `json:"description"`
-	License              string            `json:"license"`
-	LicenseClass         string            `json:"license_class"`
-	Homepage             string            `json:"homepage"`
-	DefaultRoot          string            `json:"default_root"`
-	SpecialSystemPackage bool              `json:"special_system_package"`
-	Dependencies         *[]wireDependency `json:"dependencies"`
-	OptionalDependencies []wireDependency  `json:"optional_dependencies"`
-	Conflicts            *[]wireDependency `json:"conflicts"`
-	Provides             []wireProvides    `json:"provides"`
-	Replaces             []wireReplaces    `json:"replaces"`
-	SideEffects          []string          `json:"side_effects"`
-	SizeInstalled        *int64            `json:"size_installed"`
-	SDOverrides          []wireSDOverride  `json:"sd_overrides"`
-	Build                *wireBuild        `json:"build"`
+	SchemaVersion        *int                  `json:"schema_version"`
+	Name                 *string               `json:"name"`
+	Version              *string               `json:"version"`
+	Architecture         *string               `json:"architecture"`
+	Description          string                `json:"description"`
+	License              string                `json:"license"`
+	LicenseClass         string                `json:"license_class"`
+	Homepage             string                `json:"homepage"`
+	DefaultRoot          string                `json:"default_root"`
+	SpecialSystemPackage bool                  `json:"special_system_package"`
+	AlternateUpgrade     *wireAlternateUpgrade `json:"alternate_upgrade"`
+	Dependencies         *[]wireDependency     `json:"dependencies"`
+	OptionalDependencies []wireDependency      `json:"optional_dependencies"`
+	Conflicts            *[]wireDependency     `json:"conflicts"`
+	Provides             []wireProvides        `json:"provides"`
+	Replaces             []wireReplaces        `json:"replaces"`
+	SideEffects          []string              `json:"side_effects"`
+	SizeInstalled        *int64                `json:"size_installed"`
+	SDOverrides          []wireSDOverride      `json:"sd_overrides"`
+	Build                *wireBuild            `json:"build"`
+}
+
+type wireAlternateUpgrade struct {
+	Message *string `json:"message"`
 }
 
 type wireDependency struct {

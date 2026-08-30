@@ -7,6 +7,8 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/peios/peipkg/internal/capability"
 	"github.com/peios/peipkg/internal/version"
@@ -86,6 +88,11 @@ func (wm wireManifest) validate() (Manifest, error) {
 	// declaration, not a grant. Install refuses an out-of-layout payload
 	// unless the operator also passes the bypass flag.
 	m.SpecialSystemPackage = wm.SpecialSystemPackage
+
+	// §5.18: alternate_upgrade, when present, carries a required message.
+	if m.AlternateUpgrade, err = validateAlternateUpgrade(wm.AlternateUpgrade); err != nil {
+		return Manifest{}, fmt.Errorf("peipkg/manifest: alternate_upgrade: %w", err)
+	}
 
 	if *wm.SizeInstalled < 0 {
 		return Manifest{}, fmt.Errorf(
@@ -226,6 +233,48 @@ func validateDescription(s string) error {
 			return fmt.Errorf(
 				"contains byte %#02x at offset %d, outside printable ASCII 0x20-0x7E",
 				s[i], i)
+		}
+	}
+	return nil
+}
+
+// maxAlternateUpgradeMessage bounds alternate_upgrade.message in UTF-8
+// bytes (§5.18).
+const maxAlternateUpgradeMessage = 1024
+
+// validateAlternateUpgrade checks an alternate_upgrade object against
+// §5.18: absent yields nil; present, it must carry a non-empty message
+// that passes [ValidateAlternateUpgradeMessage].
+func validateAlternateUpgrade(w *wireAlternateUpgrade) (*AlternateUpgrade, error) {
+	if w == nil {
+		return nil, nil
+	}
+	if w.Message == nil {
+		return nil, fmt.Errorf("missing required field %q", "message")
+	}
+	if err := ValidateAlternateUpgradeMessage(*w.Message); err != nil {
+		return nil, fmt.Errorf("message: %w", err)
+	}
+	return &AlternateUpgrade{Message: *w.Message}, nil
+}
+
+// ValidateAlternateUpgradeMessage checks an alternate_upgrade message
+// against §5.18: non-empty, valid UTF-8, at most 1024 bytes, and free
+// of control characters other than the newline. Exported for the
+// repository layer and the producer, which apply the identical rule.
+func ValidateAlternateUpgradeMessage(s string) error {
+	if s == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if len(s) > maxAlternateUpgradeMessage {
+		return fmt.Errorf("is %d bytes, the limit is %d", len(s), maxAlternateUpgradeMessage)
+	}
+	if !utf8.ValidString(s) {
+		return fmt.Errorf("is not valid UTF-8")
+	}
+	for i, r := range s {
+		if r != '\n' && unicode.IsControl(r) {
+			return fmt.Errorf("contains the control character %#02x at offset %d", r, i)
 		}
 	}
 	return nil

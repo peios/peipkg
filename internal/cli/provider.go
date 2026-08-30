@@ -138,6 +138,14 @@ func reconcileWithIndexEntry(c resolver.Candidate, pkg *archive.Package, label s
 		return fmt.Errorf("%s: license_class in the manifest is %q, but the index entry "+
 			"declared %q", label, m.LicenseClass, c.LicenseClass)
 	}
+	// §5.33: alternate_upgrade is carried in the index so a plan can refuse
+	// or hold back before fetching; the manifest is what the refusal was
+	// made on behalf of, so the two must agree — on presence and on text.
+	if ci, mi := c.AlternateUpgrade, m.AlternateUpgrade; (ci == nil) != (mi == nil) ||
+		(ci != nil && ci.Message != mi.Message) {
+		return fmt.Errorf("%s: alternate_upgrade in the manifest does not match the index "+
+			"entry that selected it", label)
+	}
 	// A candidate with no advertised installed size came from a path that
 	// does not carry one; only a stated disagreement is a mismatch.
 	if c.SizeInstalled != 0 && c.SizeInstalled != m.SizeInstalled {

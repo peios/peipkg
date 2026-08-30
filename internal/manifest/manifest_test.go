@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -655,5 +656,44 @@ func TestSDOverrideAcceptsARealDescriptor(t *testing.T) {
 			"sd":   base64.RawStdEncoding.EncodeToString(descriptorBytes(t)),
 		},
 	}
+	mustDecode(t, m)
+}
+
+func TestAlternateUpgrade(t *testing.T) {
+	m := baseManifest()
+	m["alternate_upgrade"] = map[string]any{"message": "Run upgrade-peios instead.\nSee the release notes."}
+	got := mustDecode(t, m)
+	if got.AlternateUpgrade == nil {
+		t.Fatal("AlternateUpgrade: got nil, want the declared object")
+	}
+	if want := "Run upgrade-peios instead.\nSee the release notes."; got.AlternateUpgrade.Message != want {
+		t.Errorf("AlternateUpgrade.Message: got %q, want %q", got.AlternateUpgrade.Message, want)
+	}
+	// Absent means none — the state of every package that predates the
+	// field.
+	if got := mustDecode(t, baseManifest()); got.AlternateUpgrade != nil {
+		t.Errorf("AlternateUpgrade absent: got %+v, want nil", got.AlternateUpgrade)
+	}
+}
+
+func TestAlternateUpgradeRejected(t *testing.T) {
+	for name, bad := range map[string]any{
+		"not an object":     "upgrade-peios",
+		"missing message":   map[string]any{},
+		"empty message":     map[string]any{"message": ""},
+		"non-string":        map[string]any{"message": 1},
+		"control character": map[string]any{"message": "a\tb"},
+		"too long":          map[string]any{"message": strings.Repeat("x", 1025)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := baseManifest()
+			m["alternate_upgrade"] = bad
+			wantReject(t, m)
+		})
+	}
+	// Exactly the limit is accepted; the newline is the one permitted
+	// control character.
+	m := baseManifest()
+	m["alternate_upgrade"] = map[string]any{"message": strings.Repeat("x", 1023) + "\n"}
 	mustDecode(t, m)
 }

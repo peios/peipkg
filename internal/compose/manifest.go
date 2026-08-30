@@ -419,11 +419,19 @@ func manifestDigest(m Manifest) string {
 	}
 
 	d := digest{
-		Schema:              manifestSchema,
-		Arch:                m.Arch,
-		SourceDate:          m.SourceDate.UTC().Format(time.RFC3339),
-		LocalPackages:       append([]string(nil), m.LocalPackages...),
-		LocalPackageBaseDir: localPackageBaseDir(m),
+		Schema:        manifestSchema,
+		Arch:          m.Arch,
+		SourceDate:    m.SourceDate.UTC().Format(time.RFC3339),
+		LocalPackages: append([]string(nil), m.LocalPackages...),
+	}
+	// The base directory influences resolution only through a relative
+	// pattern. A manifest whose local patterns are all absolute resolves
+	// the same wherever it sits, and its lock should follow it.
+	for _, pat := range m.LocalPackages {
+		if !filepath.IsAbs(pat) {
+			d.LocalPackageBaseDir = localPackageBaseDir(m)
+			break
+		}
 	}
 	for _, r := range m.Repositories {
 		d.Repositories = append(d.Repositories, repoDigest{

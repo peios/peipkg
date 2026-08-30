@@ -46,6 +46,11 @@ type IndexEntry struct {
 	// in the index (§6.2.4) so a consumer can plan placement before
 	// fetching the package. "" when absent.
 	DefaultRoot string
+	// AlternateUpgrade is the package's alternate_upgrade declaration
+	// (§5.18), carried in the index (§5.33) so a consumer can refuse or
+	// hold back the package at planning time, before fetching anything.
+	// nil when absent.
+	AlternateUpgrade *manifest.AlternateUpgrade
 
 	Dependencies         []manifest.Dependency
 	OptionalDependencies []manifest.Dependency
@@ -85,14 +90,17 @@ type wireIndex struct {
 }
 
 type wireIndexEntry struct {
-	Name         *string `json:"name"`
-	Version      *string `json:"version"`
-	Architecture *string `json:"architecture"`
-	Description  string  `json:"description"`
-	License      string  `json:"license"`
-	LicenseClass string  `json:"license_class"`
-	Homepage     string  `json:"homepage"`
-	DefaultRoot  string  `json:"default_root"`
+	Name             *string `json:"name"`
+	Version          *string `json:"version"`
+	Architecture     *string `json:"architecture"`
+	Description      string  `json:"description"`
+	License          string  `json:"license"`
+	LicenseClass     string  `json:"license_class"`
+	Homepage         string  `json:"homepage"`
+	DefaultRoot      string  `json:"default_root"`
+	AlternateUpgrade *struct {
+		Message *string `json:"message"`
+	} `json:"alternate_upgrade"`
 
 	Dependencies         json.RawMessage `json:"dependencies"`
 	OptionalDependencies json.RawMessage `json:"optional_dependencies"`
@@ -233,6 +241,16 @@ func decodeIndexEntry(w wireIndexEntry) (IndexEntry, error) {
 		if err := manifest.ValidateRootRef(w.DefaultRoot); err != nil {
 			return IndexEntry{}, fmt.Errorf("default_root: %w", err)
 		}
+	}
+	// §5.33: alternate_upgrade is validated exactly as the manifest's.
+	if w.AlternateUpgrade != nil {
+		if w.AlternateUpgrade.Message == nil {
+			return IndexEntry{}, fmt.Errorf("alternate_upgrade: missing required field %q", "message")
+		}
+		if err := manifest.ValidateAlternateUpgradeMessage(*w.AlternateUpgrade.Message); err != nil {
+			return IndexEntry{}, fmt.Errorf("alternate_upgrade: message: %w", err)
+		}
+		entry.AlternateUpgrade = &manifest.AlternateUpgrade{Message: *w.AlternateUpgrade.Message}
 	}
 	ver, err := version.Parse(*w.Version)
 	if err != nil {
