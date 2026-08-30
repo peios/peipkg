@@ -58,6 +58,20 @@ type Env struct {
 	// exempted without saying so, and saying so exempts nothing on its
 	// own.
 	BypassPathRestrictions bool
+	// SDOverridePolicy answers whether a package originating from the
+	// named repository may carry §3.3.5 security-descriptor overrides.
+	// The empty name is a package with no repository origin — a local
+	// .peipkg handed to the consumer directly.
+	//
+	// §5.20 makes this the consumer's judgement, not the format's: the
+	// kernel validates that a declared descriptor is well-formed but
+	// not that its producer had authority over the principals it names.
+	//
+	// A nil policy refuses every override. That is the safe direction
+	// and the deliberate one — a caller that has not thought about the
+	// question must not thereby grant packages the run of the system's
+	// access control.
+	SDOverridePolicy func(repo string) bool
 }
 
 // Result reports the outcome of an execution.
@@ -71,6 +85,16 @@ type Result struct {
 	// failures — that the operator should see. The transaction
 	// committed regardless.
 	Warnings []string
+	// SDOverrides names every §3.3.5 security-descriptor override
+	// applied, as "<package>: <payload path>". §5.20 rule 2 requires the
+	// operator-visible install report to list them, so a caller that
+	// reports to an operator MUST render this.
+	//
+	// It is not a warning: applying an override the policy permitted is
+	// the package working as declared. It is reported because a
+	// descriptor is access control, and access control that changes
+	// without anyone being told is the thing §5.20 exists to prevent.
+	SDOverrides []string
 }
 
 // Execute applies a resolved plan to the system as one transaction
@@ -381,6 +405,7 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 	result := Result{TxnID: p.txnID}
 	for _, s := range p.staged {
 		result.Warnings = append(result.Warnings, s.warnings...)
+		result.SDOverrides = append(result.SDOverrides, s.sdOverrides...)
 	}
 	result.Warnings = append(result.Warnings, p.claimWarnings...)
 	result.Warnings = append(result.Warnings, discardBackups(p.ops)...)

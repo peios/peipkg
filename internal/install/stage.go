@@ -16,6 +16,7 @@ import (
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/pipsig"
 	"github.com/peios/peipkg/internal/resolver"
+	"github.com/peios/peipkg/internal/sdstamp"
 	"github.com/peios/peipkg/internal/version"
 )
 
@@ -42,6 +43,9 @@ type stagedOp struct {
 	// warnings are non-fatal divergences the operator should see —
 	// chiefly §7.2.2 modified /etc files preserved across an upgrade.
 	warnings []string
+	// sdOverrides names each §3.3.5 override this package applied, for
+	// the §5.20 rule 2 install report.
+	sdOverrides []string
 	// stagedAt maps payload logical paths to their incoming staged
 	// sibling. It is staging-only state; the journal gets fileOps.
 	stagedAt map[string]string
@@ -85,6 +89,25 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 	// Either alone leaves the check in force.
 	if err := checkPayloadLayout(env, pp); err != nil {
 		return s, err
+	}
+
+	// §5.20 override policy, before anything is staged.
+	//
+	// The manifest and archive layers have already checked that every
+	// override is structurally sound and names a real non-symlink
+	// payload entry. What is left is the question the format cannot
+	// answer: whether this producer may declare descriptors on this
+	// machine at all. §5.20 gives that to the consumer, and requires a
+	// package whose overrides the policy rejects to be REFUSED —
+	// explicitly not installed with the overrides dropped, because a
+	// package silently losing the descriptors it declared is
+	// indistinguishable from one that never declared any.
+	if err := checkSDOverridePolicy(env, op, pp); err != nil {
+		return s, err
+	}
+	for _, o := range pp.Pkg.Manifest.SDOverrides {
+		s.sdOverrides = append(s.sdOverrides,
+			fmt.Sprintf("%s: /%s", op.Name, o.Path))
 	}
 
 	// §5.21: a provides.version greater than the providing package's own
@@ -242,10 +265,12 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
 	var sidecars pipsig.Sidecars
 	written := map[string]string{} // regular files written, archive path -> staged path
+	dirs := map[string]string{}    // directories created, archive path -> final path
 	err := archive.Extract(pp.Archive, func(entry archive.PayloadEntry, content io.Reader) error {
 		physical := filepath.Join(env.Root, entry.Path)
 		switch entry.Type {
 		case archive.EntryDir:
+			dirs[entry.Path] = physical
 			return os.MkdirAll(physical, 0o755)
 		case archive.EntryFile:
 			if pipsig.IsSidecar(entry.Path) {
@@ -289,7 +314,58 @@ func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
 	}); err != nil {
 		return fmt.Errorf("peipkg/install: staging %s: %w", s.op.Name, err)
 	}
+	// §3.3.5 overrides, last: a descriptor may deny this process the
+	// access it needed to write the payload, so nothing may still be
+	// waiting to be written when one is applied. Signatures in
+	// particular are stamped above, because setting a descriptor that
+	// withholds WRITE_DAC from the installer would strand them.
+	//
+	// A regular file is stamped on its staged inode, before the commit
+	// rename carries it to its final path — the same reasoning as the
+	// signature stamp, and it makes the entry become visible already
+	// carrying its descriptor rather than briefly wearing an inherited
+	// one. A directory has no staged sibling: it is created at its final
+	// path, so it is stamped there, after the extract loop has put every
+	// child inside it.
+	if err := sdstamp.New(pp.Pkg.Manifest.SDOverrides).Apply(
+		func(path string) (string, bool) {
+			if staged, ok := written[path]; ok {
+				return staged, true
+			}
+			dir, ok := dirs[path]
+			return dir, ok
+		}); err != nil {
+		return fmt.Errorf("peipkg/install: staging %s: %w", s.op.Name, err)
+	}
 	return nil
+}
+
+// checkSDOverridePolicy enforces the §5.20 consumer policy: a package
+// may carry security-descriptor overrides only from a repository the
+// operator has permitted them from.
+//
+// A package declaring none passes whatever the policy says. The
+// question only arises where there is something to authorise, and
+// refusing an override-free package from an unvouched repository would
+// be refusing every package from it.
+func checkSDOverridePolicy(env Env, op resolver.Operation, pp ProvidedPackage) error {
+	if len(pp.Pkg.Manifest.SDOverrides) == 0 {
+		return nil
+	}
+	repo := originRepo(op)
+	if env.SDOverridePolicy != nil && env.SDOverridePolicy(repo) {
+		return nil
+	}
+	where := fmt.Sprintf("repository %q", repo)
+	if repo == "" {
+		where = "no repository (a local package file)"
+	}
+	return fmt.Errorf(
+		"peipkg/install: %s declares %d security-descriptor override(s) but comes from %s, "+
+			"which is not permitted to declare them; a descriptor grants access to principals "+
+			"the package names, and the format cannot check that its producer had authority to. "+
+			"Set allow_sd_overrides in that repository's configuration to permit it",
+		op.Name, len(pp.Pkg.Manifest.SDOverrides), where)
 }
 
 // stageRemoval computes the file operations that remove a package.

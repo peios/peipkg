@@ -38,6 +38,7 @@ type wireRepo struct {
 	SignaturePolicy        string   `toml:"signature_policy"`
 	TrustAnchors           []string `toml:"trust_anchors"`
 	AllowInsecureTransport bool     `toml:"allow_insecure_transport"`
+	AllowSDOverrides       bool     `toml:"allow_sd_overrides"`
 	MinIndexVersion        *int64   `toml:"min_index_version"`
 	MaxTrustedAgeDays      *int     `toml:"max_trusted_age_days"`
 	MaxIndexStalenessDays  *int     `toml:"max_index_staleness_days"`
@@ -99,6 +100,7 @@ func (p *DirProvider) Put(cfg RepoConfig) error {
 		SignaturePolicy:        string(cfg.SignaturePolicy),
 		TrustAnchors:           cfg.TrustAnchors,
 		AllowInsecureTransport: cfg.AllowInsecureTransport,
+		AllowSDOverrides:       cfg.AllowSDOverrides,
 		MinIndexVersion:        &cfg.MinIndexVersion,
 	}
 	if cfg.MaxTrustedAgeDays != 0 {
@@ -149,6 +151,7 @@ func (p *DirProvider) load(name, path string) (RepoConfig, error) {
 		SignaturePolicy:        PolicyRequired,
 		TrustAnchors:           w.TrustAnchors,
 		AllowInsecureTransport: w.AllowInsecureTransport,
+		AllowSDOverrides:       w.AllowSDOverrides,
 	}
 	if w.Priority != nil {
 		cfg.Priority = *w.Priority

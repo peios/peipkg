@@ -50,6 +50,32 @@ type RepoConfig struct {
 	// AllowInsecureTransport permits an http:// base URL. It is intended
 	// only for trusted local-network development (§6.4.1).
 	AllowInsecureTransport bool
+	// AllowSDOverrides permits packages from this repository to carry
+	// §3.3.5 security-descriptor overrides.
+	//
+	// §5.20 makes the override policy the consumer's to enforce: the
+	// kernel checks that a declared descriptor is well-formed, but
+	// nothing checks that a producer had any authority to grant the
+	// principals it names. A package can therefore declare a descriptor
+	// granting access to any principal the system knows about.
+	//
+	// It defaults to false, and the default is the whole point. §5.20
+	// requires a package whose overrides the policy rejects to be
+	// REFUSED — not installed with the overrides quietly dropped — so a
+	// repository the operator has not vouched for cannot ship
+	// descriptors at all. Failing towards less authority is visible
+	// (the install stops and says why); failing towards more is not.
+	//
+	// INTERIM against §5.20 rules 1 and 3: this is a per-repository
+	// boolean, where the spec asks for a per-override operator prompt
+	// carrying a diff against what inheritance would have produced, and
+	// a per-repository allowlist of principals an override may name.
+	// Both need the consumer to compute KACS inheritance independently
+	// in order to render the diff. Until a repository exists that is
+	// neither wholly trusted nor wholly refused, the boolean is the
+	// honest subset: it enforces the binding rule (no silent drop) and
+	// leaves the graduated middle unbuilt rather than half-built.
+	AllowSDOverrides bool
 	// MinIndexVersion is the operator-supplied minimum acceptable
 	// index_version (§6.2.3), distributed out-of-band alongside the
 	// trust anchors. The first-add of the repository is refused if its

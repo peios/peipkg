@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -35,6 +37,11 @@ type testPkg struct {
 	// provides is the package's provides array, for the §5.21
 	// inflated-provides-version rule.
 	provides []manifest.Provides
+	// sdOverrides is the package's §3.3.5 sd_overrides, payload path ->
+	// descriptor bytes. The bytes are opaque here: the manifest layer
+	// parses them, and by the time install sees an override it is
+	// already known to be well-formed and to name a real entry.
+	sdOverrides map[string]string
 }
 
 // fakeProvider serves pre-built verified packages by name.
@@ -132,11 +139,17 @@ func provide(t *testing.T, p testPkg) install.ProvidedPackage {
 		payload = append(payload, archive.PayloadEntry{
 			Path: path, Type: archive.EntrySymlink, LinkTarget: target})
 	}
+	var overrides []manifest.SDOverride
+	for _, path := range slices.Sorted(maps.Keys(p.sdOverrides)) {
+		overrides = append(overrides,
+			manifest.SDOverride{Path: path, SD: []byte(p.sdOverrides[path])})
+	}
 	pkg := &archive.Package{
 		Manifest: manifest.Manifest{
 			Name: p.name, Version: mustVer(t, p.version), Architecture: "x86_64",
 			SpecialSystemPackage: p.special,
 			Provides:             p.provides,
+			SDOverrides:          overrides,
 		},
 		ManifestJSON: []byte(fmt.Sprintf(`{"name":%q,"version":%q}`, p.name, p.version)),
 		Payload:      payload,

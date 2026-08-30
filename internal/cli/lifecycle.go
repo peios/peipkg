@@ -396,6 +396,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		Claims:                 claimDir,
 		Provider:               provider,
 		BypassPathRestrictions: app.bypassPathRestrictions,
+		SDOverridePolicy:       app.sdOverridePolicy(),
 	}
 	result, err := install.Execute(ctx, plan, env)
 	if err != nil {
@@ -407,6 +408,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	for _, w := range result.Warnings {
 		fmt.Fprintf(app.errOut, "peipkg: warning: %s\n", w)
 	}
+	app.reportSDOverrides(result.SDOverrides)
 	app.emit(audit.Event{Type: eventType, TxnID: result.TxnID,
 		Outcome: audit.OutcomeSuccess, Packages: auditPackages(plan),
 		Detail: operationCount(plan)})
@@ -573,6 +575,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 			PeipkgVersion: peipkgVersion, RunSideEffects: true,
 			Claims: claimDir, Provider: provider,
 			BypassPathRestrictions: app.bypassPathRestrictions,
+			SDOverridePolicy:       app.sdOverridePolicy(),
 		}
 	}
 
@@ -586,6 +589,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 		for _, w := range res.Warnings {
 			fmt.Fprintf(app.errOut, "peipkg: warning: %s\n", w)
 		}
+		app.reportSDOverrides(res.SDOverrides)
 	}
 	// §7.6.3: an emitted event includes the transaction identifier. The
 	// failure path above scans results for one; the success path did not,
@@ -1194,4 +1198,38 @@ func firstTxnID(results map[string]install.Result) int64 {
 		}
 	}
 	return lowest
+}
+
+// sdOverridePolicy builds the §5.20 override policy from repository
+// configuration: a package may declare security descriptors only if the
+// repository it came from is configured to allow them.
+//
+// A repository that cannot be read, and a package with no repository
+// origin at all, both answer no. The failure direction matters here
+// more than the convenience: an operator whose configuration is
+// unreadable should find that packages declaring descriptors stop
+// installing, not that they install with the policy unenforced.
+func (app *App) sdOverridePolicy() func(repo string) bool {
+	repos, err := app.configProvider().Repositories()
+	if err != nil {
+		return func(string) bool { return false }
+	}
+	allowed := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		allowed[r.Name] = r.AllowSDOverrides
+	}
+	return func(repo string) bool { return allowed[repo] }
+}
+
+// reportSDOverrides renders the §5.20 rule 2 obligation: the
+// operator-visible install report MUST list every override applied.
+//
+// It goes to the error stream beside the warnings rather than to
+// stdout, so that it survives a caller reading stdout as data, and it
+// is worded as a notice rather than a warning — an applied override is
+// the package doing what it declared and what the policy permitted.
+func (app *App) reportSDOverrides(applied []string) {
+	for _, o := range applied {
+		fmt.Fprintf(app.errOut, "peipkg: security descriptor set by package: %s\n", o)
+	}
 }

@@ -193,12 +193,12 @@ const (
 // SDOverride is one entry of sd_overrides: a per-payload-entry security
 // descriptor (§3.3.5).
 //
-// Decode validates the entry structurally — the path is present and the
-// sd field is well-formed unpadded base64 within the size limit — but
-// does not parse the descriptor bytes against PSD-004, and does not
-// check that Path names a real payload entry. Those checks need an SD
-// parser and the archive payload respectively; SD overrides are a
-// deferred feature (see DESIGN.md appendix B).
+// Decode validates the entry structurally — the path is present, the sd
+// field is well-formed unpadded base64 within the size limit, and the
+// decoded bytes parse as a self-relative descriptor. It does not check
+// that Path names a real payload entry, which needs the payload: the
+// archive layer does that, and §5.20 requires both to have happened
+// before anything from the package is installed.
 type SDOverride struct {
 	Path string
 	SD   []byte
