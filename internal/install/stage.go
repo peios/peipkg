@@ -14,6 +14,7 @@ import (
 	"github.com/peios/peipkg/internal/archive"
 	packvalidate "github.com/peios/peipkg/internal/build/pack"
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/pipsig"
 	"github.com/peios/peipkg/internal/resolver"
 	"github.com/peios/peipkg/internal/version"
 )
@@ -134,6 +135,13 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 	// payload list.
 	newPaths := map[string]bool{}
 	for _, entry := range pp.Pkg.Payload {
+		// A signature sidecar is never installed: its bytes become the
+		// target's security.peios.sig attribute when the payload is
+		// materialised (pipsig), so it gets no staged path, no file
+		// operation and no package_file row.
+		if entry.Type == archive.EntryFile && pipsig.IsSidecar(entry.Path) {
+			continue
+		}
 		logical := "/" + entry.Path
 		physical := filepath.Join(env.Root, entry.Path)
 		newPaths[logical] = true
@@ -232,12 +240,17 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 // materializePackage writes the package payload to the already-journalled
 // staged siblings and creates any directories needed for those siblings.
 func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
+	var sidecars pipsig.Sidecars
+	written := map[string]string{} // regular files written, archive path -> staged path
 	err := archive.Extract(pp.Archive, func(entry archive.PayloadEntry, content io.Reader) error {
 		physical := filepath.Join(env.Root, entry.Path)
 		switch entry.Type {
 		case archive.EntryDir:
 			return os.MkdirAll(physical, 0o755)
 		case archive.EntryFile:
+			if pipsig.IsSidecar(entry.Path) {
+				return sidecars.Add(entry.Path, content)
+			}
 			staged := s.stagedAt["/"+entry.Path]
 			if staged == "" {
 				return fmt.Errorf("no staged path planned for %s", entry.Path)
@@ -248,6 +261,7 @@ func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
 			if err := writeStagedFile(staged, content); err != nil {
 				return err
 			}
+			written[entry.Path] = staged
 		case archive.EntrySymlink:
 			staged := s.stagedAt["/"+entry.Path]
 			if staged == "" {
@@ -263,6 +277,16 @@ func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
 		return nil
 	})
 	if err != nil {
+		return fmt.Errorf("peipkg/install: staging %s: %w", s.op.Name, err)
+	}
+	// Signatures are stamped on the staged inode, before the commit
+	// rename carries it to its final path: the kernel gates mutation of
+	// security.peios.sig on signed content, so the attribute has to be
+	// set while the file is still an unsigned temporary.
+	if err := sidecars.Apply(func(target string) (string, bool) {
+		staged, ok := written[target]
+		return staged, ok
+	}); err != nil {
 		return fmt.Errorf("peipkg/install: staging %s: %w", s.op.Name, err)
 	}
 	return nil
@@ -451,6 +475,9 @@ func checkPayloadCollisions(ctx context.Context, env Env, op resolver.Operation,
 	for _, entry := range pp.Pkg.Payload {
 		if entry.Type == archive.EntryDir {
 			continue
+		}
+		if entry.Type == archive.EntryFile && pipsig.IsSidecar(entry.Path) {
+			continue // never installed, so never owned (pipsig)
 		}
 		logical := "/" + entry.Path
 		owners, err := env.DB.FileOwners(ctx, logical)

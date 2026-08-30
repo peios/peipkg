@@ -14,6 +14,7 @@ import (
 	"github.com/peios/peipkg/internal/claims"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/pipsig"
 )
 
 // assemble builds a populated peipkg image from a manifest and the
@@ -176,6 +177,9 @@ func packageFilesOf(fp fetchedPackage) []db.PackageFile {
 				PackageName: fp.Locked.Name, Path: logical, Type: db.FileTypeDir,
 			})
 		case archive.EntryFile:
+			if pipsig.IsSidecar(e.Path) {
+				continue // becomes the target's xattr, never a file of its own
+			}
 			files = append(files, db.PackageFile{
 				PackageName: fp.Locked.Name, Path: logical, Type: db.FileTypeFile,
 				Hash: e.Hash,
@@ -196,6 +200,8 @@ func packageFilesOf(fp fetchedPackage) []db.PackageFile {
 // with O_EXCL, so a cross-package collision the database missed would
 // surface here too.
 func extractPayload(root string, fp fetchedPackage) error {
+	var sidecars pipsig.Sidecars
+	written := map[string]string{} // regular files written, archive path -> physical path
 	err := archive.Extract(bytes.NewReader(fp.Raw),
 		func(entry archive.PayloadEntry, content io.Reader) error {
 			physical := filepath.Join(root, entry.Path)
@@ -203,10 +209,19 @@ func extractPayload(root string, fp fetchedPackage) error {
 			case archive.EntryDir:
 				return os.MkdirAll(physical, 0o755)
 			case archive.EntryFile:
+				if pipsig.IsSidecar(entry.Path) {
+					// Becomes the target's security.peios.sig attribute
+					// once every entry is on disk; never a file itself.
+					return sidecars.Add(entry.Path, content)
+				}
 				if err := os.MkdirAll(filepath.Dir(physical), 0o755); err != nil {
 					return err
 				}
-				return writeFile(physical, content)
+				if err := writeFile(physical, content); err != nil {
+					return err
+				}
+				written[entry.Path] = physical
+				return nil
 			case archive.EntrySymlink:
 				if err := os.MkdirAll(filepath.Dir(physical), 0o755); err != nil {
 					return err
@@ -216,6 +231,12 @@ func extractPayload(root string, fp fetchedPackage) error {
 			return nil
 		})
 	if err != nil {
+		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
+	}
+	if err := sidecars.Apply(func(target string) (string, bool) {
+		physical, ok := written[target]
+		return physical, ok
+	}); err != nil {
 		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
 	}
 	return nil

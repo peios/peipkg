@@ -470,3 +470,83 @@ func TestValidateChecksTheTripletOnDirectoriesToo(t *testing.T) {
 		t.Error("an x86_64 package shipping another architecture's directory should be rejected")
 	}
 }
+
+// sigBlob is a well-formed signature blob: the version byte and 3309
+// bytes of (here, zero) signature.
+func sigBlob() []byte {
+	b := make([]byte, 3310)
+	b[0] = 0x01
+	return b
+}
+
+func TestValidateSidecarStructure(t *testing.T) {
+	// Structural rules, with no sources: the shape of an install-time check.
+	ok := []entry{
+		{path: "usr/lib/firmware/fw.bin.zst", kind: kindFile},
+		{path: "usr/lib/firmware/fw.bin.zst.peios.sig", kind: kindFile},
+	}
+	if err := validateEntries("noarch", ok); err != nil {
+		t.Errorf("well-formed sidecar rejected: %v", err)
+	}
+	for name, leaves := range map[string][]entry{
+		"missing target": {
+			{path: "usr/lib/firmware/fw.bin.zst.peios.sig", kind: kindFile},
+		},
+		"symlink target": {
+			{path: "usr/lib/firmware/fw.bin.zst", kind: kindSymlink, linkTarget: "real.bin.zst"},
+			{path: "usr/lib/firmware/real.bin.zst", kind: kindFile},
+			{path: "usr/lib/firmware/fw.bin.zst.peios.sig", kind: kindFile},
+		},
+		"directory target": {
+			{path: "usr/lib/firmware/fw", kind: kindDir},
+			{path: "usr/lib/firmware/fw.peios.sig", kind: kindFile},
+		},
+		"sidecar is a symlink": {
+			{path: "usr/lib/firmware/fw.bin.zst", kind: kindFile},
+			{path: "usr/lib/firmware/fw.bin.zst.peios.sig", kind: kindSymlink, linkTarget: "other.peios.sig"},
+			{path: "usr/lib/firmware/other.peios.sig", kind: kindFile},
+			{path: "usr/lib/firmware/other", kind: kindFile},
+		},
+	} {
+		if err := validateEntries("noarch", leaves); err == nil {
+			t.Errorf("%s: accepted", name)
+		} else if !strings.Contains(err.Error(), "sidecar") {
+			t.Errorf("%s: wrong error: %v", name, err)
+		}
+	}
+}
+
+func TestValidateSidecarContent(t *testing.T) {
+	// Content rules need sources: the pack-time path through ValidatePayload.
+	stage := func(t *testing.T, target, sidecar []byte) string {
+		dir := t.TempDir()
+		fw := filepath.Join(dir, "usr/lib/firmware")
+		if err := os.MkdirAll(fw, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fw, "fw.bin.zst"), target, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fw, "fw.bin.zst.peios.sig"), sidecar, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	if err := ValidatePayload("noarch", stage(t, []byte("blob"), sigBlob())); err != nil {
+		t.Errorf("well-formed payload rejected: %v", err)
+	}
+	if err := ValidatePayload("noarch", stage(t, []byte("blob"), sigBlob()[:100])); err == nil ||
+		!strings.Contains(err.Error(), "3310") {
+		t.Errorf("short blob: %v", err)
+	}
+	bad := sigBlob()
+	bad[0] = 0x7f
+	if err := ValidatePayload("noarch", stage(t, []byte("blob"), bad)); err == nil ||
+		!strings.Contains(err.Error(), "version") {
+		t.Errorf("wrong version byte: %v", err)
+	}
+	if err := ValidatePayload("noarch", stage(t, []byte("\x7fELF\x02\x01\x01"), sigBlob())); err == nil ||
+		!strings.Contains(err.Error(), "ELF") {
+		t.Errorf("ELF target: %v", err)
+	}
+}

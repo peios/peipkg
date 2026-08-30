@@ -426,6 +426,32 @@ manifest, nowhere else, so the checks are real and the DB is true), with
 partial-trust containment as a secondary benefit. Symlinks as *leaf*
 payload entries are created normally; they are simply never traversed.
 
+### Signature sidecars (`<path>.peios.sig`)
+
+A PIP signature on a non-ELF file (device firmware, above all) lives in
+the `security.peios.sig` extended attribute, and §5.11 forbids a package
+from carrying extended attributes. So the package carries the signature
+as an ordinary payload file, `<path>.peios.sig` — the same name as the
+ELF section — and the consumer *derives* the attribute: it writes the
+target, sets `security.peios.sig` from the sidecar's bytes, and never
+writes the sidecar to disk. The sidecar is not an installed file and is
+not recorded in `package_file`; removing or upgrading the target takes
+its attribute with it. `internal/pipsig` owns the rules, shared by pack,
+install and compose:
+
+- the target (the path minus the suffix) must be a regular-file entry
+  of the same package;
+- the content is exactly 3310 bytes, version byte `0x01` first;
+- the target is not ELF (that placement is the section; one file never
+  has two carriers).
+
+Pack refuses a package that breaks them; install and compose check
+again (structure at the layout check, content while materialising) and
+refuse the package rather than install it unsigned. The stamp lands on
+the **staged** inode, before the commit rename, because KACS gates
+mutation of that attribute on signed content — it can only be set while
+the file is still an unsigned temporary.
+
 ### Collision / unowned-file policy
 
 Directories never collide — directory creation is idempotent and

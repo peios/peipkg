@@ -2,11 +2,14 @@ package pack
 
 import (
 	"fmt"
-	"github.com/peios/peipkg/internal/archive"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/peios/peipkg/internal/archive"
+	"github.com/peios/peipkg/internal/pipsig"
 )
 
 // permittedTopLevels enumerates the top-level install destinations PSD-009
@@ -82,6 +85,7 @@ func validateEntries(architecture string, leaves []entry) error {
 			}
 		}
 	}
+	errs = append(errs, validateSidecars(sorted)...)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("payload validation failed:\n  %s", strings.Join(errs, "\n  "))
@@ -254,6 +258,61 @@ func validateSymlinkTarget(l entry) error {
 		return fmt.Errorf("symlink %s -> %s resolves to %q, which is not under a §3.4.1 permitted destination", l.path, l.linkTarget, resolved)
 	}
 	return nil
+}
+
+// validateSidecars enforces the signature-sidecar rules (pipsig): a
+// `<path>.peios.sig` entry must be a regular file whose target is a
+// regular-file entry of the same payload, its content must be a
+// well-formed signature blob, and its target must not be ELF.
+//
+// The two content checks need the bytes, which only the producer-side
+// callers (ValidatePayload, ValidateFiles) have — their entries carry a
+// source path. Install-time entries carry none, so those checks are
+// skipped here and performed by the consumer as it materialises the
+// payload, which reads the bytes anyway.
+func validateSidecars(sorted []entry) []string {
+	byPath := make(map[string]entry, len(sorted))
+	for _, l := range sorted {
+		byPath[l.path] = l
+	}
+	var errs []string
+	for _, l := range sorted {
+		if !pipsig.IsSidecar(l.path) {
+			continue
+		}
+		if l.kind != kindFile {
+			errs = append(errs, fmt.Sprintf("%s: a signature sidecar must be a regular file", l.path))
+			continue
+		}
+		target, ok := byPath[pipsig.Target(l.path)]
+		switch {
+		case !ok:
+			errs = append(errs, fmt.Sprintf("%s: signature sidecar has no target %s in the payload", l.path, pipsig.Target(l.path)))
+			continue
+		case target.kind != kindFile:
+			errs = append(errs, fmt.Sprintf("%s: signature sidecar target %s is not a regular file", l.path, target.path))
+			continue
+		}
+		if l.source == "" {
+			continue
+		}
+		blob, err := os.ReadFile(l.source)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", l.path, err))
+		} else if err := pipsig.ValidateBlob(blob); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", l.path, err))
+		}
+		if target.source == "" {
+			continue
+		}
+		head, err := pipsig.ReadHead(target.source, 4)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", target.path, err))
+		} else if pipsig.IsELF(head) {
+			errs = append(errs, fmt.Sprintf("%s: signature sidecar target %s is an ELF file, which carries its signature in a .peios.sig section, not a sidecar", l.path, target.path))
+		}
+	}
+	return errs
 }
 
 // InstallEntry is one verified payload object as an install-time consumer
