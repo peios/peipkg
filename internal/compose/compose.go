@@ -79,13 +79,15 @@ type BuildOptions struct {
 	// declare special_system_package. It cannot exempt an ordinary
 	// package, and the declaration alone exempts nothing.
 	BypassPathRestrictions bool
-	// RecordSidecar, when set, replaces stamping a signature sidecar
-	// onto its target (pipsig) with recording it: it receives the
-	// target's path relative to OutDir and the signature blob, and the
-	// attribute is NOT set on the composed tree. security.* attributes
-	// need CAP_SYS_ADMIN; an unprivileged image builder records them and
-	// has the image writer carry them, which needs no privilege.
-	RecordSidecar func(relPath string, blob []byte) error
+	// RecordXattr, when set, replaces writing the extended attributes a
+	// composed payload implies — a signature sidecar's
+	// security.peios.sig (pipsig) and an sd_override's
+	// security.peios.sd (sdstamp) — with recording them against the
+	// object's path relative to OutDir. The attributes are NOT set on
+	// the composed tree. security.* needs CAP_SYS_ADMIN; an
+	// unprivileged image builder records them and has the image writer
+	// carry them, which needs no privilege.
+	RecordXattr func(relPath, name string, value []byte) error
 }
 
 // Build produces a populated peipkg root from a manifest. It runs the
@@ -157,7 +159,7 @@ func BuildWithResult(ctx context.Context, opts BuildOptions) (BuildResult, error
 		return BuildResult{}, fmt.Errorf("peipkg/compose: clearing prior staging directory: %w", err)
 	}
 	if err := assemble(ctx, staging, m, fetched, opts.BypassPathRestrictions,
-		opts.RecordSidecar); err != nil {
+		opts.RecordXattr); err != nil {
 		return BuildResult{}, err
 	}
 	if err := os.Rename(staging, opts.OutDir); err != nil {

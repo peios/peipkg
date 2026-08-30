@@ -15,6 +15,7 @@ import (
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/pipsig"
+	"github.com/peios/peipkg/internal/sdstamp"
 )
 
 // assemble builds a populated peipkg image from a manifest and the
@@ -30,20 +31,24 @@ import (
 // out, "" being out itself). The named roots are registered in the
 // anchor's database so the booted system resolves `--root <name>`.
 func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPackage,
-	bypassPaths bool, record func(relPath string, blob []byte) error) error {
-	// How a signature sidecar reaches its target: stamped as the
-	// security.peios.sig attribute, or — for a builder that cannot set
-	// one — handed to the caller against the path relative to out.
-	stamp := pipsig.Stamp
-	if record != nil {
-		stamp = func(path string, blob []byte) error {
+	bypassPaths bool, record func(relPath, name string, value []byte) error) error {
+	// How each security.* attribute reaches the object it belongs to:
+	// set directly, or — for a builder that cannot set one — handed to
+	// the caller against the path relative to out.
+	forAttr := func(name string, direct func(string, []byte) error) func(string, []byte) error {
+		if record == nil {
+			return direct
+		}
+		return func(path string, value []byte) error {
 			rel, err := filepath.Rel(out, path)
 			if err != nil {
 				return err
 			}
-			return record(filepath.ToSlash(rel), blob)
+			return record(filepath.ToSlash(rel), name, value)
 		}
 	}
+	stamp := forAttr(pipsig.XattrName, pipsig.Stamp)
+	stampSD := forAttr(sdstamp.XattrName, sdstamp.Stamp)
 	byRoot := map[string][]fetchedPackage{}
 	for _, fp := range fetched {
 		byRoot[fp.Locked.Root] = append(byRoot[fp.Locked.Root], fp)
@@ -66,7 +71,7 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 			register = m.Roots
 		}
 		if err := assembleRoot(ctx, filepath.Join(out, rel), m, byRoot[rel], register,
-			bypassPaths, stamp); err != nil {
+			bypassPaths, stamp, stampSD); err != nil {
 			return err
 		}
 	}
@@ -86,7 +91,7 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 // when non-nil), extracts payloads, and materialises claim links.
 func assembleRoot(ctx context.Context, rootDir string, m Manifest,
 	fetched []fetchedPackage, register []Root, bypassPaths bool,
-	stamp func(path string, blob []byte) error) error {
+	stamp, stampSD func(path string, value []byte) error) error {
 
 	for _, fp := range fetched {
 		if err := checkComposeLayout(fp, bypassPaths); err != nil {
@@ -110,7 +115,7 @@ func assembleRoot(ctx context.Context, rootDir string, m Manifest,
 	// closure, so a cross-package path collision is caught by the
 	// package_file UNIQUE constraint before any file is written.
 	for _, fp := range fetched {
-		if err := extractPayload(rootDir, fp, stamp); err != nil {
+		if err := extractPayload(rootDir, fp, stamp, stampSD); err != nil {
 			return err
 		}
 	}
@@ -213,14 +218,17 @@ func packageFilesOf(fp fetchedPackage) []db.PackageFile {
 // packages — while file and symlink entries land at their final paths
 // with O_EXCL, so a cross-package collision the database missed would
 // surface here too.
-func extractPayload(root string, fp fetchedPackage, stamp func(path string, blob []byte) error) error {
+func extractPayload(root string, fp fetchedPackage,
+	stamp, stampSD func(path string, value []byte) error) error {
 	var sidecars pipsig.Sidecars
 	written := map[string]string{} // regular files written, archive path -> physical path
+	dirs := map[string]string{}    // directories created, archive path -> physical path
 	err := archive.Extract(bytes.NewReader(fp.Raw),
 		func(entry archive.PayloadEntry, content io.Reader) error {
 			physical := filepath.Join(root, entry.Path)
 			switch entry.Type {
 			case archive.EntryDir:
+				dirs[entry.Path] = physical
 				return os.MkdirAll(physical, 0o755)
 			case archive.EntryFile:
 				if pipsig.IsSidecar(entry.Path) {
@@ -251,6 +259,31 @@ func extractPayload(root string, fp fetchedPackage, stamp func(path string, blob
 		physical, ok := written[target]
 		return physical, ok
 	}, stamp); err != nil {
+		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
+	}
+	// §3.3.5 overrides. compose extracts to final paths, so a file and a
+	// directory are both stamped where they already are — but only once
+	// the whole payload is on disk, because a directory descriptor that
+	// withheld access from the composer would strand whatever was still
+	// to be written beneath it.
+	//
+	// compose applies these unconditionally, where `peipkg install`
+	// gates them on a per-repository policy (§5.20). Composing a root
+	// from nothing is the operator's own act: they wrote the manifest
+	// that names the packages, and there is no running system whose
+	// access control could be subverted behind their back. It is the
+	// same reasoning that lets an image builder pass
+	// BypassPathRestrictions. §5.20's policy governs installing onto a
+	// live system, which is a different question with a different
+	// person answering it.
+	if err := sdstamp.New(fp.Pkg.Manifest.SDOverrides).ApplyWith(
+		func(path string) (string, bool) {
+			if physical, ok := written[path]; ok {
+				return physical, true
+			}
+			dir, ok := dirs[path]
+			return dir, ok
+		}, stampSD); err != nil {
 		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
 	}
 	return nil

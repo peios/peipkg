@@ -176,7 +176,13 @@ func TestAssembleRecordsSidecars(t *testing.T) {
 		t.Fatalf("fetchAll: %v", err)
 	}
 	recorded := map[string][]byte{}
-	record := func(rel string, b []byte) error { recorded[rel] = b; return nil }
+	record := func(rel, name string, b []byte) error {
+		if name != pipsig.XattrName {
+			t.Errorf("recorded attribute %q, want %q", name, pipsig.XattrName)
+		}
+		recorded[rel] = b
+		return nil
+	}
 	root := filepath.Join(t.TempDir(), "root")
 	if err := assemble(ctx, root, m, fetched, false, record); err != nil {
 		t.Fatalf("assemble: %v", err)

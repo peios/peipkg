@@ -50,14 +50,25 @@ type BuildOptions struct {
 	// --dangerously-bypass-path-restrictions`. It exempts nothing that
 	// has not declared itself special.
 	BypassPathRestrictions bool
-	// RecordSidecar, when set, replaces stamping a package's signature
-	// sidecars (`<file>.peios.sig`) as the target's security.peios.sig
-	// attribute with recording them: it receives the target's path
-	// relative to OutDir and the signature blob. security.* attributes
-	// need CAP_SYS_ADMIN; an unprivileged image builder records them and
-	// writes them into the image itself, which needs no privilege. The
-	// composed tree then carries NO signature attributes.
-	RecordSidecar func(relPath string, blob []byte) error
+	// RecordXattr, when set, replaces writing the extended attributes a
+	// composed payload implies with recording them: it receives the
+	// object's path relative to OutDir, the attribute name, and its
+	// value. The composed tree then carries NO such attributes.
+	//
+	// Two attributes reach a payload this way. A package's signature
+	// sidecars (`<file>.peios.sig`) become the target's
+	// security.peios.sig, and its §3.3.5 sd_overrides become the
+	// entry's security.peios.sd. Both live in the security.* namespace,
+	// which needs CAP_SYS_ADMIN to set; an unprivileged image builder
+	// records them instead and writes them into the image, which needs
+	// no privilege at all because a squashfs simply stores whatever
+	// attributes its input names.
+	//
+	// One hook rather than one per attribute: the transport is the same
+	// question every time — "this consumer cannot set security.*, hold
+	// it for whoever can" — and it is the attribute's name, not the
+	// channel, that says what it means.
+	RecordXattr func(relPath, name string, value []byte) error
 }
 
 // BuildResult describes a completed root composition.
@@ -82,7 +93,7 @@ func Build(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 		Warnings:     opts.Warnings,
 
 		BypassPathRestrictions: opts.BypassPathRestrictions,
-		RecordSidecar:          opts.RecordSidecar,
+		RecordXattr:            opts.RecordXattr,
 	})
 	if err != nil {
 		return BuildResult{}, err
