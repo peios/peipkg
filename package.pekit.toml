@@ -22,7 +22,15 @@ name = "peipkg"
 # into libexec. Must ship together with kmod 33-2, which is what puts it there:
 # either alone leaves the side effect pointing at a path that does not exist,
 # and a failed side effect is a warning rather than an error.
-version      = "0.1.1-6"
+# -7: sd_overrides are applied rather than validated and discarded (PEI-557).
+# A package may now declare a security descriptor for an entry it ships, and
+# the installer stamps it — on a regular file's staged inode before the commit
+# rename, on a directory once its children exist. §5.20 forbids the previous
+# behaviour by name: dropping the overrides and proceeding with inheritance
+# defaults. Gated per repository by a new allow_sd_overrides key defaulting to
+# false; a package carrying overrides from a repository that does not permit
+# them is refused rather than quietly installed without them.
+version      = "0.1.1-7"
 architecture = "x86_64"
 description  = "Peios package manager client (peipkg consumer; static, CGO-free)"
 license      = "MIT"
