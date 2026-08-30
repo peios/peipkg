@@ -183,10 +183,9 @@ func claimDirective(noClaim, all bool, roleList string) (install.ClaimDirective,
 }
 
 // cmdUpgrade upgrades the named packages, or every installed package
-// when none is named. By default it cascades: the current root and,
-// recursively, its named roots are each upgraded as an independent
-// transaction (DESIGN-named-roots.md). --no-recurse confines it to the
-// current root.
+// when none is named. By default it resolves across the current root and
+// every named root reachable from it, as one transaction
+// (DESIGN-named-roots.md). --no-recurse confines it to the current root.
 func cmdUpgrade(app *App, args []string) error {
 	fs := flags("upgrade")
 	dryRun := fs.Bool("dry-run", false, "show the plan without applying it")
@@ -213,114 +212,12 @@ func cmdUpgrade(app *App, args []string) error {
 			reqs = append(reqs, resolver.Request{Kind: resolver.Upgrade, Name: name})
 		}
 	}
-	if *noRecurse {
-		return transact(app, reqs, resolver.Options{}, *dryRun, *yes, nil,
-			install.ClaimDirective{}, audit.TypeUpgrade, false)
-	}
-	return cascadeUpgrade(app, reqs, *dryRun, *yes)
-}
-
-// cascadeUpgrade upgrades the current root and, recursively, its named
-// roots — each as its own independent transaction against its own repos.
-// Unlike a dependency closure, the roots are independent, so the cascade
-// is continue-on-error (DESIGN-named-roots.md): a failure in one root is
-// recorded and the walk proceeds, and a per-root success/fail/skip
-// summary is printed at the end. A registered root whose tree is gone is
-// skipped with a warning.
-func cascadeUpgrade(app *App, reqs []resolver.Request, dryRun, yes bool) error {
-	ctx := context.Background()
-	present, dangling, err := gatherUpgradeRoots(ctx, app.paths.root)
-	if err != nil {
-		return err
-	}
-	for _, d := range dangling {
-		fmt.Fprintf(app.errOut, "peipkg: skipping registered root %s — its tree does not exist\n", d)
-	}
-
-	// The fast path: a system with no named roots behaves exactly as a
-	// plain single-root upgrade — no headers, no summary.
-	if len(present) == 1 && len(dangling) == 0 {
-		return transact(app, reqs, resolver.Options{}, dryRun, yes, nil,
-			install.ClaimDirective{}, audit.TypeUpgrade, false)
-	}
-
-	var failed, skipped []string
-	succeeded := 0
-	for _, rootPath := range present {
-		sub := *app
-		sub.paths = newPaths(rootPath)
-
-		// A named-package upgrade only concerns roots that hold one of the
-		// named packages; a root holding none is skipped rather than failed.
-		rootReqs, err := confineRequestsToRoot(ctx, &sub, reqs)
-		if err != nil {
-			fmt.Fprintf(app.errOut, "peipkg: upgrade of %s failed: %v\n", rootPath, err)
-			failed = append(failed, rootPath)
-			continue
-		}
-		if len(rootReqs) == 0 {
-			skipped = append(skipped, rootPath)
-			continue
-		}
-
-		app.printf("== %s ==\n", rootPath)
-		if err := transact(&sub, rootReqs, resolver.Options{}, dryRun, yes, nil,
-			install.ClaimDirective{}, audit.TypeUpgrade, false); err != nil {
-			fmt.Fprintf(app.errOut, "peipkg: upgrade of %s failed: %v\n", rootPath, err)
-			failed = append(failed, rootPath)
-			continue
-		}
-		succeeded++
-	}
-
-	app.printf("cascade: %d upgraded, %d failed, %d skipped\n",
-		succeeded, len(failed), len(skipped)+len(dangling))
-	if len(failed) > 0 {
-		return fmt.Errorf("upgrade: %d root(s) failed: %s", len(failed), strings.Join(failed, ", "))
-	}
-	return nil
-}
-
-// confineRequestsToRoot narrows a set of upgrade requests to those that
-// apply to the root sub operates on. The upgrade-everything request (an
-// Upgrade with no name) always applies. A named-package request applies
-// only when that package is installed in the root; this is what lets the
-// cascade skip a root that simply does not hold a named package, instead
-// of reporting it as a failure.
-func confineRequestsToRoot(ctx context.Context, sub *App, reqs []resolver.Request) ([]resolver.Request, error) {
-	named := false
-	for _, r := range reqs {
-		if r.Kind == resolver.Upgrade && r.Name == "" {
-			return reqs, nil // upgrade-everything applies to every root
-		}
-		if r.Name != "" {
-			named = true
-		}
-	}
-	if !named {
-		return reqs, nil
-	}
-
-	store, err := sub.openDB(ctx)
-	if err != nil {
-		return nil, err
-	}
-	pkgs, err := store.ListPackages(ctx)
-	store.Close()
-	if err != nil {
-		return nil, err
-	}
-	installed := make(map[string]bool, len(pkgs))
-	for _, p := range pkgs {
-		installed[p.Name] = true
-	}
-	var out []resolver.Request
-	for _, r := range reqs {
-		if installed[r.Name] {
-			out = append(out, r)
-		}
-	}
-	return out, nil
+	// One resolution over every reachable root (DESIGN-named-roots.md):
+	// a cross-root edge is checked in the root it names, and the plan
+	// commits as one cross-root transaction. --no-recurse confines both
+	// resolution and execution to the current root.
+	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, nil,
+		install.ClaimDirective{}, audit.TypeUpgrade, !*noRecurse)
 }
 
 // gatherUpgradeRoots walks the root topology starting at start: the
@@ -391,7 +288,7 @@ func cmdUninstall(app *App, args []string) error {
 		reqs[i] = resolver.Request{Kind: resolver.Remove, Name: name}
 	}
 	return transact(app, reqs, resolver.Options{CascadeRemovals: *cascade},
-		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUninstall, false)
+		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUninstall, true)
 }
 
 // transact resolves a set of requests into a plan, presents it for
@@ -542,12 +439,51 @@ func (app *App) resolveCrossRoot(ctx context.Context, reqs []resolver.Request, s
 	}()
 	// Requests target the anchor (the operating root); cross-root edges in
 	// the closure route packages elsewhere.
-	rooted := make([]resolver.Request, len(reqs))
-	copy(rooted, reqs)
-	for i := range rooted {
-		rooted[i].Root = app.paths.root
-	}
+	rooted := routeRequests(reqs, app.paths.root, installedByRoot)
 	return resolver.ResolveMultiRoot(rooted, installedByRoot, available, refToPath, opts)
+}
+
+// routeRequests gives every request a root. A request that already
+// names one (a hold-back re-resolve) keeps it. A named upgrade with none
+// goes to every root that holds the package — `peipkg upgrade
+// live-boot-irf` from / reaches the initramfs, as the old per-root
+// cascade did — and to the anchor when none does, so the resolver
+// reports it as not installed. Everything else is the anchor's: an
+// install lands where the operator stands (default_root having already
+// been applied), a removal names what is here, and an upgrade of
+// everything is a single request whose world is every root.
+func routeRequests(reqs []resolver.Request, anchor string,
+	installedByRoot map[string][]resolver.Installed) []resolver.Request {
+	var rooted []resolver.Request
+	for _, req := range reqs {
+		if req.Root != "" {
+			rooted = append(rooted, req)
+			continue
+		}
+		if req.Kind == resolver.Upgrade && req.Name != "" {
+			var roots []string
+			for root, insts := range installedByRoot {
+				for _, inst := range insts {
+					if inst.Name == req.Name {
+						roots = append(roots, root)
+						break
+					}
+				}
+			}
+			sort.Strings(roots)
+			for _, root := range roots {
+				r := req
+				r.Root = root
+				rooted = append(rooted, r)
+			}
+			if len(roots) > 0 {
+				continue
+			}
+		}
+		req.Root = anchor
+		rooted = append(rooted, req)
+	}
+	return rooted
 }
 
 // gatherInstalledByRoot reads the installed set of the anchor and every
@@ -996,7 +932,7 @@ func cmdDowngrade(app *App, args []string) error {
 	// §7.6 has no `downgrade` event type; a downgrade is audited as an
 	// upgrade (a downgrade is an upgrade to an older version, §7.2.5).
 	return transact(app, reqs, resolver.Options{AllowDowngrade: true},
-		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUpgrade, false)
+		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUpgrade, true)
 }
 
 // cmdUndo reverses the most recent committed transaction: an install is

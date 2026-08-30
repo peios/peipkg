@@ -310,7 +310,7 @@ func TestGatherUpgradeRootsPresentAndDangling(t *testing.T) {
 	}
 }
 
-func TestCascadeUpgradeVisitsRootsAndSummarises(t *testing.T) {
+func TestUpgradeSpansRootsAndSkipsDangling(t *testing.T) {
 	app, out := testApp(t)
 	start := app.paths.root
 	addNamedRoot(t, app, "present", "sub")
@@ -318,18 +318,14 @@ func TestCascadeUpgradeVisitsRootsAndSummarises(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(start, "sub"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-
-	// No repositories configured: each present root has nothing to upgrade,
-	// so the cascade succeeds for both and skips the dangling one.
+	// No repositories configured: nothing to upgrade in either present
+	// root, and the dangling one is not an error — one resolution over
+	// the whole topology, one empty plan.
 	if err := cmdUpgrade(app, []string{"--yes"}); err != nil {
-		t.Fatalf("cascade upgrade: %v", err)
+		t.Fatalf("upgrade: %v", err)
 	}
-	s := out.String()
-	if !strings.Contains(s, "cascade:") {
-		t.Errorf("cascade summary missing:\n%s", s)
-	}
-	if !strings.Contains(s, "2 upgraded") || !strings.Contains(s, "1 skipped") {
-		t.Errorf("cascade summary wrong:\n%s", s)
+	if s := out.String(); strings.Contains(s, "cascade:") {
+		t.Errorf("per-root cascade summary should be gone:\n%s", s)
 	}
 }
 

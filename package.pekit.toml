@@ -22,7 +22,7 @@ name = "peipkg"
 # into libexec. Must ship together with kmod 33-2, which is what puts it there:
 # either alone leaves the side effect pointing at a path that does not exist,
 # and a failed side effect is a warning rather than an error.
-version      = "0.1.1-4"
+version      = "0.1.1-6"
 architecture = "x86_64"
 description  = "Peios package manager client (peipkg consumer; static, CGO-free)"
 license      = "MIT"

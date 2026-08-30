@@ -164,6 +164,20 @@ authoritative for deps too) was rejected.
 
 ## Cross-root dependencies
 
+**Every verb resolves multi-root.** `install` did from the start;
+`uninstall`, `upgrade` and `downgrade` followed once the first package
+with a cross-root edge existed in `/` (the edition package, which holds
+its initramfs hooks `IN initramfs`). Under the earlier "single-root call
+sites unchanged" contract those verbs evaluated such an edge against the
+depender's own root — where it was never meant to be — so every removal
+in `/` was refused for a dependency that was whole in the initramfs. Now
+each verb gathers every reachable root, routes each request (a named
+upgrade to the roots holding the package; the rest to the anchor), and
+commits as one cross-root transaction. `upgrade --no-recurse` is the
+single-root escape hatch. The single-root `Resolve` entry point remains
+for callers with no root topology.
+
+
 The powerful half. A dependency may resolve into a root other than the
 depender's, so a root can be **composed through the dependency graph** —
 `live-boot-irf` (living in `initramfs`) depending on `peiosutils` pulls
