@@ -30,7 +30,20 @@ import (
 // out, "" being out itself). The named roots are registered in the
 // anchor's database so the booted system resolves `--root <name>`.
 func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPackage,
-	bypassPaths bool) error {
+	bypassPaths bool, record func(relPath string, blob []byte) error) error {
+	// How a signature sidecar reaches its target: stamped as the
+	// security.peios.sig attribute, or — for a builder that cannot set
+	// one — handed to the caller against the path relative to out.
+	stamp := pipsig.Stamp
+	if record != nil {
+		stamp = func(path string, blob []byte) error {
+			rel, err := filepath.Rel(out, path)
+			if err != nil {
+				return err
+			}
+			return record(filepath.ToSlash(rel), blob)
+		}
+	}
 	byRoot := map[string][]fetchedPackage{}
 	for _, fp := range fetched {
 		byRoot[fp.Locked.Root] = append(byRoot[fp.Locked.Root], fp)
@@ -53,7 +66,7 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 			register = m.Roots
 		}
 		if err := assembleRoot(ctx, filepath.Join(out, rel), m, byRoot[rel], register,
-			bypassPaths); err != nil {
+			bypassPaths, stamp); err != nil {
 			return err
 		}
 	}
@@ -72,7 +85,8 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 // root's claims, seeds its database (registering register's named roots
 // when non-nil), extracts payloads, and materialises claim links.
 func assembleRoot(ctx context.Context, rootDir string, m Manifest,
-	fetched []fetchedPackage, register []Root, bypassPaths bool) error {
+	fetched []fetchedPackage, register []Root, bypassPaths bool,
+	stamp func(path string, blob []byte) error) error {
 
 	for _, fp := range fetched {
 		if err := checkComposeLayout(fp, bypassPaths); err != nil {
@@ -96,7 +110,7 @@ func assembleRoot(ctx context.Context, rootDir string, m Manifest,
 	// closure, so a cross-package path collision is caught by the
 	// package_file UNIQUE constraint before any file is written.
 	for _, fp := range fetched {
-		if err := extractPayload(rootDir, fp); err != nil {
+		if err := extractPayload(rootDir, fp, stamp); err != nil {
 			return err
 		}
 	}
@@ -199,7 +213,7 @@ func packageFilesOf(fp fetchedPackage) []db.PackageFile {
 // packages — while file and symlink entries land at their final paths
 // with O_EXCL, so a cross-package collision the database missed would
 // surface here too.
-func extractPayload(root string, fp fetchedPackage) error {
+func extractPayload(root string, fp fetchedPackage, stamp func(path string, blob []byte) error) error {
 	var sidecars pipsig.Sidecars
 	written := map[string]string{} // regular files written, archive path -> physical path
 	err := archive.Extract(bytes.NewReader(fp.Raw),
@@ -233,10 +247,10 @@ func extractPayload(root string, fp fetchedPackage) error {
 	if err != nil {
 		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
 	}
-	if err := sidecars.Apply(func(target string) (string, bool) {
+	if err := sidecars.ApplyWith(func(target string) (string, bool) {
 		physical, ok := written[target]
 		return physical, ok
-	}); err != nil {
+	}, stamp); err != nil {
 		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
 	}
 	return nil

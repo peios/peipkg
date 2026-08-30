@@ -79,7 +79,7 @@ func TestFetchAndAssemble(t *testing.T) {
 	}
 
 	root := filepath.Join(t.TempDir(), "root")
-	if err := assemble(ctx, root, m, fetched, false); err != nil {
+	if err := assemble(ctx, root, m, fetched, false, nil); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestAssembleMaterializesClaims(t *testing.T) {
 	}
 
 	root := filepath.Join(t.TempDir(), "root")
-	if err := assemble(ctx, root, m, fetched, false); err != nil {
+	if err := assemble(ctx, root, m, fetched, false, nil); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 
@@ -457,7 +457,7 @@ func TestAssembleMultiRoot(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "image")
-	if err := assemble(ctx, out, m, fetched, false); err != nil {
+	if err := assemble(ctx, out, m, fetched, false, nil); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 

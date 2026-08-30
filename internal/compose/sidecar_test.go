@@ -65,7 +65,7 @@ func TestAssembleStampsSidecars(t *testing.T) {
 		t.Fatalf("fetchAll: %v", err)
 	}
 	root := filepath.Join(t.TempDir(), "root")
-	if err := assemble(ctx, root, m, fetched, false); err != nil {
+	if err := assemble(ctx, root, m, fetched, false, nil); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestComposeRejectsOrphanSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchAll: %v", err)
 	}
-	err = assemble(ctx, filepath.Join(t.TempDir(), "root"), m, fetched, false)
+	err = assemble(ctx, filepath.Join(t.TempDir(), "root"), m, fetched, false, nil)
 	if err == nil || !strings.Contains(err.Error(), "sidecar") {
 		t.Errorf("orphan sidecar: err = %v", err)
 	}
@@ -135,4 +135,56 @@ func keysOf(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestAssembleRecordsSidecars: with a recorder supplied, a sidecar is
+// handed to it against the target's out-relative path and Stamp is not
+// called — the unprivileged image-builder path.
+func TestAssembleRecordsSidecars(t *testing.T) {
+	fw := []byte("firmware bytes")
+	entries := []testEntry{
+		{Path: "usr", IsDir: true},
+		{Path: "usr/lib", IsDir: true},
+		{Path: "usr/lib/firmware", IsDir: true},
+		{Path: "usr/lib/firmware/fw.bin.zst", Content: fw},
+		{Path: "usr/lib/firmware/fw.bin.zst.peios.sig", Content: sigBlob()},
+	}
+	manifestJSON := minimalManifestJSON(t, "fw", "1.0-1", "x86_64", int64(len(fw)+pipsig.BlobLen))
+	raw := buildPeipkg(t, manifestJSON, entries)
+
+	orig := pipsig.Stamp
+	pipsig.Stamp = func(path string, b []byte) error {
+		t.Errorf("Stamp called for %s although a recorder was supplied", path)
+		return nil
+	}
+	t.Cleanup(func() { pipsig.Stamp = orig })
+
+	sum := sha256.Sum256(raw)
+	sourceDate := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	pkgURL := "https://pkgs.peios.org/pool/fw.peipkg"
+	m := Manifest{Arch: "x86_64", SourceDate: sourceDate, Packages: []PackageRequest{{Name: "fw"}}}
+	lock := Lock{
+		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Packages: []LockedPackage{{
+			Name: "fw", Version: "1.0-1", Architecture: "x86_64",
+			Source: "official", URL: pkgURL, Hash: hex.EncodeToString(sum[:]),
+		}},
+	}
+	ctx := context.Background()
+	fetched, err := fetchAll(ctx, lock, fakeFetcher{pkgURL: raw})
+	if err != nil {
+		t.Fatalf("fetchAll: %v", err)
+	}
+	recorded := map[string][]byte{}
+	record := func(rel string, b []byte) error { recorded[rel] = b; return nil }
+	root := filepath.Join(t.TempDir(), "root")
+	if err := assemble(ctx, root, m, fetched, false, record); err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if !bytes.Equal(recorded["usr/lib/firmware/fw.bin.zst"], sigBlob()) {
+		t.Errorf("sidecar not recorded against its out-relative path (recorded: %v)", keysOf(recorded))
+	}
+	if _, err := os.Lstat(filepath.Join(root, "usr/lib/firmware/fw.bin.zst"+pipsig.Suffix)); !os.IsNotExist(err) {
+		t.Errorf("sidecar was materialised (err %v)", err)
+	}
 }

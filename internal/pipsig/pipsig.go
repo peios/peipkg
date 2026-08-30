@@ -136,6 +136,16 @@ func (s *Sidecars) Len() int { return len(s.blobs) }
 // no regular file there. The target is checked not to be ELF before it
 // is stamped.
 func (s *Sidecars) Apply(locate func(target string) (string, bool)) error {
+	return s.ApplyWith(locate, Stamp)
+}
+
+// ApplyWith is [Apply] with the stamping step supplied by the caller:
+// stamp receives the target's on-disk path and the signature blob. A
+// consumer that cannot set security.* attributes — an image builder
+// running unprivileged — records the pair for the image writer to apply
+// instead. Every check Apply makes is made here too.
+func (s *Sidecars) ApplyWith(locate func(target string) (string, bool),
+	stamp func(path string, blob []byte) error) error {
 	targets := make([]string, 0, len(s.blobs))
 	for t := range s.blobs {
 		targets = append(targets, t)
@@ -155,7 +165,7 @@ func (s *Sidecars) Apply(locate func(target string) (string, bool)) error {
 			return fmt.Errorf("%s%s: target %s is an ELF file, which carries its signature in a section, not a sidecar",
 				target, Suffix, target)
 		}
-		if err := Stamp(path, s.blobs[target]); err != nil {
+		if err := stamp(path, s.blobs[target]); err != nil {
 			return fmt.Errorf("%s%s: %w", target, Suffix, err)
 		}
 	}

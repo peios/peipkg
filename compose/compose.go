@@ -50,6 +50,14 @@ type BuildOptions struct {
 	// --dangerously-bypass-path-restrictions`. It exempts nothing that
 	// has not declared itself special.
 	BypassPathRestrictions bool
+	// RecordSidecar, when set, replaces stamping a package's signature
+	// sidecars (`<file>.peios.sig`) as the target's security.peios.sig
+	// attribute with recording them: it receives the target's path
+	// relative to OutDir and the signature blob. security.* attributes
+	// need CAP_SYS_ADMIN; an unprivileged image builder records them and
+	// writes them into the image itself, which needs no privilege. The
+	// composed tree then carries NO signature attributes.
+	RecordSidecar func(relPath string, blob []byte) error
 }
 
 // BuildResult describes a completed root composition.
@@ -74,6 +82,7 @@ func Build(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 		Warnings:     opts.Warnings,
 
 		BypassPathRestrictions: opts.BypassPathRestrictions,
+		RecordSidecar:          opts.RecordSidecar,
 	})
 	if err != nil {
 		return BuildResult{}, err

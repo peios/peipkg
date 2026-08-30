@@ -452,6 +452,17 @@ the **staged** inode, before the commit rename, because KACS gates
 mutation of that attribute on signed content — it can only be set while
 the file is still an unsigned temporary.
 
+Compose has one more option: `BuildOptions.RecordSidecar`. Setting a
+`security.*` attribute needs CAP_SYS_ADMIN, which an image builder
+running as an ordinary user does not have — and should not need, since
+the composed tree is an intermediate and the artifact is an image. With
+a recorder set, compose hands each (out-relative target path, blob) pair
+to the caller instead of stamping, and the composed tree carries no
+signature attributes at all; the image writer puts them into the image
+(a squashfs stores whatever attributes a tar stream names, unprivileged).
+Install has no such mode: on a live system peipkg runs as SYSTEM and the
+attribute goes straight onto the staged inode.
+
 ### Collision / unowned-file policy
 
 Directories never collide — directory creation is idempotent and
