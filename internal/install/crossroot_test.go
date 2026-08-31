@@ -242,3 +242,54 @@ func TestRecoverCrossRootRefusesTornCommit(t *testing.T) {
 		t.Error("root B should remain pending")
 	}
 }
+
+// §5.26: a consumer installing several packages together completes
+// verification for EVERY package before extracting ANY package's
+// payload, across every root the operation touches.
+//
+// ExecuteCrossRoot used to prepare root by root, and prepare runs
+// commitOps — so root A's payload was live on disk before root B's
+// packages had been fetched, let alone verified. Unwinding afterwards is
+// not the same as never having extracted: a tool was installed, a
+// directory created, a symlink planted (PEI-375's ancestor), for as long
+// as B's download took (PEI-390).
+//
+// The observable difference is that root A now never opens a
+// transaction at all, rather than opening one and rolling it back.
+func TestCrossRootVerifiesEveryRootBeforeExtractingAny(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+
+	// Root B's package cannot be provided; root A's can.
+	prov := fakeProvider{
+		"live-boot": provide(t, testPkg{name: "live-boot", version: "1.0-1",
+			files: map[string]string{"usr/bin/live-boot": "lb"}}),
+	}
+	storeA, rootA, envA := rootEnv(t, dir, "a", prov)
+	_, rootB, envB := rootEnv(t, dir, "b", prov)
+
+	plan := resolver.Plan{Operations: []resolver.Operation{
+		crossRootOp(t, "live-boot", "1.0-1", rootA),
+		crossRootOp(t, "busybox", "1.0-1", rootB), // no such package
+	}}
+	envs := map[string]install.Env{rootA: envA, rootB: envB}
+
+	if _, err := install.ExecuteCrossRoot(ctx, plan, envs, "xrt-fail"); err == nil {
+		t.Fatal("ExecuteCrossRoot succeeded although a root's package could not be provided")
+	}
+
+	// Nothing of root A's reached disk.
+	if _, err := os.Lstat(filepath.Join(rootA, "usr/bin/live-boot")); !os.IsNotExist(err) {
+		t.Errorf("root A's payload is on disk (err %v)", err)
+	}
+	// And root A never began a transaction: verification for every root
+	// completed — and failed — before any root was touched.
+	txns, err := storeA.ListTxns(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListTxns: %v", err)
+	}
+	if len(txns) != 0 {
+		t.Errorf("root A opened %d transaction(s) before the other root was verified: %+v",
+			len(txns), txns)
+	}
+}

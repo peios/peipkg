@@ -157,15 +157,18 @@ func Recover(ctx context.Context, env Env) error {
 //     total order means two concurrent cross-root operations cannot
 //     deadlock. Release is in reverse.
 //  2. Reconcile any pending journal in each root first.
-//  3. Prepare every root — fetch, verify, journal, move payloads into
-//     place (each root "votes to commit"). A prepare failure in any root
-//     rolls every already-prepared root back, leaving the system
-//     unchanged; nothing has crossed a durability boundary.
-//  4. Commit each root's package state in path order. A commit failure
+//  3. Fetch and verify every package of every root. §5.26's
+//     verify-all-before-extract is an obligation across the whole
+//     operation, not within one root of it.
+//  4. Prepare every root — journal, and move payloads into place (each
+//     root "votes to commit"). A prepare failure in any root rolls every
+//     already-prepared root back, leaving the system unchanged; nothing
+//     has crossed a durability boundary.
+//  5. Commit each root's package state in path order. A commit failure
 //     leaves the remaining roots' prepared journals in place for `peipkg
 //     recover` to roll forward — already-committed roots stay committed —
 //     and is reported. (Roll-forward, not roll-back, because every root
-//     was already staged and verified in step 3.)
+//     was already staged and verified.)
 func ExecuteCrossRoot(ctx context.Context, plan resolver.Plan, envs map[string]Env,
 	crossRootID string) (map[string]Result, error) {
 
@@ -206,12 +209,29 @@ func ExecuteCrossRoot(ctx context.Context, plan resolver.Plan, envs map[string]E
 		}
 	}
 
-	// 3. Prepare every root. On failure, roll back the roots that already
+	// 3. §5.26: complete verification for EVERY package, in every root,
+	//    before any root extracts anything. Preparing root by root put
+	//    root A's payload on disk — a tool installed, a directory
+	//    created, a symlink planted — before root B's signatures had
+	//    been looked at. A package extracted into one root is as present
+	//    on the filesystem as one extracted into another, so unwinding
+	//    afterwards is not the same as never having extracted it.
+	providedByRoot := make(map[string]map[string]ProvidedPackage, len(roots))
+	for _, r := range roots {
+		pv, err := provideAll(ctx, resolver.Plan{Operations: byRoot[r]}, envs[r])
+		if err != nil {
+			return nil, fmt.Errorf("peipkg/install: preparing root %q: %w", r, err)
+		}
+		providedByRoot[r] = pv
+	}
+
+	// 4. Prepare every root. On failure, roll back the roots that already
 	//    voted; the failed root abandoned itself inside prepareTxn.
 	prepared := make(map[string]preparedTxn, len(roots))
 	var order []string // roots prepared so far, for ordered rollback
 	for _, r := range roots {
-		p, err := prepareTxn(ctx, resolver.Plan{Operations: byRoot[r]}, envs[r], crossRootID)
+		p, err := prepareTxn(ctx, resolver.Plan{Operations: byRoot[r]}, envs[r], crossRootID,
+			providedByRoot[r])
 		if err != nil {
 			err = fmt.Errorf("peipkg/install: preparing root %q: %w", r, err)
 			// A sibling whose rollback fails leaves that root
@@ -227,7 +247,7 @@ func ExecuteCrossRoot(ctx context.Context, plan resolver.Plan, envs map[string]E
 		order = append(order, r)
 	}
 
-	// 4. Commit every root in path order. Keep going past a failure
+	// 5. Commit every root in path order. Keep going past a failure
 	//    (roll forward); report any failure for `peipkg recover`.
 	results := make(map[string]Result, len(roots))
 	var firstErr error
@@ -248,7 +268,7 @@ func ExecuteCrossRoot(ctx context.Context, plan resolver.Plan, envs map[string]E
 // runTransaction stages, commits, and finalises one single-root plan: it
 // is prepare-then-commit with no cross-root id.
 func runTransaction(ctx context.Context, plan resolver.Plan, env Env) (Result, error) {
-	p, err := prepareTxn(ctx, plan, env, "")
+	p, err := prepareTxn(ctx, plan, env, "", nil)
 	if err != nil {
 		return Result{TxnID: p.txnID}, err
 	}
@@ -281,8 +301,31 @@ type preparedTxn struct {
 // the caller can audit the outcome. On success the transaction has
 // "voted to commit": nothing is committed, but everything is in place and
 // recorded in the journal, so it can be committed or cleanly reversed.
-func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID string) (
-	p preparedTxn, err error) {
+// provideAll runs §7.4.3's fetch-and-verify over a plan's operations.
+// It is separate from prepareTxn so a cross-root operation can complete
+// verification for every root before any root extracts anything.
+func provideAll(ctx context.Context, plan resolver.Plan, env Env) (
+	map[string]ProvidedPackage, error) {
+
+	provided := make(map[string]ProvidedPackage)
+	for _, op := range plan.Operations {
+		if op.Kind == resolver.OpRemove {
+			continue
+		}
+		pp, err := env.Provider.Provide(ctx, op)
+		if err != nil {
+			return nil, fmt.Errorf("peipkg/install: providing %s: %w", op.Name, err)
+		}
+		provided[op.Name] = pp
+	}
+	return provided, nil
+}
+
+// prepareTxn runs a plan's prepare phase against packages already
+// fetched and verified. A nil provided runs §7.4.3's fetch-and-verify
+// itself, which is what a single-root transaction does.
+func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID string,
+	provided map[string]ProvidedPackage) (p preparedTxn, err error) {
 
 	// A prepared transaction hands its pinned descriptors to the commit;
 	// one that fails hands them to nobody, so it releases them here.
@@ -294,16 +337,10 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	}()
 
 	// §7.4.3: fetch and verify every package before staging any of them.
-	provided := make(map[string]ProvidedPackage)
-	for _, op := range plan.Operations {
-		if op.Kind == resolver.OpRemove {
-			continue
+	if provided == nil {
+		if provided, err = provideAll(ctx, plan, env); err != nil {
+			return preparedTxn{}, err
 		}
-		pp, err := env.Provider.Provide(ctx, op)
-		if err != nil {
-			return preparedTxn{}, fmt.Errorf("peipkg/install: providing %s: %w", op.Name, err)
-		}
-		provided[op.Name] = pp
 	}
 
 	// §5.26: the installation root is pinned before the plan is

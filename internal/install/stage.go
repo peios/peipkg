@@ -51,6 +51,11 @@ type stagedOp struct {
 	// stagedAt maps payload logical paths to their incoming staged
 	// sibling. It is staging-only state; the journal gets fileOps.
 	stagedAt map[string]string
+	// untouched are the payload logical paths §7.2.2 classifies as
+	// unchanged across an upgrade: present in both versions with the
+	// same content hash, and present on disk. They get a package_file
+	// row and no file operation, so extraction skips them.
+	untouched map[string]bool
 }
 
 // prepareOperation computes one plan operation's journal rows and
@@ -74,7 +79,7 @@ func preparePackage(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 	op resolver.Operation, pp ProvidedPackage, plannedDirs map[string]bool,
 	inTxn map[string]bool) (stagedOp, error) {
 
-	s := stagedOp{op: op, stagedAt: map[string]string{}}
+	s := stagedOp{op: op, stagedAt: map[string]string{}, untouched: map[string]bool{}}
 
 	// §3.4 layout enforcement, at the last point before bytes reach the
 	// filesystem. Pack-time validation is a producer's courtesy to
@@ -157,6 +162,21 @@ func preparePackage(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 		existingByPath[f.Path] = f
 	}
 
+	// Paths whose bytes are not the only thing installed at them: a
+	// signature sidecar and a §3.3.5 descriptor override are both
+	// applied to the *staged* inode, so a path carrying either is never
+	// classified as untouched below — it needs a staged inode to stamp
+	// even when its content has not moved.
+	restamped := map[string]bool{}
+	for _, e := range pp.Pkg.Payload {
+		if e.Type == archive.EntryFile && pipsig.IsSidecar(e.Path) {
+			restamped["/"+pipsig.Target(e.Path)] = true
+		}
+	}
+	for _, o := range pp.Pkg.Manifest.SDOverrides {
+		restamped["/"+o.Path] = true
+	}
+
 	// Build the file operations and database rows from the verified
 	// payload list.
 	newPaths := map[string]bool{}
@@ -179,6 +199,38 @@ func preparePackage(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 				PackageName: op.Name, Path: logical, Type: db.FileTypeDir})
 		case archive.EntryFile:
 			dest := physical
+			// §7.2.2: "Files in both old and new with identical content
+			// hash: untouched." Without this every upgrade rewrote and
+			// re-backed-up its whole payload, bit-identical files
+			// included — churning inodes and timestamps, and making the
+			// disk-space figure §7.1.2.2 is computed from wrong by the
+			// size of the unchanged set.
+			//
+			// It also corrupted the /etc rule below: an operator-edited
+			// configuration file whose content is identical between the
+			// two package versions is untouched by this rule, but was
+			// classified as replaced, detected as modified, and given a
+			// spurious .peipkg-new carrying exactly what was already
+			// there, with a warning about a divergence from a version
+			// that changed nothing.
+			//
+			// The destination must actually be there: a file the
+			// operator deleted is not untouched, and an upgrade is the
+			// right moment to put it back.
+			if old, ok := existingByPath[logical]; ok && old.Type == db.FileTypeFile &&
+				old.Hash == entry.Hash && entry.Hash != "" && !restamped[logical] {
+				parent, err := pins.existingDirFor(physical)
+				if err != nil {
+					return s, err
+				}
+				if parent != nil && parent.Exists(filepath.Base(physical)) {
+					s.untouched[logical] = true
+					s.files = append(s.files, db.PackageFile{
+						PackageName: op.Name, Path: logical,
+						Type: db.FileTypeFile, Hash: entry.Hash})
+					continue
+				}
+			}
 			// §7.2.2 modified-detection: an operator-edited /etc file is
 			// not clobbered by an upgrade. The new default lands beside
 			// it as <name>.peipkg-new and the divergence is reported.
@@ -330,6 +382,9 @@ func materializePackage(pins *pinnedDirs, s stagedOp, pp ProvidedPackage) error 
 		case archive.EntryFile:
 			if pipsig.IsSidecar(entry.Path) {
 				return sidecars.Add(entry.Path, content)
+			}
+			if s.untouched["/"+entry.Path] {
+				return nil // §7.2.2: unchanged across the upgrade
 			}
 			staged := s.stagedAt["/"+entry.Path]
 			if staged == "" {

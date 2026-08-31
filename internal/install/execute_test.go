@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -733,4 +734,106 @@ func verPtr(t *testing.T, s string) *version.Version {
 	t.Helper()
 	v := mustVer(t, s)
 	return &v
+}
+
+// §7.2.2: "Files in both old and new with identical content hash:
+// untouched." Every upgrade used to rewrite and re-back-up its whole
+// payload, bit-identical files included (PEI-400).
+func TestUpgradeLeavesUnchangedFilesUntouched(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+
+	v1 := testPkg{name: "app", version: "1.0-1", files: map[string]string{
+		"usr/bin/app":        "the binary",
+		"usr/share/app/data": "unchanging data",
+	}}
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{"app": provide(t, v1)}}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "app", "1.0-1")}},
+		env); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	unchanged := filepath.Join(root, "usr/share/app/data")
+	before, err := os.Stat(unchanged)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	beforeIno := before.Sys().(*syscall.Stat_t).Ino
+
+	// The upgrade changes the binary and leaves the data byte-identical.
+	v2 := testPkg{name: "app", version: "2.0-1", files: map[string]string{
+		"usr/bin/app":        "the new binary",
+		"usr/share/app/data": "unchanging data",
+	}}
+	env.Provider = fakeProvider{"app": provide(t, v2)}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "2.0-1")}},
+		env); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+
+	after, err := os.Stat(unchanged)
+	if err != nil {
+		t.Fatalf("the unchanged file is gone after the upgrade: %v", err)
+	}
+	if got := after.Sys().(*syscall.Stat_t).Ino; got != beforeIno {
+		t.Errorf("the unchanged file was rewritten: inode %d -> %d", beforeIno, got)
+	}
+	if got, err := os.ReadFile(unchanged); err != nil || string(got) != "unchanging data" {
+		t.Errorf("unchanged file holds %q (err %v)", got, err)
+	}
+	// The changed one did move.
+	if got, err := os.ReadFile(filepath.Join(root, "usr/bin/app")); err != nil ||
+		string(got) != "the new binary" {
+		t.Errorf("the changed file did not update: %q (err %v)", got, err)
+	}
+	// And ownership survives: an untouched file is still the new
+	// version's, or uninstall would leave it behind.
+	files, err := store.PackageFiles(ctx, "app")
+	if err != nil {
+		t.Fatalf("PackageFiles: %v", err)
+	}
+	var found bool
+	for _, f := range files {
+		if f.Path == "/usr/share/app/data" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the untouched file lost its package_file row")
+	}
+}
+
+// A file deleted by hand is not untouched: an upgrade is the right
+// moment to put it back.
+func TestUpgradeRestoresAnUnchangedFileThatWasDeleted(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	pkg := func(v string) testPkg {
+		return testPkg{name: "app", version: v, files: map[string]string{
+			"usr/share/app/data": "unchanging data"}}
+	}
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{"app": provide(t, pkg("1.0-1"))}}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "app", "1.0-1")}},
+		env); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	victim := filepath.Join(root, "usr/share/app/data")
+	if err := os.Remove(victim); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	env.Provider = fakeProvider{"app": provide(t, pkg("2.0-1"))}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{upgradeOp(t, "1.0-1", "2.0-1")}},
+		env); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if got, err := os.ReadFile(victim); err != nil || string(got) != "unchanging data" {
+		t.Errorf("the deleted file was not restored: %q (err %v)", got, err)
+	}
 }
