@@ -381,7 +381,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		return nil
 	}
 
-	provider := &repoProvider{client: app.repoClient(store), configs: configs}
+	provider := &repoProvider{client: app.repoClient(store), configs: configs, warn: app.errOut}
 
 	// A plan that spans more than one root commits as a cross-root
 	// two-phase-commit transaction; a single-root plan uses the existing
@@ -864,8 +864,17 @@ func formatAge(d time.Duration) string {
 }
 
 // availableSet builds the resolver's candidate set from the configured
-// repositories' cached active indexes. A repository with no usable
-// cached index is skipped with a warning.
+// repositories' cached active indexes.
+//
+// §5.36: a cached index that fails to load or verify fails the
+// operation. Skipping the repository with a warning meant resolution
+// proceeded against a different set of repositories than the operator
+// configured — and dropping one does not merely lose candidates, it can
+// promote a lower-priority repository's package into the role the
+// dropped one was filling, which is an escalation dressed as a warning.
+// The cross-repository guards compare against what is *configured*, so
+// a repository absent from the resolution contributes nothing to them
+// either.
 func availableSet(ctx context.Context, app *App, store *db.DB) (
 	[]resolver.Candidate, map[string]config.RepoConfig, error) {
 
@@ -880,8 +889,10 @@ func availableSet(ctx context.Context, app *App, store *db.DB) (
 		configs[cfg.Name] = cfg
 		idx, err := client.ActiveIndex(ctx, cfg.Name)
 		if err != nil {
-			fmt.Fprintf(app.errOut, "peipkg: skipping repository %q: %v\n", cfg.Name, err)
-			continue
+			return nil, nil, fmt.Errorf(
+				"repository %q has no usable cached index: %w\nrefresh it, or remove it from "+
+					"the configuration — resolving without it would silently substitute "+
+					"another repository's packages (§5.36)", cfg.Name, err)
 		}
 		app.warnUnsigned(cfg)
 		for _, e := range idx.Packages {
@@ -1058,7 +1069,7 @@ func (app *App) undoCrossRoot(ctx context.Context, crossRootID string, dryRun, y
 		app.printf("cancelled\n")
 		return nil
 	}
-	provider := &repoProvider{client: app.repoClient(store), configs: configs}
+	provider := &repoProvider{client: app.repoClient(store), configs: configs, warn: app.errOut}
 	return app.executeCrossRoot(ctx, plan, store, provider, install.ClaimDirective{}, audit.TypeUpgrade)
 }
 

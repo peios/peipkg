@@ -46,7 +46,14 @@ type PackageFile struct {
 // freshness state of a configured repository. The repository's
 // configuration lives in /lcl/conf/peipkg/*.repo, never here.
 type Repository struct {
+	// Name is the LOCAL HANDLE — the .repo filename an operator chose.
+	// PSPU §5.31 does not require it to equal the descriptor's repo.name.
 	Name string
+	// DescriptorName is the repo.name the verified descriptor declares.
+	// An index's `repo` field is compared against this, never against
+	// the handle. Empty for a row written before schema 7, and for a
+	// repository in unsigned mode whose descriptor was never verified.
+	DescriptorName string
 	// HighestIndexVersion is the index_version freshness floor: an index
 	// below it is rejected as a rollback (§6.2).
 	HighestIndexVersion int64

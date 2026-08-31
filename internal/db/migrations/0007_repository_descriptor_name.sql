@@ -1,0 +1,21 @@
+-- peipkg package database — schema version 7: the descriptor's own name.
+--
+-- repository.name is the LOCAL HANDLE — the .repo filename an operator
+-- chose. PSPU §5.31 says a consumer may refer to a repository by a
+-- handle of its own choosing, MUST NOT require that handle to equal the
+-- descriptor's repo.name, and MUST NOT compare an index's `repo` field
+-- against the handle: an index's `repo` is compared against the
+-- descriptor's repo.name.
+--
+-- The consumer had nowhere to keep the descriptor's name, so it compared
+-- against the handle instead. `peipkg repo add official <url>` against a
+-- repository whose repo.json says "peios-official" succeeded, wrote a
+-- valid cache, and then failed the cached-index check on every later
+-- operation — permanently, with the repository silently dropped from
+-- resolution (PEI-430).
+--
+-- Empty for a row written before this migration, and for a repository in
+-- unsigned mode whose descriptor was never verified. An empty value
+-- falls back to comparing against the handle, which is what those rows
+-- were recorded under.
+ALTER TABLE repository ADD COLUMN descriptor_name TEXT NOT NULL DEFAULT '';

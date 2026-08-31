@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 
@@ -23,6 +24,9 @@ import (
 type repoProvider struct {
 	client  *repository.Client
 	configs map[string]config.RepoConfig
+	// warn receives the §5.37 per-package unsigned notice. It is the
+	// operator's error stream; a nil writer discards.
+	warn io.Writer
 }
 
 // Provide implements install.PackageProvider.
@@ -50,6 +54,18 @@ func (p *repoProvider) Provide(ctx context.Context, op resolver.Operation) (inst
 	}
 	if err := verifyCandidatePackage(*op.Candidate, pkg, "repository package "+op.Candidate.URL); err != nil {
 		return install.ProvidedPackage{}, err
+	}
+	// §5.37: under `optional`, unsigned content is accepted *with a
+	// per-operation warning*, on every install, upgrade and refresh
+	// rather than once per session, so a misconfigured trust state stays
+	// continuously visible. warnUnsigned covers only the fully unsigned
+	// mode — an `optional` repository that has trust anchors accepted an
+	// unsigned package with no output at all, which is exactly the
+	// "operator forgot they opted in" case the warning exists for.
+	if !pkg.Signed && cfg.SignaturePolicy == config.PolicyOptional && p.warn != nil {
+		fmt.Fprintf(p.warn, "peipkg: warning: %s %s from repository %q is unsigned, accepted "+
+			"under that repository's `optional` signature policy (§5.37)\n",
+			pkg.Manifest.Name, pkg.Manifest.Version, cfg.Name)
 	}
 	return install.ProvidedPackage{Pkg: pkg, Archive: bytes.NewReader(raw)}, nil
 }

@@ -60,8 +60,8 @@ func TestOpenCreatesAndConfiguresDatabase(t *testing.T) {
 	// A successful Open implies configure passed — foreign-key
 	// enforcement and WAL journalling are both verified there.
 	d, _ := newTestDB(t)
-	if v, err := d.SchemaVersion(t.Context()); err != nil || v != 6 {
-		t.Fatalf("SchemaVersion after Open: got %d (err %v), want 6", v, err)
+	if v, err := d.SchemaVersion(t.Context()); err != nil || v != 7 {
+		t.Fatalf("SchemaVersion after Open: got %d (err %v), want 7", v, err)
 	}
 }
 

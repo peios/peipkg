@@ -13,15 +13,17 @@ import (
 func (x *queries) UpsertRepository(ctx context.Context, r Repository) error {
 	_, err := x.q.ExecContext(ctx,
 		`INSERT INTO repository
-		   (name, highest_index_version, generated_at_floor, last_refresh_at, trust_keys)
-		 VALUES (?, ?, ?, ?, ?)
+		   (name, highest_index_version, generated_at_floor, last_refresh_at, trust_keys,
+		    descriptor_name)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(name) DO UPDATE SET
 		   highest_index_version = excluded.highest_index_version,
 		   generated_at_floor    = excluded.generated_at_floor,
 		   last_refresh_at       = excluded.last_refresh_at,
-		   trust_keys            = excluded.trust_keys`,
+		   trust_keys            = excluded.trust_keys,
+		   descriptor_name       = excluded.descriptor_name`,
 		r.Name, r.HighestIndexVersion, r.GeneratedAtFloor,
-		nullTime(r.LastRefreshAt), r.TrustKeys)
+		nullTime(r.LastRefreshAt), r.TrustKeys, r.DescriptorName)
 	if err != nil {
 		return fmt.Errorf("peipkg/db: upsert repository %q: %w", r.Name, err)
 	}
@@ -32,7 +34,8 @@ func (x *queries) UpsertRepository(ctx context.Context, r Repository) error {
 // the repository has no recorded state (it has never refreshed).
 func (x *queries) GetRepository(ctx context.Context, name string) (repo Repository, found bool, err error) {
 	row := x.q.QueryRowContext(ctx,
-		`SELECT name, highest_index_version, generated_at_floor, last_refresh_at, trust_keys
+		`SELECT name, highest_index_version, generated_at_floor, last_refresh_at, trust_keys,
+		        descriptor_name
 		 FROM repository WHERE name = ?`, name)
 	repo, err = scanRepository(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -48,7 +51,8 @@ func (x *queries) GetRepository(ctx context.Context, name string) (repo Reposito
 // ordered by name.
 func (x *queries) ListRepositories(ctx context.Context) ([]Repository, error) {
 	rows, err := x.q.QueryContext(ctx,
-		`SELECT name, highest_index_version, generated_at_floor, last_refresh_at, trust_keys
+		`SELECT name, highest_index_version, generated_at_floor, last_refresh_at, trust_keys,
+		        descriptor_name
 		 FROM repository ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("peipkg/db: list repositories: %w", err)
@@ -85,7 +89,7 @@ func scanRepository(s scanner) (Repository, error) {
 		lastRefreshAt sql.NullInt64
 	)
 	if err := s.Scan(&repo.Name, &repo.HighestIndexVersion, &repo.GeneratedAtFloor,
-		&lastRefreshAt, &repo.TrustKeys); err != nil {
+		&lastRefreshAt, &repo.TrustKeys, &repo.DescriptorName); err != nil {
 		return Repository{}, err
 	}
 	if lastRefreshAt.Valid {

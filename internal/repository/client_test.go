@@ -517,3 +517,76 @@ func TestArchiveIndexAcceptsTheRecordedVersion(t *testing.T) {
 		t.Errorf("archive index version = %d, want 6", idx.IndexVersion)
 	}
 }
+
+// §5.31: a consumer may refer to a repository by a local handle of its
+// own choosing, MUST NOT require that handle to equal the descriptor's
+// repo.name, and MUST NOT compare an index's `repo` field against the
+// handle — an index's `repo` is compared against the descriptor's
+// repo.name.
+//
+// Comparing against the handle made `peipkg repo add official <url>`,
+// against a repository whose repo.json says something else, succeed and
+// write a valid cache, and then fail on every later operation —
+// permanently, with the repository silently dropped from resolution
+// (PEI-430).
+func TestALocalHandleMayDifferFromTheDescriptorName(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache := newTestStore(t), t.TempDir()
+
+	cfg := testConfig(pub)
+	cfg.Name = "official" // the operator's handle; the descriptor says test-repo
+
+	client := repository.NewClient(
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), store, cache)
+	if err := client.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add under a differing handle: %v", err)
+	}
+
+	// The cache written under the handle must load back under it too.
+	idx, err := client.ActiveIndex(t.Context(), "official")
+	if err != nil {
+		t.Fatalf("ActiveIndex under a differing handle: %v", err)
+	}
+	if idx.IndexVersion != 5 {
+		t.Errorf("active index version = %d, want 5", idx.IndexVersion)
+	}
+
+	// The descriptor's own name is what was recorded to compare against.
+	row, found, err := store.GetRepository(t.Context(), "official")
+	if err != nil || !found {
+		t.Fatalf("GetRepository: %v (found=%v)", err, found)
+	}
+	if row.DescriptorName != testRepoName {
+		t.Errorf("recorded descriptor name = %q, want %q", row.DescriptorName, testRepoName)
+	}
+}
+
+// The identity check still fires when the index really does name a
+// different repository than its descriptor — the substitution §5.33's
+// rule exists for.
+func TestCachedIndexNamingAnotherRepositoryIsRefused(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache := newTestStore(t), t.TempDir()
+	cfg := testConfig(pub)
+
+	client := repository.NewClient(
+		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), store, cache)
+	if err := client.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Rewrite the recorded descriptor name, so the cached index no longer
+	// agrees with it.
+	row, _, err := store.GetRepository(t.Context(), testRepoName)
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	row.DescriptorName = "somebody-elses-repo"
+	if err := store.UpsertRepository(t.Context(), row); err != nil {
+		t.Fatalf("UpsertRepository: %v", err)
+	}
+	if _, err := client.ActiveIndex(t.Context(), testRepoName); err == nil {
+		t.Fatal("a cached index naming a different repository than its descriptor was accepted")
+	} else if !strings.Contains(err.Error(), "somebody-elses-repo") {
+		t.Errorf("error = %v, want it to name the descriptor's repository", err)
+	}
+}

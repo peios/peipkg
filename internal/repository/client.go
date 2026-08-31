@@ -154,7 +154,7 @@ func (c *Client) Add(ctx context.Context, cfg config.RepoConfig) error {
 	if err != nil {
 		return err
 	}
-	row := db.Repository{Name: cfg.Name, TrustKeys: trustJSON}
+	row := db.Repository{Name: cfg.Name, TrustKeys: trustJSON, DescriptorName: desc.RepoName}
 	if err := applyFreshnessFloor(&row, idx, prev, found, now, "repo-add"); err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (c *Client) Refresh(ctx context.Context, cfg config.RepoConfig) error {
 		return err
 	}
 
-	row := db.Repository{Name: cfg.Name, TrustKeys: trustJSON}
+	row := db.Repository{Name: cfg.Name, TrustKeys: trustJSON, DescriptorName: desc.RepoName}
 	if err := applyFreshnessFloor(&row, idx, prev, true, now, "refresh"); err != nil {
 		return err
 	}
@@ -268,9 +268,24 @@ func validateCachedActiveIndex(repoName string, row db.Repository, idx Index) er
 		return fmt.Errorf("peipkg/repository: cached index for %q has kind %q, want %q",
 			repoName, idx.Kind, IndexActive)
 	}
-	if idx.RepoName != repoName {
-		return fmt.Errorf("peipkg/repository: cached index for %q names repository %q",
-			repoName, idx.RepoName)
+	// §5.31: an index's `repo` field is compared against the
+	// *descriptor's* repo.name, never against the local handle — a
+	// consumer may refer to a repository by a handle of its own
+	// choosing, and must not require the two to be equal. Comparing
+	// against the handle made `peipkg repo add official <url>`, against
+	// a repository whose repo.json says "peios-official", succeed and
+	// then fail here on every later operation, permanently.
+	//
+	// A row recorded before schema 7 has no descriptor name; those rows
+	// were written under the handle, so that is what they are checked
+	// against.
+	expected := row.DescriptorName
+	if expected == "" {
+		expected = repoName
+	}
+	if idx.RepoName != expected {
+		return fmt.Errorf("peipkg/repository: cached index for %q names repository %q, "+
+			"but its descriptor declares %q", repoName, idx.RepoName, expected)
 	}
 	if idx.IndexVersion != row.HighestIndexVersion {
 		return fmt.Errorf("peipkg/repository: cached index for %q has version %d but recorded trust state has version %d",
@@ -306,8 +321,9 @@ func (c *Client) addUnsigned(ctx context.Context, cfg config.RepoConfig, now tim
 	}
 	// §5.34: as in Add, a re-add must not reset the recorded floor.
 	row := db.Repository{
-		Name:      cfg.Name,
-		TrustKeys: "", // an empty trust set marks unsigned mode
+		Name:           cfg.Name,
+		TrustKeys:      "", // an empty trust set marks unsigned mode
+		DescriptorName: desc.RepoName,
 	}
 	if err := applyFreshnessFloor(&row, idx, prev, found, now, "repo-add"); err != nil {
 		return err
@@ -335,7 +351,7 @@ func (c *Client) refreshUnsigned(ctx context.Context, cfg config.RepoConfig, now
 		return err
 	}
 
-	row := db.Repository{Name: cfg.Name, TrustKeys: ""}
+	row := db.Repository{Name: cfg.Name, TrustKeys: "", DescriptorName: desc.RepoName}
 	if err := applyFreshnessFloor(&row, idx, prev, true, now, "refresh"); err != nil {
 		return err
 	}

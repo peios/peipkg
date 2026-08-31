@@ -14,8 +14,8 @@ func TestOpenFreshDatabaseReachesLatestSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 6 {
-		t.Errorf("schema version of a fresh database: got %d, want 6", v)
+	if v != 7 {
+		t.Errorf("schema version of a fresh database: got %d, want 7", v)
 	}
 }
 
@@ -40,8 +40,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 	}
 	defer second.Close()
 
-	if v, err := second.SchemaVersion(ctx); err != nil || v != 6 {
-		t.Errorf("schema version after reopen: got %d (err %v), want 6", v, err)
+	if v, err := second.SchemaVersion(ctx); err != nil || v != 7 {
+		t.Errorf("schema version after reopen: got %d (err %v), want 7", v, err)
 	}
 	if _, found, err := second.GetPackage(ctx, "persisted"); err != nil || !found {
 		t.Errorf("data did not survive reopen: found=%v err=%v", found, err)

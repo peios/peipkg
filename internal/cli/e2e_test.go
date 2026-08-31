@@ -70,7 +70,8 @@ func buildSignedPackage(t *testing.T, priv ed25519.PrivateKey, pub ed25519.Publi
 }
 
 // buildSignedPackageEx is buildSignedPackage with extra manifest fields
-// merged in (e.g. default_root) — for tests that exercise optional fields.
+// merged in (e.g. default_root) — for tests that exercise optional
+// fields. A nil priv builds the package unsigned.
 func buildSignedPackageEx(t *testing.T, priv ed25519.PrivateKey, pub ed25519.PublicKey,
 	name, ver string, files map[string]string, extra map[string]any) (data []byte, sizeInstalled int64) {
 	t.Helper()
@@ -134,14 +135,16 @@ func buildSignedPackageEx(t *testing.T, priv ed25519.PrivateKey, pub ed25519.Pub
 	if err := tw.Flush(); err != nil {
 		t.Fatalf("tar Flush: %v", err)
 	}
-	signed := bytes.Clone(tarBuf.Bytes())
-	digest := sha256.Sum256(signed)
-	envelope := mustMarshal(t, map[string]any{
-		"schema_version": 1, "algorithm": "ed25519",
-		"key_fingerprint": signature.Fingerprint(pub),
-		"signature":       base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, digest[:])),
-	})
-	write(".peipkg/signature", envelope)
+	if priv != nil {
+		signed := bytes.Clone(tarBuf.Bytes())
+		digest := sha256.Sum256(signed)
+		envelope := mustMarshal(t, map[string]any{
+			"schema_version": 1, "algorithm": "ed25519",
+			"key_fingerprint": signature.Fingerprint(pub),
+			"signature":       base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, digest[:])),
+		})
+		write(".peipkg/signature", envelope)
+	}
 	if err := tw.Close(); err != nil {
 		t.Fatalf("tar Close: %v", err)
 	}
@@ -881,5 +884,198 @@ func TestInstallMaxIndexStalenessGate(t *testing.T) {
 	served["/index/active.json.sig"] = detachedSig(priv, index3)
 	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
 		t.Fatalf("install after a genuinely newer index: %v", err)
+	}
+}
+
+// §5.37: under `optional`, unsigned content is accepted *with a
+// per-operation warning*, on every install and upgrade rather than once
+// per session, so a misconfigured trust state stays continuously
+// visible.
+//
+// warnUnsigned covered only the fully unsigned mode — signature policy
+// `optional` with no trust anchors at all. An `optional` repository that
+// *has* anchors accepted an unsigned package with no output whatsoever,
+// which is exactly the "operator forgot they opted in" case the warning
+// exists for (PEI-439).
+func TestOptionalPolicyWarnsOnEveryUnsignedInstall(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	fp := signature.Fingerprint(pub)
+
+	const pkgName, pkgVer = "hello", "1.0-1"
+	// The repository's metadata is signed; the package is not.
+	pkgBytes, sizeInstalled := buildSignedPackageEx(t, nil, pub, pkgName, pkgVer,
+		map[string]string{"usr/bin/hello": "#!/bin/sh\necho hi\n"}, nil)
+	pkgSum := sha256.Sum256(pkgBytes)
+	pkgURL := "/p/hello/1.0-1/hello_1.0-1_x86_64.peipkg"
+
+	descriptor := mustMarshal(t, map[string]any{
+		"schema_version": 1,
+		"repo": map[string]any{"name": "test", "signing": map[string]any{
+			"algorithm": "ed25519",
+			"keys": []any{map[string]any{
+				"fingerprint": fp, "url": "/keys/" + fp + ".pub", "status": "active"}}}},
+		"indexes": map[string]any{
+			"active": map[string]any{
+				"url": "/index/active.json", "signature_url": "/index/active.json.sig"},
+			"archive": map[string]any{
+				"url": "/index/archive.json", "signature_url": "/index/archive.json.sig"}},
+	})
+	index := mustMarshal(t, map[string]any{
+		"schema_version": 1, "repo": "test", "kind": "active",
+		"index_version": 1, "generated_at": daysAgo(2),
+		"packages": []any{map[string]any{
+			"name": pkgName, "version": pkgVer, "architecture": "x86_64",
+			"dependencies": []any{}, "conflicts": []any{},
+			"size_compressed": len(pkgBytes), "size_installed": sizeInstalled,
+			"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(pkgSum[:])},
+			"url":  pkgURL}},
+	})
+	served := map[string][]byte{
+		"/repo.json":             descriptor,
+		"/repo.json.sig":         detachedSig(priv, descriptor),
+		"/keys/" + fp + ".pub":   []byte(pub),
+		"/index/active.json":     index,
+		"/index/active.json.sig": detachedSig(priv, index),
+		pkgURL:                   pkgBytes,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := served[r.URL.Path]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(t.TempDir(), strings.NewReader(""), out, errOut)
+	app.emitter = &audit.Recorder{}
+
+	// Anchors present, so this is not UnsignedMode — the case that used
+	// to produce nothing at all.
+	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure",
+		"--policy", "optional"}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+
+	errOut.Reset()
+	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "unsigned") {
+		t.Fatalf("no unsigned warning on stderr; got:\n%s", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), pkgName) {
+		t.Errorf("the warning does not name the package; got:\n%s", errOut.String())
+	}
+
+	// Per operation, not once per session: the next one warns too.
+	if err := cmdUninstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+	errOut.Reset()
+	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "unsigned") {
+		t.Errorf("the warning did not repeat on the second operation; got:\n%s", errOut.String())
+	}
+}
+
+// §5.36: a consumer whose cached index for a configured repository fails
+// to load or verify treats that as a failure of the operation rather
+// than proceeding without that repository.
+//
+// availableSet warned and continued, so resolution ran against a
+// different set of repositories than the operator configured. That does
+// not merely lose candidates: it can promote a lower-priority
+// repository's package into the role the dropped one was filling, and
+// the cross-repository guards compare priorities against what is
+// *configured*, so an absent repository contributes nothing to them
+// either (PEI-446).
+func TestAnUnusableCachedIndexFailsTheOperation(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	fp := signature.Fingerprint(pub)
+
+	const pkgName, pkgVer = "hello", "1.0-1"
+	pkgBytes, sizeInstalled := buildSignedPackage(t, priv, pub, pkgName, pkgVer,
+		map[string]string{"usr/bin/hello": "#!/bin/sh\necho hi\n"})
+	pkgSum := sha256.Sum256(pkgBytes)
+	pkgURL := "/p/hello/1.0-1/hello_1.0-1_x86_64.peipkg"
+
+	descriptor := mustMarshal(t, map[string]any{
+		"schema_version": 1,
+		"repo": map[string]any{"name": "test", "signing": map[string]any{
+			"algorithm": "ed25519",
+			"keys": []any{map[string]any{
+				"fingerprint": fp, "url": "/keys/" + fp + ".pub", "status": "active"}}}},
+		"indexes": map[string]any{
+			"active": map[string]any{
+				"url": "/index/active.json", "signature_url": "/index/active.json.sig"},
+			"archive": map[string]any{
+				"url": "/index/archive.json", "signature_url": "/index/archive.json.sig"}},
+	})
+	index := mustMarshal(t, map[string]any{
+		"schema_version": 1, "repo": "test", "kind": "active",
+		"index_version": 1, "generated_at": daysAgo(2),
+		"packages": []any{map[string]any{
+			"name": pkgName, "version": pkgVer, "architecture": "x86_64",
+			"dependencies": []any{}, "conflicts": []any{},
+			"size_compressed": len(pkgBytes), "size_installed": sizeInstalled,
+			"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(pkgSum[:])},
+			"url":  pkgURL}},
+	})
+	served := map[string][]byte{
+		"/repo.json":             descriptor,
+		"/repo.json.sig":         detachedSig(priv, descriptor),
+		"/keys/" + fp + ".pub":   []byte(pub),
+		"/index/active.json":     index,
+		"/index/active.json.sig": detachedSig(priv, index),
+		pkgURL:                   pkgBytes,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := served[r.URL.Path]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	root := t.TempDir()
+	app := newApp(root, strings.NewReader(""), out, errOut)
+	app.emitter = &audit.Recorder{}
+	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure"}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+
+	// Corrupt the cached index so it no longer verifies.
+	withDB(t, app, func(store *db.DB) {
+		row, found, err := store.GetRepository(context.Background(), "test")
+		if err != nil || !found {
+			t.Fatalf("GetRepository: found=%v err=%v", found, err)
+		}
+		row.HighestIndexVersion = 99 // the cache no longer matches the trust state
+		if err := store.UpsertRepository(context.Background(), row); err != nil {
+			t.Fatalf("UpsertRepository: %v", err)
+		}
+	})
+
+	err = cmdInstall(app, []string{pkgName, "--yes"})
+	if err == nil {
+		t.Fatal("the install proceeded although a configured repository had no usable index")
+	}
+	if !strings.Contains(err.Error(), "no usable cached index") {
+		t.Errorf("error %q does not say the index was unusable", err)
+	}
+	if !strings.Contains(err.Error(), "test") {
+		t.Errorf("error %q does not name the repository", err)
 	}
 }
