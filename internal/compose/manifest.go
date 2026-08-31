@@ -453,15 +453,29 @@ func manifestDigest(m Manifest) string {
 		Name       string `json:"name"`
 		Constraint string `json:"constraint"`
 		Repository string `json:"repository"`
+		Root       string `json:"root"`
+	}
+	type rootDigest struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
 	}
 	type digest struct {
-		Schema              int             `json:"schema"`
-		Arch                string          `json:"arch"`
-		SourceDate          string          `json:"source_date"`
-		Repositories        []repoDigest    `json:"repositories"`
-		LocalPackages       []string        `json:"local_packages"`
-		LocalPackageBaseDir string          `json:"local_package_base_dir"`
-		Packages            []packageDigest `json:"packages"`
+		Schema              int          `json:"schema"`
+		Arch                string       `json:"arch"`
+		SourceDate          string       `json:"source_date"`
+		Repositories        []repoDigest `json:"repositories"`
+		LocalPackages       []string     `json:"local_packages"`
+		LocalPackageBaseDir string       `json:"local_package_base_dir"`
+		// Roots and a package's Root placement influence resolution as
+		// surely as a constraint does: the multi-root resolver routes
+		// every request and every cross-root dependency through them.
+		// Omitting them made editing a [[root]]'s path, adding or
+		// removing a [[root]], or moving a package between roots produce
+		// an identical digest — so a plain build with no --update
+		// accepted the stale lock and silently rebuilt the previous
+		// placement, with no warning (PEI-412).
+		Roots    []rootDigest    `json:"roots"`
+		Packages []packageDigest `json:"packages"`
 	}
 
 	d := digest{
@@ -490,9 +504,13 @@ func manifestDigest(m Manifest) string {
 			MinIndexVersion:        r.MinIndexVersion,
 		})
 	}
+	for _, r := range m.Roots {
+		d.Roots = append(d.Roots, rootDigest{Name: r.Name, Path: r.Path})
+	}
 	for _, p := range m.Packages {
 		d.Packages = append(d.Packages, packageDigest{
 			Name: p.Name, Constraint: p.Constraint.String(), Repository: p.Repository,
+			Root: p.Root,
 		})
 	}
 	raw, _ := json.Marshal(d) // d contains only JSON scalar and slice fields.

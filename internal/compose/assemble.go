@@ -65,6 +65,19 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 	if _, ok := byRoot[""]; !ok {
 		byRoot[""] = nil
 	}
+	// So does every *declared* root. byRoot came from the fetched
+	// packages, so a [[root]] nothing was placed in was registered in the
+	// anchor and never created — the registry entry pointed at a
+	// directory that did not exist, and `peipkg --root <name>` on the
+	// booted image failed opening its database. A declared empty root is
+	// a reasonable thing to want, as somewhere to install into later, so
+	// it is assembled like any other: created, with its own database
+	// holding nothing (PEI-436).
+	for _, r := range m.Roots {
+		if _, ok := byRoot[r.Path]; !ok {
+			byRoot[r.Path] = nil
+		}
+	}
 
 	rels := make([]string, 0, len(byRoot))
 	for rel := range byRoot {

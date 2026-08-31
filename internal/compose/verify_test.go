@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -406,5 +408,106 @@ func TestComposeLayoutRefusesLclPolicyEvenUnderBypass(t *testing.T) {
 	}
 	if err := checkComposeLayout(fp, true); err != nil {
 		t.Errorf("minting the empty /lcl/policy skeleton was refused: %v", err)
+	}
+}
+
+// A [[root]] no package is placed in was registered in the anchor's
+// named-root table and never created, so the registry entry pointed at a
+// directory that did not exist and `peipkg --root <name>` on the booted
+// image failed opening its database. A declared empty root is a
+// reasonable thing to want — somewhere to install into later — so it is
+// assembled like any other (PEI-436).
+func TestAssembleCreatesADeclaredRootWithNoPackages(t *testing.T) {
+	content := []byte("#!/bin/sh\necho hi\n")
+	entries := []testEntry{
+		{Path: "usr", IsDir: true},
+		{Path: "usr/bin", IsDir: true},
+		{Path: "usr/bin/foo", Content: content},
+	}
+	size := int64(len(content))
+	raw := buildPeipkg(t, minimalManifestJSON(t, "foo", "1.0-1", "x86_64", size), entries)
+	sum := sha256.Sum256(raw)
+	url := "https://pkgs.peios.org/pool/foo.peipkg"
+
+	m := Manifest{
+		Arch:       "x86_64",
+		SourceDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		// Two roots declared; only the anchor gets a package.
+		Roots:    []Root{{Name: "initramfs", Path: "boot/initramfs"}},
+		Packages: []PackageRequest{{Name: "foo"}},
+	}
+	lock := lockFor(t, hex.EncodeToString(sum[:]), size, LockedSource{
+		Name: "official", SignaturePolicy: string(config.PolicyOptional),
+	})
+	ctx := context.Background()
+	fetched, err := fetchAll(ctx, lock, fakeFetcher{url: raw})
+	if err != nil {
+		t.Fatalf("fetchAll: %v", err)
+	}
+
+	out := filepath.Join(t.TempDir(), "root")
+	if err := assemble(ctx, out, m, fetched, false, nil); err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+
+	// The declared root exists, and carries its own database — which is
+	// what `peipkg --root initramfs` opens.
+	empty := filepath.Join(out, "boot/initramfs")
+	if fi, err := os.Stat(empty); err != nil || !fi.IsDir() {
+		t.Fatalf("the declared empty root was not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, "var/state/peipkg/db.sqlite")); err != nil {
+		t.Errorf("the declared empty root has no database: %v", err)
+	}
+}
+
+// §: the manifest digest exists so a build refuses a lock that no longer
+// describes the manifest. Roots influence resolution as surely as a
+// constraint does — the multi-root resolver routes every request and
+// every cross-root dependency through them — and the digest covered
+// none of it, so a plain build with no --update accepted the stale lock
+// and silently rebuilt the previous placement (PEI-412).
+func TestManifestDigestCoversRootInformation(t *testing.T) {
+	base := Manifest{
+		Arch:       "x86_64",
+		SourceDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		Roots:      []Root{{Name: "initramfs", Path: "boot/initramfs"}},
+		Packages:   []PackageRequest{{Name: "foo"}, {Name: "bar", Root: "initramfs"}},
+	}
+	want := manifestDigest(base)
+
+	for name, mutate := range map[string]func(*Manifest){
+		"a root's path changes": func(m *Manifest) {
+			m.Roots = []Root{{Name: "initramfs", Path: "boot/irf"}}
+		},
+		"a root is added": func(m *Manifest) {
+			m.Roots = append(append([]Root(nil), m.Roots...), Root{Name: "spare", Path: "spare"})
+		},
+		"a root is removed": func(m *Manifest) {
+			m.Roots = nil
+			m.Packages = []PackageRequest{{Name: "foo"}, {Name: "bar"}}
+		},
+		"a package moves between roots": func(m *Manifest) {
+			m.Packages = []PackageRequest{{Name: "foo", Root: "initramfs"}, {Name: "bar"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := base
+			m.Roots = append([]Root(nil), base.Roots...)
+			m.Packages = append([]PackageRequest(nil), base.Packages...)
+			mutate(&m)
+			if got := manifestDigest(m); got == want {
+				t.Errorf("the digest did not change, so a stale lock would be accepted")
+			}
+		})
+	}
+
+	// And an unrelated edit still leaves it alone, or every build would
+	// demand --update.
+	same := base
+	same.Roots = append([]Root(nil), base.Roots...)
+	same.Packages = append([]PackageRequest(nil), base.Packages...)
+	if got := manifestDigest(same); got != want {
+		t.Errorf("the digest is not stable across an identical manifest")
 	}
 }
