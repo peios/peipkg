@@ -44,6 +44,11 @@ type fileOp struct {
 	// backupPath holds the displaced old content for a replace or
 	// remove — the backup-by-rename target.
 	backupPath string
+	// keepBackup preserves backupPath past commit. It is set for an
+	// authorised overwrite of an unowned file (§7.1.5): the displacement
+	// is the whole point of the authorisation, so discarding it at
+	// commit would destroy exactly the content the rule exists to save.
+	keepBackup bool
 }
 
 // tempPath builds a sibling temporary path for finalPath: the same
@@ -147,10 +152,14 @@ func rollbackOp(op fileOp) error {
 // backups serve no purpose — recovery only ever rolls back a *pending*
 // transaction. A failed removal is reported, not fatal: the
 // transaction has already committed.
+//
+// A backup marked keepBackup is the exception: an authorised overwrite
+// of an unowned file displaced content peipkg did not put there, and
+// keeping that displacement is what the authorisation bought (§7.1.5).
 func discardBackups(ops []fileOp) []string {
 	var warnings []string
 	for _, op := range ops {
-		if op.backupPath == "" {
+		if op.backupPath == "" || op.keepBackup {
 			continue
 		}
 		if err := os.Remove(op.backupPath); err != nil && !os.IsNotExist(err) {

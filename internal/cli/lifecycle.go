@@ -34,6 +34,8 @@ func cmdInstall(app *App, args []string) error {
 		"proceed although a repository's trust state exceeds its maximum trusted age (§6.5.4)")
 	bypassPaths := fs.Bool("dangerously-bypass-path-restrictions", false,
 		"permit packages declaring special_system_package to install outside the §3.4 layout")
+	overwriteUnowned := fs.Bool("overwrite-unowned", false,
+		"replace pre-existing files that belong to no package, keeping the displaced copy (§7.1.5)")
 	bypassAlt := fs.Bool("bypass-alternate-upgrade", false,
 		"proceed with packages declaring alternate_upgrade instead of refusing them (§5.18)")
 	pos, err := parseArgs(fs, args)
@@ -44,6 +46,7 @@ func cmdInstall(app *App, args []string) error {
 		return fmt.Errorf("install: at least one package name or .peipkg file is required")
 	}
 	app.bypassPathRestrictions = *bypassPaths
+	app.overwriteUnowned = *overwriteUnowned
 	app.bypassAlternateUpgrade = *bypassAlt
 	claimDir, err := claimDirective(*noClaim, *claimAll, *claimRoles)
 	if err != nil {
@@ -396,6 +399,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		Claims:                 claimDir,
 		Provider:               provider,
 		BypassPathRestrictions: app.bypassPathRestrictions,
+		OverwriteUnowned:       app.overwriteUnowned,
 		SDOverridePolicy:       app.sdOverridePolicy(),
 	}
 	result, err := install.Execute(ctx, plan, env)
@@ -575,6 +579,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 			PeipkgVersion: peipkgVersion, RunSideEffects: true,
 			Claims: claimDir, Provider: provider,
 			BypassPathRestrictions: app.bypassPathRestrictions,
+			OverwriteUnowned:       app.overwriteUnowned,
 			SDOverridePolicy:       app.sdOverridePolicy(),
 		}
 	}
