@@ -107,6 +107,45 @@ func Build(ctx context.Context, opts BuildOptions) (BuildResult, error) {
 	}, nil
 }
 
+// SourceScan is the verified candidate universe of a manifest's
+// declared sources — every repository's trust-verified index entries
+// and every local pool file's manifest, gathered once. It is a
+// snapshot of pure data: no open handles, nothing that goes stale on
+// disk, and no content hashes (those are computed per lock, for the
+// packages each lock chooses). A tool locking several manifests over
+// the same sources scans once and passes the scan to each lock, which
+// both halves the work and makes every lock see one universe.
+type SourceScan struct {
+	scan *internalcompose.SourceScan
+}
+
+// ScanOptions configures a source scan.
+type ScanOptions struct {
+	// ManifestPath is the path to a peipkg-compose manifest TOML whose
+	// declared sources are scanned. The scan serves any manifest that
+	// declares exactly the same sources.
+	ManifestPath string
+	// Fetcher retrieves repository documents. When nil, peipkg's
+	// production HTTP/file fetcher is used.
+	Fetcher Fetcher
+	// Warnings receives non-fatal notices and may be nil.
+	Warnings io.Writer
+}
+
+// ScanSources gathers and verifies the candidate universe of the
+// manifest's declared sources, for LockManifest calls to share.
+func ScanSources(ctx context.Context, opts ScanOptions) (*SourceScan, error) {
+	m, err := internalcompose.LoadManifest(opts.ManifestPath)
+	if err != nil {
+		return nil, err
+	}
+	s, err := internalcompose.ScanSources(ctx, m, fetcherOrDefault(opts.Fetcher), opts.Warnings)
+	if err != nil {
+		return nil, err
+	}
+	return &SourceScan{scan: s}, nil
+}
+
 // LockOptions configures manifest resolution.
 type LockOptions struct {
 	// ManifestPath is the path to the peipkg-compose manifest TOML.
@@ -119,6 +158,11 @@ type LockOptions struct {
 	Fetcher Fetcher
 	// Warnings receives non-fatal notices and may be nil.
 	Warnings io.Writer
+	// Sources, when set, reuses an existing scan instead of scanning
+	// this manifest's sources. The manifest must declare exactly the
+	// sources the scan was taken from — a mismatch is refused, so
+	// misuse is an error rather than a subtly different build.
+	Sources *SourceScan
 }
 
 // LockResult describes the lock written by a manifest-resolution run.
@@ -131,8 +175,12 @@ type LockResult struct {
 // LockManifest resolves a compose manifest, writes the resulting lock,
 // and returns lock metadata for provenance.
 func LockManifest(ctx context.Context, opts LockOptions) (LockResult, error) {
+	var scan *internalcompose.SourceScan
+	if opts.Sources != nil {
+		scan = opts.Sources.scan
+	}
 	result, err := internalcompose.LockManifestWithResult(ctx, opts.ManifestPath, opts.LockPath,
-		fetcherOrDefault(opts.Fetcher), opts.Warnings)
+		fetcherOrDefault(opts.Fetcher), opts.Warnings, scan)
 	if err != nil {
 		return LockResult{}, err
 	}

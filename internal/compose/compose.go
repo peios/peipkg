@@ -18,7 +18,7 @@ import (
 // is empty, the lock is written to [LockPath]`(manifestPath)`.
 func LockManifest(ctx context.Context, manifestPath, lockPath string,
 	fetcher repository.Fetcher, warnings io.Writer) error {
-	_, err := LockManifestWithResult(ctx, manifestPath, lockPath, fetcher, warnings)
+	_, err := LockManifestWithResult(ctx, manifestPath, lockPath, fetcher, warnings, nil)
 	return err
 }
 
@@ -30,9 +30,11 @@ type LockResult struct {
 }
 
 // LockManifestWithResult resolves a manifest, writes the resulting lock,
-// and returns the lock metadata needed by embedding build tools.
+// and returns the lock metadata needed by embedding build tools. A
+// non-nil scan is reused instead of scanning the manifest's own sources
+// (see ResolveWithSources for the rules).
 func LockManifestWithResult(ctx context.Context, manifestPath, lockPath string,
-	fetcher repository.Fetcher, warnings io.Writer) (LockResult, error) {
+	fetcher repository.Fetcher, warnings io.Writer, scan *SourceScan) (LockResult, error) {
 
 	m, err := LoadManifest(manifestPath)
 	if err != nil {
@@ -41,7 +43,7 @@ func LockManifestWithResult(ctx context.Context, manifestPath, lockPath string,
 	if lockPath == "" {
 		lockPath = LockPath(manifestPath)
 	}
-	lock, err := Resolve(ctx, m, filepath.Base(manifestPath), fetcher, warnings)
+	lock, err := ResolveWithSources(ctx, m, filepath.Base(manifestPath), fetcher, warnings, scan)
 	if err != nil {
 		return LockResult{}, err
 	}

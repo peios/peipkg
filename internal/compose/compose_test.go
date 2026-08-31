@@ -388,6 +388,70 @@ func TestResolveVerifiesOnlyChosenLocalPackages(t *testing.T) {
 	}
 }
 
+// One scan serves any number of locks over the same declared sources;
+// a manifest declaring different sources, or needing archive indexes
+// the scan did not fetch, is refused rather than resolved differently.
+func TestResolveWithSharedScan(t *testing.T) {
+	dir := t.TempDir()
+	for name, raw := range map[string][]byte{
+		"foo.peipkg": buildPeipkg(t, minimalManifestJSON(t, "foo", "1.0-1", "x86_64", 1),
+			[]testEntry{{Path: "usr/bin/foo", Content: []byte("x")}}),
+		"bar.peipkg": buildPeipkg(t, minimalManifestJSON(t, "bar", "1.0-1", "x86_64", 1),
+			[]testEntry{{Path: "usr/bin/bar", Content: []byte("y")}}),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), raw, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	manifest := func(pkgs ...PackageRequest) Manifest {
+		return Manifest{
+			Arch:          "x86_64",
+			SourceDate:    time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+			LocalPackages: []string{filepath.Join(dir, "*.peipkg")},
+			Packages:      pkgs,
+		}
+	}
+	ctx := context.Background()
+
+	scan, err := ScanSources(ctx, manifest(PackageRequest{Name: "foo"}), fakeFetcher{}, nil)
+	if err != nil {
+		t.Fatalf("ScanSources: %v", err)
+	}
+	lock1, err := ResolveWithSources(ctx, manifest(PackageRequest{Name: "foo"}), "m1",
+		fakeFetcher{}, nil, scan)
+	if err != nil {
+		t.Fatalf("ResolveWithSources(foo): %v", err)
+	}
+	lock2, err := ResolveWithSources(ctx, manifest(PackageRequest{Name: "bar"}), "m2",
+		fakeFetcher{}, nil, scan)
+	if err != nil {
+		t.Fatalf("ResolveWithSources(bar): %v", err)
+	}
+	if len(lock1.Packages) != 1 || lock1.Packages[0].Name != "foo" || lock1.Packages[0].Hash == "" {
+		t.Fatalf("lock1 = %+v, want hashed foo", lock1.Packages)
+	}
+	if len(lock2.Packages) != 1 || lock2.Packages[0].Name != "bar" || lock2.Packages[0].Hash == "" {
+		t.Fatalf("lock2 = %+v, want hashed bar", lock2.Packages)
+	}
+
+	other := manifest(PackageRequest{Name: "foo"})
+	other.LocalPackages = []string{filepath.Join(t.TempDir(), "*.peipkg")}
+	if _, err := ResolveWithSources(ctx, other, "m3", fakeFetcher{}, nil, scan); err == nil ||
+		!strings.Contains(err.Error(), "different package sources") {
+		t.Fatalf("ResolveWithSources(other sources) = %v, want a source-mismatch refusal", err)
+	}
+
+	pin, err := version.ParseConstraint("1.0-1")
+	if err != nil {
+		t.Fatalf("ParseConstraint: %v", err)
+	}
+	if _, err := ResolveWithSources(ctx, manifest(PackageRequest{Name: "foo", Constraint: pin}),
+		"m4", fakeFetcher{}, nil, scan); err == nil ||
+		!strings.Contains(err.Error(), "historical") {
+		t.Fatalf("ResolveWithSources(pinned, archiveless scan) = %v, want an archive refusal", err)
+	}
+}
+
 func TestBuildWithResultUsesExplicitLockPath(t *testing.T) {
 	payload := []byte("#!/bin/sh\n")
 	raw := buildPeipkg(t,

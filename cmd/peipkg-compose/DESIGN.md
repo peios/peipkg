@@ -299,6 +299,22 @@ repositories reachable at all.
 A `source = "local"` entry records a `local_packages` file by path and
 hash instead of a URL.
 
+### Sharing a scan between locks
+
+A tool that locks several manifests over the same sources — peiso locks
+an image's root and then its medium repository — can gather the
+candidate universe once: `ScanSources` runs the repository trust
+ceremony and the pool's manifest reads, and each `LockManifest` accepts
+the resulting `SourceScan`. The scan is a snapshot of pure data keyed to
+the *source declarations* (a digest over the repositories and the
+resolved local patterns): a manifest declaring different sources, or
+needing archive indexes the scan did not fetch, is refused rather than
+resolved differently. It records no content hashes — those are computed
+per lock, for the packages that lock chooses — so nothing stale can be
+carried between locks. The snapshot is also a coherence property: both
+locks of one build see one universe, where two independent scans could
+straddle a pool republish.
+
 ## Command surface
 
 Two verbs.

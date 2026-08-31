@@ -20,21 +20,34 @@ import (
 	"github.com/peios/peipkg/internal/resolver"
 )
 
-// Resolve turns a manifest into a lock. It fetches and verifies every
-// configured repository's signed metadata, joins the local packages to
-// the candidate set, resolves the requested packages and their
-// dependencies into one closure, and returns it as a Lock.
+// SourceScan is the verified candidate universe of a manifest's
+// declared sources: every repository's trust-verified index entries and
+// every local pool file's manifest, gathered once by ScanSources. It is
+// immutable, holds pure data — no open handles, no cache directory —
+// and serves any number of Resolve calls whose manifests declare the
+// same sources. The scan records no content hashes: those are computed
+// per lock, for the packages that lock chooses.
+type SourceScan struct {
+	// digest is sourcesDigest of the scanned manifest; a reusing
+	// manifest must match it.
+	digest string
+	// archive records whether the repositories' archive indexes were
+	// fetched — they are, when the scanning manifest's constraints may
+	// need historical versions.
+	archive    bool
+	candidates []resolver.Candidate
+}
+
+// ScanSources gathers the candidate universe of m's declared sources.
+// This is where repository trust is established: descriptor and index
+// signatures are verified here. Local pool files join on their manifest
+// alone (see localCandidates).
 //
-// Resolution is where repository trust is established: descriptor and
-// index signatures are verified here, and the content hashes Resolve
-// records in the lock are the carried-forward result. A build from the
-// lock then needs only to match those hashes.
-//
-// fetcher retrieves repository documents — the production HTTP fetcher,
-// or a test double. manifestName is recorded in the lock as provenance.
-// warnings receives non-fatal notices and may be nil.
-func Resolve(ctx context.Context, m Manifest, manifestName string,
-	fetcher repository.Fetcher, warnings io.Writer) (Lock, error) {
+// A scan is a snapshot: sources changing after it are not seen, which
+// is exactly what a multi-lock build wants — every lock resolves
+// against one universe.
+func ScanSources(ctx context.Context, m Manifest, fetcher repository.Fetcher,
+	warnings io.Writer) (*SourceScan, error) {
 
 	if warnings == nil {
 		warnings = io.Discard
@@ -45,32 +58,82 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 	// root's repository state is bootstrapped on its first refresh.
 	scratch, err := os.MkdirTemp("", "peipkg-compose-resolve-")
 	if err != nil {
-		return Lock{}, fmt.Errorf("peipkg/compose: creating scratch directory: %w", err)
+		return nil, fmt.Errorf("peipkg/compose: creating scratch directory: %w", err)
 	}
 	defer os.RemoveAll(scratch)
 
 	store, err := db.Open(ctx, filepath.Join(scratch, "db.sqlite"))
 	if err != nil {
-		return Lock{}, err
+		return nil, err
 	}
 	defer store.Close()
 	client := repository.NewClient(fetcher, store, filepath.Join(scratch, "cache"))
 
-	candidates, err := repositoryCandidates(ctx, client, m.Repositories,
-		manifestNeedsArchive(m.Packages), warnings)
+	needArchive := manifestNeedsArchive(m.Packages)
+	candidates, err := repositoryCandidates(ctx, client, m.Repositories, needArchive, warnings)
 	if err != nil {
-		return Lock{}, err
+		return nil, err
 	}
 	locals, err := localCandidates(m.LocalPackages, localPackageBaseDir(m))
 	if err != nil {
-		return Lock{}, err
+		return nil, err
 	}
-	candidates = append(candidates, locals...)
+	return &SourceScan{
+		digest:     sourcesDigest(m),
+		archive:    needArchive,
+		candidates: append(candidates, locals...),
+	}, nil
+}
+
+// Resolve turns a manifest into a lock: it scans the manifest's sources
+// (see ScanSources) and resolves the requested packages and their
+// dependencies into one closure.
+//
+// The content hashes Resolve records in the lock carry the scan's
+// verified trust forward. A build from the lock then needs only to
+// match those hashes.
+//
+// fetcher retrieves repository documents — the production HTTP fetcher,
+// or a test double. manifestName is recorded in the lock as provenance.
+// warnings receives non-fatal notices and may be nil.
+func Resolve(ctx context.Context, m Manifest, manifestName string,
+	fetcher repository.Fetcher, warnings io.Writer) (Lock, error) {
+	return ResolveWithSources(ctx, m, manifestName, fetcher, warnings, nil)
+}
+
+// ResolveWithSources is Resolve against an existing source scan; a nil
+// scan means scan m's own sources. A non-nil scan must have been taken
+// from a manifest declaring exactly m's sources, and must cover the
+// archive indexes if m's constraints can need historical versions —
+// reuse that could resolve differently than scanning fresh is refused,
+// not absorbed.
+func ResolveWithSources(ctx context.Context, m Manifest, manifestName string,
+	fetcher repository.Fetcher, warnings io.Writer, scan *SourceScan) (Lock, error) {
+
+	if warnings == nil {
+		warnings = io.Discard
+	}
+
+	if scan == nil {
+		var err error
+		if scan, err = ScanSources(ctx, m, fetcher, warnings); err != nil {
+			return Lock{}, err
+		}
+	} else {
+		if scan.digest != sourcesDigest(m) {
+			return Lock{}, fmt.Errorf("peipkg/compose: the manifest declares different package " +
+				"sources than the scan was taken from; scan this manifest's own sources")
+		}
+		if manifestNeedsArchive(m.Packages) && !scan.archive {
+			return Lock{}, fmt.Errorf("peipkg/compose: a manifest constraint may need historical " +
+				"versions but the scan did not fetch the archive indexes; scan from this manifest")
+		}
+	}
 
 	// A manifest version constraint or repository pin filters that
 	// package's candidates; the resolver then picks the newest of what
 	// survives. Dependencies are never filtered this way.
-	candidates, err = applyManifestPins(candidates, m.Packages)
+	candidates, err := applyManifestPins(scan.candidates, m.Packages)
 	if err != nil {
 		return Lock{}, err
 	}

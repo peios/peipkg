@@ -390,6 +390,52 @@ func missingKey(key string) error {
 // pointer-typed wire structs when encoding.
 func ptr[T any](v T) *T { return &v }
 
+// sourcesDigest returns a stable digest of the manifest fields that
+// declare where packages come from: the repositories and the local
+// package patterns. It is what ties a SourceScan to the manifests that
+// may reuse it — two manifests with equal source digests see the same
+// candidate universe, whatever they request from it. Like
+// manifestDigest, the local-pattern base directory joins only through a
+// relative pattern, so manifests in different directories naming the
+// same absolute pool agree.
+func sourcesDigest(m Manifest) string {
+	type repoDigest struct {
+		Name                   string   `json:"name"`
+		BaseURL                string   `json:"base_url"`
+		Priority               int      `json:"priority"`
+		SignaturePolicy        string   `json:"signature_policy"`
+		TrustAnchors           []string `json:"trust_anchors"`
+		AllowInsecureTransport bool     `json:"allow_insecure_transport"`
+		MinIndexVersion        int64    `json:"min_index_version"`
+	}
+	type digest struct {
+		Repositories        []repoDigest `json:"repositories"`
+		LocalPackages       []string     `json:"local_packages"`
+		LocalPackageBaseDir string       `json:"local_package_base_dir"`
+	}
+	d := digest{LocalPackages: append([]string(nil), m.LocalPackages...)}
+	for _, pat := range m.LocalPackages {
+		if !filepath.IsAbs(pat) {
+			d.LocalPackageBaseDir = localPackageBaseDir(m)
+			break
+		}
+	}
+	for _, r := range m.Repositories {
+		d.Repositories = append(d.Repositories, repoDigest{
+			Name:                   r.Name,
+			BaseURL:                r.BaseURL,
+			Priority:               r.Priority,
+			SignaturePolicy:        string(r.SignaturePolicy),
+			TrustAnchors:           append([]string(nil), r.TrustAnchors...),
+			AllowInsecureTransport: r.AllowInsecureTransport,
+			MinIndexVersion:        r.MinIndexVersion,
+		})
+	}
+	raw, _ := json.Marshal(d) // d contains only JSON scalar and slice fields.
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
 // manifestDigest returns a stable digest of the manifest fields that
 // influence resolution. It deliberately excludes the manifest filename,
 // which is lock provenance rather than build intent.
