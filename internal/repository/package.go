@@ -33,6 +33,15 @@ func packageFetchAllowance(sizeCompressed int64) int64 {
 	return min(sizeCompressed/100, maxPackageFetchAllowance)
 }
 
+// PackageFetchLimit is the §5.27 bound on a package download: the
+// index-declared size_compressed plus the lesser of 1% or 16 MiB. It is
+// exported so peipkg-compose, which downloads from a lock rather than
+// straight from an index, applies the same bound rather than a flat
+// figure of its own.
+func PackageFetchLimit(sizeCompressed int64) int64 {
+	return sizeCompressed + packageFetchAllowance(sizeCompressed)
+}
+
 // FetchPackage downloads, hash-checks, and signature-verifies a package
 // file. packageURL is the candidate's URL, resolved against cfg's base;
 // expectedHash is the lowercase-hex SHA-256 the index advertises
@@ -43,15 +52,15 @@ func packageFetchAllowance(sizeCompressed int64) int64 {
 // signature verification, or — under a `required` policy — is unsigned
 // is rejected.
 func (c *Client) FetchPackage(ctx context.Context, cfg config.RepoConfig,
-	packageURL, expectedHash string, sizeCompressed int64) (*archive.Package, []byte, error) {
+	packageURL, expectedHash string, sizeCompressed, sizeInstalled int64) (
+	*archive.Package, []byte, error) {
 
 	url, err := resolveURL(cfg.BaseURL, cfg.BaseURL+"/repo.json", packageURL,
 		cfg.AllowInsecureTransport)
 	if err != nil {
 		return nil, nil, err
 	}
-	data, err := c.fetcher.Fetch(ctx, url,
-		sizeCompressed+packageFetchAllowance(sizeCompressed))
+	data, err := c.fetcher.Fetch(ctx, url, PackageFetchLimit(sizeCompressed))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -76,7 +85,9 @@ func (c *Client) FetchPackage(ctx context.Context, cfg config.RepoConfig,
 	if err != nil {
 		return nil, nil, err
 	}
-	pkg, err := archive.Verify(bytes.NewReader(data), trust.Resolver(time.Now()))
+	// §5.27: the index's size_installed, not the manifest's, bounds
+	// decompression — the manifest is inside the stream being bounded.
+	pkg, err := archive.Verify(bytes.NewReader(data), trust.Resolver(time.Now()), sizeInstalled)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/peios/peipkg/internal/signature"
 )
 
 // testEntry is one payload entry in a test .peipkg.
@@ -30,6 +33,14 @@ type testEntry struct {
 // helper computes files.json from the regular-file entries and writes
 // the tar+zstd archive in the order archive.VerifyFormat requires.
 func buildPeipkg(t *testing.T, manifestJSON []byte, entries []testEntry) []byte {
+	t.Helper()
+	return buildPeipkgSigned(t, manifestJSON, entries, nil)
+}
+
+// buildPeipkgSigned is buildPeipkg with an inline §5.3 signature. A nil
+// priv builds the unsigned archive.
+func buildPeipkgSigned(t *testing.T, manifestJSON []byte, entries []testEntry,
+	priv ed25519.PrivateKey) []byte {
 	t.Helper()
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
@@ -59,12 +70,10 @@ func buildPeipkg(t *testing.T, manifestJSON []byte, entries []testEntry) []byte 
 		t.Fatalf("encode files.json: %v", err)
 	}
 
-	var buf bytes.Buffer
-	zw, err := zstd.NewWriter(&buf)
-	if err != nil {
-		t.Fatalf("zstd writer: %v", err)
-	}
-	tw := tar.NewWriter(zw)
+	// The tar is assembled uncompressed so the §5.1.2 signed byte range —
+	// everything before the signature entry's header — can be hashed.
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
 
 	// §5.11 pins mode, ownership, format and mtime; §5.16 makes the mode
 	// rule an explicit rejection condition.
@@ -108,8 +117,35 @@ func buildPeipkg(t *testing.T, manifestJSON []byte, entries []testEntry) []byte 
 		}
 	}
 
+	if priv != nil {
+		if err := tw.Flush(); err != nil {
+			t.Fatalf("tar flush: %v", err)
+		}
+		digest := sha256.Sum256(bytes.Clone(tarBuf.Bytes()))
+		pub := priv.Public().(ed25519.PublicKey)
+		env, err := json.Marshal(map[string]any{
+			"schema_version":  1,
+			"algorithm":       "ed25519",
+			"key_fingerprint": signature.Fingerprint(pub),
+			"signature":       base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, digest[:])),
+		})
+		if err != nil {
+			t.Fatalf("encode signature envelope: %v", err)
+		}
+		writeReg(".peipkg/signature", env)
+	}
+
 	if err := tw.Close(); err != nil {
 		t.Fatalf("tar close: %v", err)
+	}
+
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	if _, err := zw.Write(tarBuf.Bytes()); err != nil {
+		t.Fatalf("zstd write: %v", err)
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatalf("zstd close: %v", err)

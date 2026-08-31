@@ -43,7 +43,8 @@ func (p *repoProvider) Provide(ctx context.Context, op resolver.Operation) (inst
 			fmt.Errorf("no configuration for repository %q", op.Candidate.Repo)
 	}
 	pkg, raw, err := p.client.FetchPackage(ctx, cfg,
-		op.Candidate.URL, op.Candidate.Hash, op.Candidate.SizeCompressed)
+		op.Candidate.URL, op.Candidate.Hash,
+		op.Candidate.SizeCompressed, op.Candidate.SizeInstalled)
 	if err != nil {
 		return install.ProvidedPackage{}, err
 	}
@@ -67,7 +68,10 @@ func provideLocal(c resolver.Candidate) (install.ProvidedPackage, error) {
 		return install.ProvidedPackage{}, fmt.Errorf(
 			"local package %s hash mismatch (got %s, want %s)", path, got, c.Hash)
 	}
-	pkg, err := archive.VerifyFormat(bytes.NewReader(raw))
+	// A raw local file has no signed external record of its size: the
+	// candidate's own SizeInstalled was read from this very manifest, so
+	// it is not an independent declaration (§5.27).
+	pkg, err := archive.VerifyFormat(bytes.NewReader(raw), archive.NoDeclaredSize)
 	if err != nil {
 		return install.ProvidedPackage{}, fmt.Errorf("local package %s: %w", path, err)
 	}

@@ -49,7 +49,7 @@ func TestPackOrdersFileDirPrefixCollision(t *testing.T) {
 		t.Fatalf("pack: %v", err)
 	}
 
-	if _, err := archive.VerifyFormat(bytes.NewReader(buf.Bytes())); err != nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(buf.Bytes()), archive.NoDeclaredSize); err != nil {
 		t.Fatalf("VerifyFormat rejected a packed archive with a file/dir prefix collision: %v", err)
 	}
 }

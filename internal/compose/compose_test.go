@@ -39,7 +39,7 @@ func TestFetchAndAssemble(t *testing.T) {
 
 	// Sanity-check that peipkg's verifier accepts what the test helper
 	// produced — if it does not, the helper is the bug, not assemble.
-	if _, err := archive.VerifyFormat(bytes.NewReader(raw)); err != nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(raw), archive.NoDeclaredSize); err != nil {
 		t.Fatalf("archive.VerifyFormat rejected the test .peipkg: %v", err)
 	}
 
@@ -62,9 +62,11 @@ func TestFetchAndAssemble(t *testing.T) {
 	}
 	lock := Lock{
 		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{{
 			Name: "foo", Version: "1.0-1", Architecture: "x86_64",
 			Source: "official", URL: pkgURL, Hash: hash,
+			SizeInstalled: installedSize(t, raw),
 		}},
 	}
 	fetcher := fakeFetcher{pkgURL: raw}
@@ -183,7 +185,7 @@ func TestAssembleMaterializesClaims(t *testing.T) {
 	manifestJSON := providerManifestJSON(t, "prelude", "0.0.1-1", "x86_64",
 		int64(len(bin)), "init", "bin", "/usr/sbin/prelude", "/init")
 	raw := buildPeipkg(t, manifestJSON, entries)
-	if _, err := archive.VerifyFormat(bytes.NewReader(raw)); err != nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(raw), archive.NoDeclaredSize); err != nil {
 		t.Fatalf("archive.VerifyFormat rejected the test .peipkg: %v", err)
 	}
 
@@ -195,9 +197,11 @@ func TestAssembleMaterializesClaims(t *testing.T) {
 	m := Manifest{Arch: "x86_64", SourceDate: sourceDate, Packages: []PackageRequest{{Name: "prelude"}}}
 	lock := Lock{
 		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{{
 			Name: "prelude", Version: "0.0.1-1", Architecture: "x86_64",
 			Source: "official", URL: pkgURL, Hash: hash,
+			SizeInstalled: installedSize(t, raw),
 		}},
 	}
 	ctx := context.Background()
@@ -257,6 +261,7 @@ func TestFetchHashMismatch(t *testing.T) {
 	pkgURL := "https://example/x.peipkg"
 	lock := Lock{
 		Arch: "x86_64", SourceDate: time.Now(),
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{{
 			Name: "x", Version: "1.0-1", Architecture: "x86_64",
 			Source: "official", URL: pkgURL, Hash: strings.Repeat("d", 64),
@@ -484,12 +489,13 @@ name = "foo"
 		SourceDate: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 		Manifest:   filepath.Base(manifestPath),
 		Packages: []LockedPackage{{
-			Name:         "foo",
-			Version:      "1.0-1",
-			Architecture: "x86_64",
-			Source:       LocalSource,
-			URL:          pkgPath,
-			Hash:         hex.EncodeToString(sum[:]),
+			Name:          "foo",
+			Version:       "1.0-1",
+			Architecture:  "x86_64",
+			Source:        LocalSource,
+			URL:           pkgPath,
+			Hash:          hex.EncodeToString(sum[:]),
+			SizeInstalled: installedSize(t, raw),
 		}},
 	}
 	m, err := LoadManifest(manifestPath)
@@ -552,11 +558,14 @@ func TestAssembleMultiRoot(t *testing.T) {
 	}
 	lock := Lock{
 		Arch: m.Arch, SourceDate: sourceDate,
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{
 			{Name: "foo", Version: "1.0-1", Architecture: "x86_64", Source: "official",
-				URL: fooURL, Hash: hex.EncodeToString(fooSum[:])}, // Root "" → anchor
+				URL: fooURL, Hash: hex.EncodeToString(fooSum[:]),
+				SizeInstalled: installedSize(t, fooRaw)}, // Root "" → anchor
 			{Name: "bar", Version: "1.0-1", Architecture: "x86_64", Source: "official",
-				URL: barURL, Hash: hex.EncodeToString(barSum[:]), Root: "boot/initramfs"},
+				URL: barURL, Hash: hex.EncodeToString(barSum[:]),
+				SizeInstalled: installedSize(t, barRaw), Root: "boot/initramfs"},
 		},
 	}
 	fetched, err := fetchAll(ctx, lock, fakeFetcher{fooURL: fooRaw, barURL: barRaw})
@@ -742,4 +751,26 @@ func pinConstraint(t *testing.T, c string) version.Constraint {
 		t.Fatalf("ParseConstraint(%q): %v", c, err)
 	}
 	return parsed
+}
+
+// unsignedSource is the trust state a lock fixture records for the
+// synthetic "official" repository. The fixtures ship unsigned packages,
+// so the policy is `optional`: §5.30 verification still runs against the
+// (empty) trust set, and the §6.5.3 unsigned gate lets an unsigned
+// archive through. A fixture that wants the gate to fire sets
+// PolicyRequired instead.
+func unsignedSource() []LockedSource {
+	return []LockedSource{{Name: "official", SignaturePolicy: string(config.PolicyOptional)}}
+}
+
+// installedSize reports the size_installed a built test .peipkg
+// declares, so a lock fixture can carry the figure §5.27 requires the
+// two to agree on.
+func installedSize(t *testing.T, raw []byte) int64 {
+	t.Helper()
+	m, err := archive.ReadManifest(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("reading test package manifest: %v", err)
+	}
+	return m.SizeInstalled
 }

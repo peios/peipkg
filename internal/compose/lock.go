@@ -9,12 +9,18 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/peios/peipkg/internal/config"
+	"github.com/peios/peipkg/internal/repository"
 	"github.com/peios/peipkg/internal/version"
 )
 
 // lockSchema is the lock schema version peipkg-compose writes and reads.
-// Bumped to 3 for multi-root: a locked package may carry a target root.
-const lockSchema = 3
+// Bumped to 4 for verification: a lock now carries the trust state of
+// each repository it drew from (§5.30) and each package's
+// index-declared compressed and installed sizes (§5.27), so the build
+// phase can verify signatures and bound both the download and the
+// decompression without re-running the trust ceremony.
+const lockSchema = 4
 
 // LocalSource is the [LockedPackage.Source] value of a package supplied
 // as a local .peipkg file rather than fetched from a repository.
@@ -40,6 +46,27 @@ type Lock struct {
 	ManifestDigest string
 	// Packages is the resolved closure, sorted by name.
 	Packages []LockedPackage
+	// Sources carries forward the trust state of every repository the
+	// closure draws from, sorted by name. Trust is *established* at lock
+	// time — that is the design — but §5.30 requires the signature on
+	// each package to be checked against it before any payload is
+	// extracted, which happens in the build phase. Recording it here is
+	// what lets the use of that trust survive into the build.
+	Sources []LockedSource
+}
+
+// LockedSource is one repository the closure draws packages from, with
+// the trust the lock phase established for it.
+type LockedSource struct {
+	Name string
+	// SignaturePolicy is the repository's configured signature policy,
+	// so the build applies the same gate the lock resolved under.
+	SignaturePolicy string
+	// TrustKeys is the repository's trust set — fingerprint, raw public
+	// key, status and any valid_until — in the same JSON encoding the
+	// package database stores in repository.trust_keys. Empty for a
+	// repository in unsigned mode (§6.5.3), which has no keys.
+	TrustKeys string
 }
 
 // LockedPackage is one package of a resolved closure.
@@ -61,6 +88,16 @@ type LockedPackage struct {
 	// Hash is the lowercase-hex SHA-256 of the .peipkg file. A build
 	// verifies the fetched bytes against it.
 	Hash string
+	// SizeCompressed is the compressed size the index entry advertised,
+	// carried forward so the build bounds the download by §5.27's rule
+	// rather than by a flat figure of its own.
+	SizeCompressed int64
+	// SizeInstalled is the installed size the index entry advertised —
+	// carried forward from the signed index so the build phase can bound
+	// decompression without reading it out of the compressed stream
+	// (§5.27). For a local-source package it is the manifest's own
+	// figure, read at lock time and pinned by Hash like everything else.
+	SizeInstalled int64
 }
 
 // wireLock mirrors the lock's TOML shape. The scalar fields are
@@ -72,17 +109,26 @@ type wireLock struct {
 	SourceDate     *string             `toml:"source_date"`
 	Manifest       string              `toml:"manifest,omitempty"`
 	ManifestDigest *string             `toml:"manifest_digest,omitempty"`
+	Sources        []wireLockedSource  `toml:"source"`
 	Packages       []wireLockedPackage `toml:"package"`
 }
 
+type wireLockedSource struct {
+	Name            *string `toml:"name"`
+	SignaturePolicy *string `toml:"signature_policy"`
+	TrustKeys       string  `toml:"trust_keys"`
+}
+
 type wireLockedPackage struct {
-	Name         *string `toml:"name"`
-	Version      *string `toml:"version"`
-	Architecture *string `toml:"architecture"`
-	Source       *string `toml:"source"`
-	URL          *string `toml:"url"`
-	Hash         *string `toml:"hash"`
-	Root         string  `toml:"root,omitempty"`
+	Name           *string `toml:"name"`
+	Version        *string `toml:"version"`
+	Architecture   *string `toml:"architecture"`
+	Source         *string `toml:"source"`
+	URL            *string `toml:"url"`
+	Hash           *string `toml:"hash"`
+	SizeCompressed *int64  `toml:"size_compressed"`
+	SizeInstalled  *int64  `toml:"size_installed"`
+	Root           string  `toml:"root,omitempty"`
 }
 
 // LockPath derives a lock's path from its manifest's path: the manifest
@@ -144,11 +190,32 @@ func DecodeLock(data []byte) (Lock, error) {
 	if err := validateHash(l.ManifestDigest); err != nil {
 		return Lock{}, fmt.Errorf("peipkg/compose: lock manifest_digest: %w", err)
 	}
+	sourceNames := map[string]bool{}
+	for i, ws := range w.Sources {
+		src, err := decodeLockedSource(ws)
+		if err != nil {
+			return Lock{}, fmt.Errorf("peipkg/compose: lock source %d: %w", i, err)
+		}
+		if sourceNames[src.Name] {
+			return Lock{}, fmt.Errorf("peipkg/compose: lock names the source %q more than once",
+				src.Name)
+		}
+		sourceNames[src.Name] = true
+		l.Sources = append(l.Sources, src)
+	}
+
 	seen := map[string]bool{}
 	for i, wp := range w.Packages {
 		p, err := decodeLockedPackage(wp)
 		if err != nil {
 			return Lock{}, fmt.Errorf("peipkg/compose: lock package %d: %w", i, err)
+		}
+		// Every repository package must name a source the lock records
+		// the trust state of, or the build has no key to verify its
+		// signature against (§5.30).
+		if p.Source != LocalSource && !sourceNames[p.Source] {
+			return Lock{}, fmt.Errorf("peipkg/compose: lock package %q names the source %q, "+
+				"which the lock records no trust state for", p.Name, p.Source)
 		}
 		// Identity is (name, root): the same name may appear in two roots.
 		key := p.Root + "\x00" + p.Name
@@ -163,6 +230,31 @@ func DecodeLock(data []byte) (Lock, error) {
 		return Lock{}, fmt.Errorf("peipkg/compose: lock contains no packages")
 	}
 	return l, nil
+}
+
+// decodeLockedSource validates one [[source]] entry of a lock.
+func decodeLockedSource(w wireLockedSource) (LockedSource, error) {
+	switch {
+	case w.Name == nil || *w.Name == "":
+		return LockedSource{}, fmt.Errorf("missing %q", "name")
+	case w.SignaturePolicy == nil || *w.SignaturePolicy == "":
+		return LockedSource{}, fmt.Errorf("missing %q", "signature_policy")
+	}
+	switch config.SignaturePolicy(*w.SignaturePolicy) {
+	case config.PolicyRequired, config.PolicyOptional:
+	default:
+		return LockedSource{}, fmt.Errorf("signature_policy %q is neither %q nor %q",
+			*w.SignaturePolicy, config.PolicyRequired, config.PolicyOptional)
+	}
+	// The trust set is parsed here rather than at first use, so a
+	// corrupt lock is rejected as a lock rather than as a mid-build
+	// verification failure.
+	if _, err := repository.ParseTrustSet(w.TrustKeys); err != nil {
+		return LockedSource{}, err
+	}
+	return LockedSource{
+		Name: *w.Name, SignaturePolicy: *w.SignaturePolicy, TrustKeys: w.TrustKeys,
+	}, nil
 }
 
 // decodeLockedPackage validates one [[package]] entry of a lock.
@@ -180,6 +272,16 @@ func decodeLockedPackage(w wireLockedPackage) (LockedPackage, error) {
 		return LockedPackage{}, fmt.Errorf("missing %q", "url")
 	case w.Hash == nil:
 		return LockedPackage{}, fmt.Errorf("missing %q", "hash")
+	case w.SizeCompressed == nil:
+		return LockedPackage{}, fmt.Errorf("missing %q", "size_compressed")
+	case w.SizeInstalled == nil:
+		return LockedPackage{}, fmt.Errorf("missing %q", "size_installed")
+	}
+	if *w.SizeCompressed < 0 {
+		return LockedPackage{}, fmt.Errorf("size_compressed is %d", *w.SizeCompressed)
+	}
+	if *w.SizeInstalled < 0 {
+		return LockedPackage{}, fmt.Errorf("size_installed is %d", *w.SizeInstalled)
 	}
 	if _, err := version.Parse(*w.Version); err != nil {
 		return LockedPackage{}, err
@@ -189,7 +291,9 @@ func decodeLockedPackage(w wireLockedPackage) (LockedPackage, error) {
 	}
 	return LockedPackage{
 		Name: *w.Name, Version: *w.Version, Architecture: *w.Architecture,
-		Source: *w.Source, URL: *w.URL, Hash: *w.Hash, Root: w.Root,
+		Source: *w.Source, URL: *w.URL, Hash: *w.Hash,
+		SizeCompressed: *w.SizeCompressed, SizeInstalled: *w.SizeInstalled,
+		Root: w.Root,
 	}, nil
 }
 
@@ -207,6 +311,9 @@ func (l Lock) Encode() ([]byte, error) {
 		return pkgs[i].Name < pkgs[j].Name
 	})
 
+	srcs := append([]LockedSource(nil), l.Sources...)
+	sort.Slice(srcs, func(i, j int) bool { return srcs[i].Name < srcs[j].Name })
+
 	w := wireLock{
 		Schema:         ptr(lockSchema),
 		Arch:           ptr(l.Arch),
@@ -214,10 +321,18 @@ func (l Lock) Encode() ([]byte, error) {
 		Manifest:       l.Manifest,
 		ManifestDigest: ptr(l.ManifestDigest),
 	}
+	for _, src := range srcs {
+		w.Sources = append(w.Sources, wireLockedSource{
+			Name: ptr(src.Name), SignaturePolicy: ptr(src.SignaturePolicy),
+			TrustKeys: src.TrustKeys,
+		})
+	}
 	for _, p := range pkgs {
 		w.Packages = append(w.Packages, wireLockedPackage{
 			Name: ptr(p.Name), Version: ptr(p.Version), Architecture: ptr(p.Architecture),
-			Source: ptr(p.Source), URL: ptr(p.URL), Hash: ptr(p.Hash), Root: p.Root,
+			Source: ptr(p.Source), URL: ptr(p.URL), Hash: ptr(p.Hash),
+			SizeCompressed: ptr(p.SizeCompressed), SizeInstalled: ptr(p.SizeInstalled),
+			Root: p.Root,
 		})
 	}
 

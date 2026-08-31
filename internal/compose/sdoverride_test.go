@@ -91,9 +91,11 @@ func TestComposeRecordsSDOverrides(t *testing.T) {
 	m := Manifest{Arch: "x86_64", SourceDate: sourceDate, Packages: []PackageRequest{{Name: "fsbase"}}}
 	lock := Lock{
 		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{{
 			Name: "fsbase", Version: "1.0-1", Architecture: "x86_64",
 			Source: "official", URL: pkgURL, Hash: hex.EncodeToString(sum[:]),
+			SizeInstalled: installedSize(t, raw),
 		}},
 	}
 	ctx := context.Background()

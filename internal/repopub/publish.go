@@ -316,7 +316,9 @@ func ingest(pkgPath, template string, keys map[string]ed25519.PublicKey,
 	// repository that installs nothing. An unsigned package is not an
 	// error to Verify; it reports Signed=false and leaves the policy
 	// decision here, which is where it belongs.
-	pkg, err := archive.Verify(f, resolverOver(keys))
+	// The publisher is the party that will derive the index entry from
+	// this manifest, so there is no prior declaration to bound it by.
+	pkg, err := archive.Verify(f, resolverOver(keys), archive.NoDeclaredSize)
 	if err != nil {
 		return ingested{}, err
 	}

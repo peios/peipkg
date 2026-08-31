@@ -39,7 +39,7 @@ func TestAssembleStampsSidecars(t *testing.T) {
 	}
 	manifestJSON := minimalManifestJSON(t, "fw", "1.0-1", "x86_64", int64(len(fw)+pipsig.BlobLen))
 	raw := buildPeipkg(t, manifestJSON, entries)
-	if _, err := archive.VerifyFormat(bytes.NewReader(raw)); err != nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(raw), archive.NoDeclaredSize); err != nil {
 		t.Fatalf("archive.VerifyFormat rejected the test .peipkg: %v", err)
 	}
 
@@ -54,9 +54,11 @@ func TestAssembleStampsSidecars(t *testing.T) {
 	m := Manifest{Arch: "x86_64", SourceDate: sourceDate, Packages: []PackageRequest{{Name: "fw"}}}
 	lock := Lock{
 		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{{
 			Name: "fw", Version: "1.0-1", Architecture: "x86_64",
 			Source: "official", URL: pkgURL, Hash: hex.EncodeToString(sum[:]),
+			SizeInstalled: installedSize(t, raw),
 		}},
 	}
 	ctx := context.Background()
@@ -113,9 +115,11 @@ func TestComposeRejectsOrphanSidecar(t *testing.T) {
 	m := Manifest{Arch: "x86_64", SourceDate: sourceDate, Packages: []PackageRequest{{Name: "fw"}}}
 	lock := Lock{
 		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{{
 			Name: "fw", Version: "1.0-1", Architecture: "x86_64",
 			Source: "official", URL: pkgURL, Hash: hex.EncodeToString(sum[:]),
+			SizeInstalled: installedSize(t, raw),
 		}},
 	}
 	ctx := context.Background()
@@ -165,9 +169,11 @@ func TestAssembleRecordsSidecars(t *testing.T) {
 	m := Manifest{Arch: "x86_64", SourceDate: sourceDate, Packages: []PackageRequest{{Name: "fw"}}}
 	lock := Lock{
 		Arch: m.Arch, SourceDate: sourceDate, Manifest: "test.toml",
+		Sources: unsignedSource(),
 		Packages: []LockedPackage{{
 			Name: "fw", Version: "1.0-1", Architecture: "x86_64",
 			Source: "official", URL: pkgURL, Hash: hex.EncodeToString(sum[:]),
+			SizeInstalled: installedSize(t, raw),
 		}},
 	}
 	ctx := context.Background()

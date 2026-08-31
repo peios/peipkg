@@ -36,6 +36,10 @@ type SourceScan struct {
 	// need historical versions.
 	archive    bool
 	candidates []resolver.Candidate
+	// sources is the trust state established for each declared
+	// repository, keyed by name. A lock records the entries its own
+	// closure draws on (§5.30).
+	sources map[string]LockedSource
 }
 
 // ScanSources gathers the candidate universe of m's declared sources.
@@ -70,7 +74,8 @@ func ScanSources(ctx context.Context, m Manifest, fetcher repository.Fetcher,
 	client := repository.NewClient(fetcher, store, filepath.Join(scratch, "cache"))
 
 	needArchive := manifestNeedsArchive(m.Packages)
-	candidates, err := repositoryCandidates(ctx, client, m.Repositories, needArchive, warnings)
+	candidates, sources, err := repositoryCandidates(
+		ctx, client, store, m.Repositories, needArchive, warnings)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +87,7 @@ func ScanSources(ctx context.Context, m Manifest, fetcher repository.Fetcher,
 		digest:     sourcesDigest(m),
 		archive:    needArchive,
 		candidates: append(candidates, locals...),
+		sources:    sources,
 	}, nil
 }
 
@@ -183,15 +189,36 @@ func ResolveWithSources(ctx context.Context, m Manifest, manifestName string,
 			source = LocalSource
 		}
 		lock.Packages = append(lock.Packages, LockedPackage{
-			Name:         op.Name,
-			Version:      op.ToVersion.String(),
-			Architecture: op.Candidate.Architecture,
-			Source:       source,
-			URL:          op.Candidate.URL,
-			Hash:         op.Candidate.Hash,
-			Root:         op.Root,
+			Name:           op.Name,
+			Version:        op.ToVersion.String(),
+			Architecture:   op.Candidate.Architecture,
+			Source:         source,
+			URL:            op.Candidate.URL,
+			Hash:           op.Candidate.Hash,
+			SizeCompressed: op.Candidate.SizeCompressed,
+			SizeInstalled:  op.Candidate.SizeInstalled,
+			Root:           op.Root,
 		})
 	}
+	// Record the trust state of every repository the closure actually
+	// draws from — no more, so a lock does not carry keys nothing in it
+	// was signed by, and no less, or the build has nothing to verify a
+	// package against (§5.30).
+	needed := map[string]bool{}
+	for _, p := range lock.Packages {
+		if p.Source != LocalSource {
+			needed[p.Source] = true
+		}
+	}
+	for name := range needed {
+		src, ok := scan.sources[name]
+		if !ok {
+			return Lock{}, fmt.Errorf("peipkg/compose: the closure draws on repository %q, "+
+				"which the source scan recorded no trust state for", name)
+		}
+		lock.Sources = append(lock.Sources, src)
+	}
+	sort.Slice(lock.Sources, func(i, j int) bool { return lock.Sources[i].Name < lock.Sources[j].Name })
 	sort.Slice(lock.Packages, func(i, j int) bool {
 		if lock.Packages[i].Root != lock.Packages[j].Root {
 			return lock.Packages[i].Root < lock.Packages[j].Root
@@ -273,17 +300,36 @@ func candidateDefaultRoot(name string, candidates []resolver.Candidate) string {
 // archive indexes. A repository that cannot be added is fatal — a build
 // must resolve against every source it declares — but a repository that
 // serves no archive index is not.
-func repositoryCandidates(ctx context.Context, client *repository.Client,
-	repos []config.RepoConfig, needArchive bool, warnings io.Writer) ([]resolver.Candidate, error) {
+func repositoryCandidates(ctx context.Context, client *repository.Client, store *db.DB,
+	repos []config.RepoConfig, needArchive bool, warnings io.Writer) (
+	[]resolver.Candidate, map[string]LockedSource, error) {
 
 	var candidates []resolver.Candidate
+	sources := map[string]LockedSource{}
 	for _, cfg := range repos {
 		if err := client.Add(ctx, cfg); err != nil {
-			return nil, fmt.Errorf("peipkg/compose: repository %q: %w", cfg.Name, err)
+			return nil, nil, fmt.Errorf("peipkg/compose: repository %q: %w", cfg.Name, err)
+		}
+		// The trust ceremony just recorded this repository's keys in the
+		// scratch database, which is discarded when the scan returns.
+		// Reading them out here is what carries the trust forward into
+		// the lock, and from there into the build (§5.30).
+		row, found, err := store.GetRepository(ctx, cfg.Name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("peipkg/compose: repository %q: %w", cfg.Name, err)
+		}
+		if !found {
+			return nil, nil, fmt.Errorf(
+				"peipkg/compose: repository %q recorded no trust state", cfg.Name)
+		}
+		sources[cfg.Name] = LockedSource{
+			Name:            cfg.Name,
+			SignaturePolicy: string(cfg.SignaturePolicy),
+			TrustKeys:       row.TrustKeys,
 		}
 		active, err := client.ActiveIndex(ctx, cfg.Name)
 		if err != nil {
-			return nil, fmt.Errorf("peipkg/compose: repository %q: %w", cfg.Name, err)
+			return nil, nil, fmt.Errorf("peipkg/compose: repository %q: %w", cfg.Name, err)
 		}
 		candidates = append(candidates, indexCandidates(cfg, active, warnings)...)
 
@@ -301,7 +347,7 @@ func repositoryCandidates(ctx context.Context, client *repository.Client,
 		}
 		candidates = append(candidates, indexCandidates(cfg, archived, warnings)...)
 	}
-	return candidates, nil
+	return candidates, sources, nil
 }
 
 func manifestNeedsArchive(reqs []PackageRequest) bool {
@@ -426,7 +472,9 @@ func verifyLocalPackage(abs, name, ver, arch string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("peipkg/compose: reading local package %s: %w", abs, err)
 	}
-	pkg, err := archive.VerifyFormat(bytes.NewReader(raw))
+	// The candidate's SizeInstalled came from this same file's manifest
+	// at scan time, so it is not an external declaration (§5.27).
+	pkg, err := archive.VerifyFormat(bytes.NewReader(raw), archive.NoDeclaredSize)
 	if err != nil {
 		return "", fmt.Errorf("peipkg/compose: local package %s: %w", abs, err)
 	}

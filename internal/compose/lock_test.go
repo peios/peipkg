@@ -13,11 +13,18 @@ func sampleLock() Lock {
 		SourceDate:     time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 		Manifest:       "peipkg-manifest-2026-6-1.toml",
 		ManifestDigest: strings.Repeat("c", 64),
+		Sources: []LockedSource{{
+			Name: "official", SignaturePolicy: "required",
+			TrustKeys: `[{"fingerprint":"` + strings.Repeat("e", 64) + `",` +
+				`"public_key":"` + strings.Repeat("A", 43) + `","status":"active"}]`,
+		}},
 		Packages: []LockedPackage{
 			{Name: "nginx", Version: "1.27.5-1", Architecture: "x86_64", Source: "official",
-				URL: "https://pkgs.peios.org/pool/nginx-1.27.5.peipkg", Hash: strings.Repeat("a", 64)},
+				URL:  "https://pkgs.peios.org/pool/nginx-1.27.5.peipkg",
+				Hash: strings.Repeat("a", 64), SizeInstalled: 4096},
 			{Name: "base", Version: "3.2.0-1", Architecture: "x86_64", Source: "official",
-				URL: "https://pkgs.peios.org/pool/base-3.2.0.peipkg", Hash: strings.Repeat("b", 64)},
+				URL:  "https://pkgs.peios.org/pool/base-3.2.0.peipkg",
+				Hash: strings.Repeat("b", 64), SizeInstalled: 8192},
 		},
 	}
 }
@@ -81,21 +88,41 @@ func TestLockPath(t *testing.T) {
 
 func TestDecodeLockErrors(t *testing.T) {
 	const digest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	const hdr = "schema = 3\narch = \"x86_64\"\nsource_date = \"2026-06-01T00:00:00Z\"\n" +
-		"manifest_digest = \"" + digest + "\"\n"
+	const okSrc = "[[source]]\nname=\"official\"\nsignature_policy=\"optional\"\n"
+	const hdr = "schema = 4\narch = \"x86_64\"\nsource_date = \"2026-06-01T00:00:00Z\"\n" +
+		"manifest_digest = \"" + digest + "\"\n" + okSrc
 	const okPkg = "[[package]]\nname=\"a\"\nversion=\"1.0-1\"\narchitecture=\"x86_64\"\n" +
-		"source=\"official\"\nurl=\"https://x/a.peipkg\"\nhash=\"" +
+		"source=\"official\"\nurl=\"https://x/a.peipkg\"\n" +
+		"size_compressed=1024\nsize_installed=4096\nhash=\"" +
 		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
 	cases := map[string]struct{ toml, want string }{
 		"wrong schema": {"schema = 1\narch=\"x\"\nsource_date=\"2026-06-01T00:00:00Z\"\n" +
-			"manifest_digest = \"" + digest + "\"\n" + okPkg, `schema is 1, want 3`},
-		"missing manifest digest": {"schema = 3\narch=\"x\"\nsource_date=\"2026-06-01T00:00:00Z\"\n" +
-			okPkg, `missing required key "manifest_digest"`},
+			"manifest_digest = \"" + digest + "\"\n" + okSrc + okPkg, `schema is 1, want 4`},
+		"missing manifest digest": {"schema = 4\narch=\"x\"\nsource_date=\"2026-06-01T00:00:00Z\"\n" +
+			okSrc + okPkg, `missing required key "manifest_digest"`},
 		"no packages":   {hdr, `contains no packages`},
 		"missing field": {hdr + "[[package]]\nname=\"a\"\nversion=\"1.0-1\"\n", `missing "architecture"`},
 		"bad hash": {hdr + "[[package]]\nname=\"a\"\nversion=\"1.0-1\"\narchitecture=\"x86_64\"\n" +
-			"source=\"official\"\nurl=\"https://x/a\"\nhash=\"abc\"\n", `want a 64-hex SHA-256`},
+			"source=\"official\"\nurl=\"https://x/a\"\nsize_compressed=0\nsize_installed=0\n" +
+			"hash=\"abc\"\n",
+			`want a 64-hex SHA-256`},
 		"duplicate package": {hdr + okPkg + okPkg, `more than once`},
+		// §5.30: a repository package with no recorded trust state has
+		// nothing to verify its signature against, so the lock is refused
+		// as a lock rather than mid-build.
+		"package with no source trust": {"schema = 4\narch = \"x86_64\"\n" +
+			"source_date = \"2026-06-01T00:00:00Z\"\nmanifest_digest = \"" + digest + "\"\n" +
+			okPkg, `records no trust state`},
+		"missing size_installed": {hdr + "[[package]]\nname=\"a\"\nversion=\"1.0-1\"\n" +
+			"architecture=\"x86_64\"\nsource=\"official\"\nurl=\"https://x/a\"\n" +
+			"size_compressed=1024\nhash=\"" +
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n",
+			`missing "size_installed"`},
+		"duplicate source": {hdr + okSrc + okPkg, `source "official" more than once`},
+		"unknown signature policy": {"schema = 4\narch = \"x86_64\"\n" +
+			"source_date = \"2026-06-01T00:00:00Z\"\nmanifest_digest = \"" + digest + "\"\n" +
+			"[[source]]\nname=\"official\"\nsignature_policy=\"none\"\n" + okPkg,
+			`signature_policy "none"`},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

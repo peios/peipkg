@@ -45,7 +45,7 @@ func readLocalPackage(path string) (resolver.Candidate, error) {
 	if err != nil {
 		return resolver.Candidate{}, fmt.Errorf("install: reading %s: %w", path, err)
 	}
-	pkg, err := archive.VerifyFormat(bytes.NewReader(raw))
+	pkg, err := archive.VerifyFormat(bytes.NewReader(raw), archive.NoDeclaredSize)
 	if err != nil {
 		return resolver.Candidate{}, fmt.Errorf("install: %s: %w", path, err)
 	}

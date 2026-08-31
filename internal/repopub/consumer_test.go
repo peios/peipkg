@@ -166,7 +166,7 @@ func TestAConsumerCanFetchAPublishedPackage(t *testing.T) {
 	// the index advertises, so a publisher that recorded either wrongly
 	// fails right here rather than at install time.
 	pkg, data, err := client.FetchPackage(
-		t.Context(), cfg, entry.URL, entry.Hash, entry.SizeCompressed)
+		t.Context(), cfg, entry.URL, entry.Hash, entry.SizeCompressed, entry.SizeInstalled)
 	if err != nil {
 		t.Fatalf("a consumer could not fetch the package we published: %v", err)
 	}

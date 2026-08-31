@@ -40,6 +40,20 @@ const (
 // to 64 MiB), so that no package conforming to §3.2.7 is ever rejected.
 const decompressionAllowance = 320 << 20
 
+// NoDeclaredSize is the declaredSizeInstalled a caller passes when it
+// holds no externally-declared installed size for the archive — a raw
+// local-file install, or the publisher ingesting a package it is about
+// to index. The §3.5.4 absolute cap still applies; only the tighter
+// §5.27 bound is unavailable, because the only size_installed in reach
+// is the manifest's own.
+//
+// It is negative rather than zero because zero is a legal declaration:
+// a package of nothing but directories and symlinks sums to zero under
+// §5.18, and an index entry claiming zero must bound the archive at
+// zero-plus-allowance rather than fall back to the manifest — which is
+// otherwise a one-field way for a repository to switch the bound off.
+const NoDeclaredSize int64 = -1
+
 // Reserved metadata entry paths (§3.2.2).
 const (
 	metadataManifest  = ".peipkg/manifest.json"
@@ -92,10 +106,16 @@ type KeyResolver = signature.KeyResolver
 // trusted key. It returns the verified package, or an error naming the
 // first failure.
 //
+// declaredSizeInstalled is the installed size the caller's signed
+// external record — a repository index entry, or a compose lock derived
+// from one — advertises for this archive (§5.27). It bounds
+// decompression, and the manifest must agree with it. Pass
+// [NoDeclaredSize] when there is no such record.
+//
 // r must be positioned at the start of the archive and is read twice:
 // once to walk and validate, once to hash the signed byte range.
-func Verify(r io.ReadSeeker, resolveKey KeyResolver) (*Package, error) {
-	res, err := walk(r)
+func Verify(r io.ReadSeeker, resolveKey KeyResolver, declaredSizeInstalled int64) (*Package, error) {
+	res, err := walk(r, declaredSizeInstalled)
 	if err != nil {
 		return nil, err
 	}
@@ -130,8 +150,12 @@ func Verify(r io.ReadSeeker, resolveKey KeyResolver) (*Package, error) {
 // It is the entry point for a raw local-file install, where there is no
 // repository and so no trust set to verify a signature against. A
 // repository install uses Verify.
-func VerifyFormat(r io.ReadSeeker) (*Package, error) {
-	res, err := walk(r)
+//
+// declaredSizeInstalled bounds decompression exactly as in [Verify];
+// pass [NoDeclaredSize] when the caller holds no external record of the
+// archive's installed size.
+func VerifyFormat(r io.ReadSeeker, declaredSizeInstalled int64) (*Package, error) {
+	res, err := walk(r, declaredSizeInstalled)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +212,7 @@ type walkResult struct {
 // walk decompresses and validates the archive in a single pass: tar
 // structure and ordering, payload paths and types, the manifest and
 // integrity manifest, and every payload file's hash.
-func walk(r io.ReadSeeker) (walkResult, error) {
+func walk(r io.ReadSeeker, declaredSizeInstalled int64) (walkResult, error) {
 	var res walkResult
 
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
@@ -200,7 +224,18 @@ func walk(r io.ReadSeeker) (walkResult, error) {
 	}
 	defer zr.Close()
 
-	capped := &cappedReader{r: zr, limit: maxDecompressed}
+	// §5.27: the decompression bound comes from the caller's signed
+	// external record, and it is in force before the first byte is
+	// decompressed. The manifest carries a size_installed too, but it
+	// lives inside the compressed stream — deriving the cap from it
+	// would hand the bound to whoever produced the bytes being bounded,
+	// which is the party it defends against.
+	limit := int64(maxDecompressed)
+	declared := declaredSizeInstalled >= 0
+	if declared {
+		limit = min(maxDecompressed, declaredSizeInstalled+decompressionAllowance)
+	}
+	capped := &cappedReader{r: zr, limit: limit}
 	tr := tar.NewReader(capped)
 
 	var (
@@ -253,8 +288,23 @@ walkLoop:
 			if err := checkCanonicalModTime(hdr, res.manifest.Build.Timestamp); err != nil {
 				return res, fmt.Errorf("peipkg/archive: %w", err)
 			}
-			// size_installed is now known; tighten the decompression cap.
-			capped.limit = min(maxDecompressed, res.manifest.SizeInstalled+decompressionAllowance)
+			if declared {
+				// §5.33 makes the manifest authoritative and requires the
+				// index to derive size_installed from it, so the two agree
+				// or one of them is lying. Checking it here covers every
+				// caller that holds a signed declaration, compose's build
+				// phase included.
+				if res.manifest.SizeInstalled != declaredSizeInstalled {
+					return res, fmt.Errorf("peipkg/archive: manifest declares size_installed %d "+
+						"but the index entry that selected it declared %d",
+						res.manifest.SizeInstalled, declaredSizeInstalled)
+				}
+			} else {
+				// No external declaration: the manifest's own figure is
+				// the only bound available, and it is better than the 4 GiB
+				// absolute cap even though the producer chose it.
+				capped.limit = min(maxDecompressed, res.manifest.SizeInstalled+decompressionAllowance)
+			}
 
 		case index == 1:
 			if hdr.Name != metadataFiles {

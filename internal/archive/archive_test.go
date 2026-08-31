@@ -253,7 +253,7 @@ func TestVerifyValidPackage(t *testing.T) {
 		priv:     priv,
 	})
 
-	pkg, err := archive.Verify(bytes.NewReader(data), resolverFor(pub))
+	pkg, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestVerifyUnsignedPackage(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/x", []byte("x")}},
 		pub:      pub, priv: priv, unsigned: true,
 	})
-	pkg, err := archive.Verify(bytes.NewReader(data), resolverFor(pub))
+	pkg, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize)
 	if err != nil {
 		t.Fatalf("Verify of an unsigned package: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestVerifyRejectsUntrustedKey(t *testing.T) {
 		pub:      pub, priv: priv,
 	})
 	// The resolver trusts a different key.
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(otherPub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(otherPub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a package signed by an untrusted key")
 	}
 }
@@ -310,7 +310,7 @@ func TestVerifyRejectsCorruptSignature(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/x", []byte("x")}},
 		pub:      pub, priv: priv, corruptSignature: true,
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a package whose signature does not verify")
 	}
 }
@@ -322,7 +322,7 @@ func TestVerifyRejectsTamperedFile(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/x", []byte("real content")}},
 		pub:      pub, priv: priv, wrongFileHash: true,
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a payload file whose hash does not match files.json")
 	}
 }
@@ -334,7 +334,7 @@ func TestVerifyRejectsPathTraversal(t *testing.T) {
 		files:    []pkgFile{{"../escape", []byte("escape")}},
 		pub:      pub, priv: priv,
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a payload path containing ..")
 	}
 }
@@ -346,7 +346,7 @@ func TestVerifyRejectsHardlink(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/x", []byte("x")}},
 		pub:      pub, priv: priv, hardlinkPath: "usr/bin/zzz-hardlink",
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a hardlink payload entry")
 	}
 }
@@ -358,7 +358,7 @@ func TestVerifyRejectsOrphanFilesEntry(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/x", []byte("x")}},
 		pub:      pub, priv: priv, orphanFilesEntry: true,
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a files.json entry with no matching payload file")
 	}
 }
@@ -372,7 +372,7 @@ func TestVerifyRejectsBadManifest(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/x", []byte("x")}},
 		pub:      pub, priv: priv,
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a package with an invalid manifest")
 	}
 }
@@ -386,14 +386,14 @@ func TestVerifyRejectsSizeInstalledMismatch(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/x", []byte("x")}},
 		pub:      pub, priv: priv,
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject a manifest whose size_installed is wrong")
 	}
 }
 
 func TestVerifyRejectsGarbage(t *testing.T) {
 	pub, _ := keypair(t)
-	if _, err := archive.Verify(bytes.NewReader([]byte("not a zstd archive")), resolverFor(pub)); err == nil {
+	if _, err := archive.Verify(bytes.NewReader([]byte("not a zstd archive")), resolverFor(pub), archive.NoDeclaredSize); err == nil {
 		t.Error("Verify should reject input that is not a .peipkg archive")
 	}
 }
@@ -423,7 +423,7 @@ func TestReadManifestIgnoresPayload(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/testpkg", []byte("#!/bin/sh\n")}},
 		pub:      pub, priv: priv, wrongFileHash: true,
 	})
-	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize); err == nil {
 		t.Fatal("fixture is not actually malformed")
 	}
 	m, err := archive.ReadManifest(bytes.NewReader(data))
@@ -471,7 +471,7 @@ func TestExtract(t *testing.T) {
 		symlinks: []pkgSymlink{{"usr/bin/testpkg-link", "usr/bin/testpkg"}},
 		pub:      pub, priv: priv,
 	})
-	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub)); err != nil {
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), archive.NoDeclaredSize); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
 
@@ -537,7 +537,7 @@ func TestVerifyRejectsNonConformingSymlinkTargets(t *testing.T) {
 				symlinks: []pkgSymlink{{"usr/bin/testpkg-link", target}},
 				unsigned: true,
 			})
-			if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+			if _, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize); err == nil {
 				t.Errorf("VerifyFormat accepted symlink target %q", target)
 			}
 		})
@@ -565,7 +565,7 @@ func TestVerifyAcceptsConformingSymlinkTargets(t *testing.T) {
 				symlinks: []pkgSymlink{{"usr/bin/testpkg-link", target}},
 				unsigned: true,
 			})
-			pkg, err := archive.VerifyFormat(bytes.NewReader(data))
+			pkg, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize)
 			if err != nil {
 				t.Fatalf("VerifyFormat rejected target %q: %v", target, err)
 			}
@@ -673,7 +673,7 @@ func TestVerifyRejectsNonCanonicalHeaders(t *testing.T) {
 				unsigned:    true,
 				tweakHeader: tweak,
 			})
-			if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+			if _, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize); err == nil {
 				t.Errorf("VerifyFormat accepted a non-canonical header (%s)", name)
 			}
 		})
@@ -694,7 +694,7 @@ func TestVerifyAcceptsCanonicalHeaders(t *testing.T) {
 		symlinks: []pkgSymlink{{"usr/bin/testpkg-link", "testpkg"}},
 		unsigned: true,
 	})
-	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err != nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize); err != nil {
 		t.Fatalf("VerifyFormat rejected a canonical archive: %v", err)
 	}
 }
@@ -764,7 +764,7 @@ func TestVerifyRejectsAnSDOverrideThatNamesNoPayloadEntry(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
 		unsigned: true,
 	})
-	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize); err == nil {
 		t.Error("an override naming a path the package does not ship was accepted")
 	}
 }
@@ -786,7 +786,7 @@ func TestVerifyRejectsAnSDOverrideOnASymlink(t *testing.T) {
 		symlinks: []pkgSymlink{{"usr/bin/testpkg-link", "testpkg"}},
 		unsigned: true,
 	})
-	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize); err == nil {
 		t.Error("an override on a symlink was accepted")
 	}
 }
@@ -805,7 +805,7 @@ func TestVerifyAcceptsAnSDOverrideOnAFile(t *testing.T) {
 		files:    []pkgFile{{"usr/bin/testpkg", []byte("hi\n")}},
 		unsigned: true,
 	})
-	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err != nil {
+	if _, err := archive.VerifyFormat(bytes.NewReader(data), archive.NoDeclaredSize); err != nil {
 		t.Errorf("an override on a real file was rejected: %v", err)
 	}
 }
@@ -821,4 +821,64 @@ func testDescriptor(t *testing.T) []byte {
 		t.Fatalf("Marshal: %v", err)
 	}
 	return raw
+}
+
+// §5.27: the decompression bound is taken from the caller's signed
+// external record — the index entry — and the manifest, which lives
+// inside the compressed stream, must agree with it. Deriving the bound
+// from the manifest instead hands it to whoever produced the bytes it
+// defends against (PEI-374).
+func TestVerifyRejectsAManifestThatDisagreesWithTheDeclaredSize(t *testing.T) {
+	pub, priv := keypair(t)
+	content := []byte("#!/bin/sh\necho hi\n")
+	data := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files:    []pkgFile{{"usr/bin/x", content}},
+		pub:      pub, priv: priv,
+	})
+
+	// The index advertised a megabyte; the archive's own manifest
+	// declares the real, much smaller figure. Under the old rule the
+	// manifest simply won, and the index's bound was inert.
+	_, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), 1<<20)
+	if err == nil {
+		t.Fatal("Verify accepted a manifest disagreeing with the declared size_installed")
+	}
+	if !strings.Contains(err.Error(), "size_installed") {
+		t.Errorf("Verify error = %v, want it to name size_installed", err)
+	}
+
+	// The truthful declaration is accepted, and it is the one that bounds
+	// the archive.
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub),
+		int64(len(content))); err != nil {
+		t.Fatalf("Verify with the true declared size: %v", err)
+	}
+}
+
+// Zero is a legal size_installed — a package of nothing but directories
+// and symlinks sums to zero under §5.18 — so it must be honoured as a
+// declaration rather than read as "none given", which would otherwise be
+// a one-field way for a repository to switch the bound off.
+func TestVerifyTreatsZeroDeclaredSizeAsADeclaration(t *testing.T) {
+	pub, priv := keypair(t)
+	data := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files:    []pkgFile{{"usr/share/testpkg/marker", nil}}, // zero bytes
+		dirs:     []string{"usr/share/testpkg"},
+		pub:      pub, priv: priv,
+	})
+	if _, err := archive.Verify(bytes.NewReader(data), resolverFor(pub), 0); err != nil {
+		t.Fatalf("Verify of a zero-size package declared at zero: %v", err)
+	}
+	// A package with content, declared at zero, is a mismatch — not a
+	// package with no declaration.
+	withFile := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files:    []pkgFile{{"usr/bin/x", []byte("x")}},
+		pub:      pub, priv: priv,
+	})
+	if _, err := archive.Verify(bytes.NewReader(withFile), resolverFor(pub), 0); err == nil {
+		t.Error("Verify accepted a non-empty package declared at size_installed 0")
+	}
 }

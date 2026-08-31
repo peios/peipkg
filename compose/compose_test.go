@@ -27,13 +27,17 @@ func TestLockRoundTrip(t *testing.T) {
 		SourceDate:     time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 		Manifest:       "peipkg.toml",
 		ManifestDigest: strings.Repeat("c", 64),
+		Sources: []LockedSource{{
+			Name: "official", SignaturePolicy: "optional",
+		}},
 		Packages: []LockedPackage{{
-			Name:         "base",
-			Version:      "1.0-1",
-			Architecture: "x86_64",
-			Source:       "official",
-			URL:          "https://pkgs.peios.org/base.peipkg",
-			Hash:         strings.Repeat("a", 64),
+			Name:          "base",
+			Version:       "1.0-1",
+			Architecture:  "x86_64",
+			Source:        "official",
+			URL:           "https://pkgs.peios.org/base.peipkg",
+			Hash:          strings.Repeat("a", 64),
+			SizeInstalled: 4096,
 		}},
 	}
 

@@ -198,6 +198,21 @@ type Lock struct {
 	Manifest       string
 	ManifestDigest string
 	Packages       []LockedPackage
+	// Sources carries the trust state of every repository the closure
+	// draws from. A build verifies each package's signature against the
+	// entry for its source, so a lock without them cannot be built.
+	Sources []LockedSource
+}
+
+// LockedSource is one repository a closure draws from, with the trust
+// state established when the lock was resolved.
+type LockedSource struct {
+	Name string
+	// SignaturePolicy is "required" or "optional".
+	SignaturePolicy string
+	// TrustKeys is the repository's trust set as JSON; empty for a
+	// repository in unsigned mode.
+	TrustKeys string
 }
 
 // LockedPackage is one package in a resolved closure.
@@ -212,6 +227,11 @@ type LockedPackage struct {
 	Source string
 	URL    string
 	Hash   string
+	// SizeCompressed and SizeInstalled are the sizes the source index
+	// advertised. They bound the download and the decompression at build
+	// time, so they are not hints.
+	SizeCompressed int64
+	SizeInstalled  int64
 }
 
 // LocalSource is the source value used for packages supplied from local
@@ -260,16 +280,26 @@ func fromInternalLock(lock internalcompose.Lock) Lock {
 		Manifest:       lock.Manifest,
 		ManifestDigest: lock.ManifestDigest,
 		Packages:       make([]LockedPackage, 0, len(lock.Packages)),
+		Sources:        make([]LockedSource, 0, len(lock.Sources)),
+	}
+	for _, s := range lock.Sources {
+		out.Sources = append(out.Sources, LockedSource{
+			Name:            s.Name,
+			SignaturePolicy: s.SignaturePolicy,
+			TrustKeys:       s.TrustKeys,
+		})
 	}
 	for _, p := range lock.Packages {
 		out.Packages = append(out.Packages, LockedPackage{
-			Name:         p.Name,
-			Version:      p.Version,
-			Architecture: p.Architecture,
-			Root:         p.Root,
-			Source:       p.Source,
-			URL:          p.URL,
-			Hash:         p.Hash,
+			Name:           p.Name,
+			Version:        p.Version,
+			Architecture:   p.Architecture,
+			Root:           p.Root,
+			Source:         p.Source,
+			URL:            p.URL,
+			Hash:           p.Hash,
+			SizeCompressed: p.SizeCompressed,
+			SizeInstalled:  p.SizeInstalled,
 		})
 	}
 	return out
@@ -282,16 +312,26 @@ func toInternalLock(lock Lock) internalcompose.Lock {
 		Manifest:       lock.Manifest,
 		ManifestDigest: lock.ManifestDigest,
 		Packages:       make([]internalcompose.LockedPackage, 0, len(lock.Packages)),
+		Sources:        make([]internalcompose.LockedSource, 0, len(lock.Sources)),
+	}
+	for _, s := range lock.Sources {
+		out.Sources = append(out.Sources, internalcompose.LockedSource{
+			Name:            s.Name,
+			SignaturePolicy: s.SignaturePolicy,
+			TrustKeys:       s.TrustKeys,
+		})
 	}
 	for _, p := range lock.Packages {
 		out.Packages = append(out.Packages, internalcompose.LockedPackage{
-			Name:         p.Name,
-			Version:      p.Version,
-			Architecture: p.Architecture,
-			Root:         p.Root,
-			Source:       p.Source,
-			URL:          p.URL,
-			Hash:         p.Hash,
+			Name:           p.Name,
+			Version:        p.Version,
+			Architecture:   p.Architecture,
+			Root:           p.Root,
+			Source:         p.Source,
+			URL:            p.URL,
+			Hash:           p.Hash,
+			SizeCompressed: p.SizeCompressed,
+			SizeInstalled:  p.SizeInstalled,
 		})
 	}
 	return out
