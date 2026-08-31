@@ -67,13 +67,18 @@ func cmdList(app *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	orphaned, err := app.orphanedPackages(ctx)
+	if err != nil {
+		return err
+	}
 	if *asJSON {
 		type view struct {
 			Name, Version, Architecture, Origin string
+			Orphaned                            bool `json:"orphaned"`
 		}
 		views := make([]view, len(pkgs))
 		for i, p := range pkgs {
-			views[i] = view{p.Name, p.Version, p.Architecture, p.OriginRepo}
+			views[i] = view{p.Name, p.Version, p.Architecture, p.OriginRepo, orphaned[p.Name]}
 		}
 		return app.emitJSON(views)
 	}
@@ -82,9 +87,49 @@ func cmdList(app *App, args []string) error {
 		return nil
 	}
 	for _, p := range pkgs {
+		// §5.37: an orphan is displayed with a clear indicator. Its
+		// repository was removed or revoked, so nothing is refreshing it
+		// and no trust state stands behind it any more.
+		if orphaned[p.Name] {
+			app.printf("%s  %s  %s  [orphaned: %s is no longer configured]\n",
+				p.Name, p.Version, p.Architecture, p.OriginRepo)
+			continue
+		}
 		app.printf("%s  %s  %s\n", p.Name, p.Version, p.Architecture)
 	}
 	return nil
+}
+
+// orphanedPackages reports, by package name, which installed packages
+// have an origin repository that is no longer configured (§5.37).
+//
+// A package with no origin at all — a raw local-file install — is not
+// orphaned: it never had a repository to lose.
+func (app *App) orphanedPackages(ctx context.Context) (map[string]bool, error) {
+	store, err := app.openDB(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	pkgs, err := store.ListPackages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	repos, err := app.configProvider().Repositories()
+	if err != nil {
+		return nil, err
+	}
+	configured := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		configured[r.Name] = true
+	}
+	out := map[string]bool{}
+	for _, p := range pkgs {
+		if p.OriginRepo != "" && !configured[p.OriginRepo] {
+			out[p.Name] = true
+		}
+	}
+	return out, nil
 }
 
 // cmdInfo prints the details of one installed package.
@@ -116,10 +161,18 @@ func cmdInfo(app *App, args []string) error {
 	app.printf("name:         %s\n", pkg.Name)
 	app.printf("version:      %s\n", pkg.Version)
 	app.printf("architecture: %s\n", pkg.Architecture)
-	if pkg.OriginRepo != "" {
-		app.printf("origin:       %s\n", pkg.OriginRepo)
-	} else {
+	switch orphaned, err := app.orphanedPackages(ctx); {
+	case err != nil:
+		return err
+	case pkg.OriginRepo == "":
 		app.printf("origin:       (local file)\n")
+	case orphaned[pkg.Name]:
+		// §5.37: the orphan state is surfaced on any operation involving
+		// the package, which includes simply asking about it.
+		app.printf("origin:       %s (ORPHANED — no longer configured; this package is "+
+			"not refreshed and no trust state stands behind it)\n", pkg.OriginRepo)
+	default:
+		app.printf("origin:       %s\n", pkg.OriginRepo)
 	}
 	app.printf("installed:    %s\n", pkg.InstalledAt.Format(time.RFC3339))
 	if m, err := manifest.Decode([]byte(pkg.Manifest)); err == nil {

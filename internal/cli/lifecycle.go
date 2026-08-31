@@ -356,6 +356,11 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		(eventType == audit.TypeInstall || eventType == audit.TypeUpgrade) {
 		plan, err = app.enforceAlternateUpgrade(ctx, plan, reqs, resolve)
 	}
+	// §5.37: an upgrade of an orphaned package is refused unless a
+	// currently trusted repository now claims it.
+	if err == nil && eventType == audit.TypeUpgrade {
+		err = app.refuseOrphanUpgrade(ctx, reqs, available)
+	}
 	if err != nil {
 		app.emit(audit.Event{Type: audit.TypeTxnFailed,
 			Outcome: audit.OutcomeRejection, Detail: err.Error()})
@@ -669,6 +674,80 @@ func auditPackages(plan resolver.Plan) []audit.PackageRef {
 	return refs
 }
 
+// refuseOrphanUpgrade applies §5.37's upgrade rule: a package whose
+// origin repository has been removed or revoked is not upgraded unless
+// a currently trusted repository now claims it.
+//
+// It reads the *requests* rather than the plan. An unclaimed orphan
+// produces no upgrade operation at all — there is no candidate to move
+// it to — so a plan-shaped check would see nothing and let the command
+// report success having done nothing, which is exactly the silence
+// §5.37 exists to break.
+//
+// "Claims it" means a configured repository serves a candidate under
+// that package's own name. A plan can still move an orphan forward by
+// another route — a `replaces` from a different package — and that is
+// deliberately not this check's business: it is a takeover rather than
+// an upgrade, and applyReplaces gates it as an elevated action now that
+// an orphan counts as maximally trusted.
+//
+// A named upgrade of an unclaimed orphan is an error; an every-package
+// upgrade warns and carries on, because one orphan must not stop the
+// rest of the system being upgraded.
+func (app *App) refuseOrphanUpgrade(ctx context.Context, reqs []resolver.Request,
+	available []resolver.Candidate) error {
+
+	orphaned, err := app.orphanedPackages(ctx)
+	if err != nil {
+		return err
+	}
+	if len(orphaned) == 0 {
+		return nil
+	}
+	claimed := make(map[string]bool, len(available))
+	for _, c := range available {
+		if c.Repo != "" {
+			claimed[c.Name] = true
+		}
+	}
+	named := false
+	for _, r := range reqs {
+		if r.Kind != resolver.Upgrade || r.Name == "" {
+			continue
+		}
+		named = true
+		if orphaned[r.Name] && !claimed[r.Name] {
+			return fmt.Errorf(
+				"upgrade: %s came from a repository that is no longer configured, and no "+
+					"configured repository serves it — refusing to upgrade an orphaned "+
+					"package (§5.37).\nAdd a repository that provides %s, or uninstall it",
+				r.Name, r.Name)
+		}
+	}
+	if named {
+		return nil
+	}
+	for _, name := range sortedNames(orphaned) {
+		if claimed[name] {
+			continue
+		}
+		fmt.Fprintf(app.errOut, "peipkg: warning: %s is orphaned — its repository is no "+
+			"longer configured and none serves it, so it is not upgraded (§5.37)\n", name)
+	}
+	return nil
+}
+
+// sortedNames returns a set's keys in order, so operator output is
+// stable across runs.
+func sortedNames(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for name := range set {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // installedSet builds the resolver's view of the installed packages
 // from the package database. configs supplies the current repository
 // priorities so each package can carry its origin repository's trust
@@ -694,12 +773,25 @@ func installedSet(ctx context.Context, store *db.DB,
 			Name: p.Name, Version: v, Architecture: p.Architecture,
 			Dependencies: m.Dependencies, Conflicts: m.Conflicts, Provides: m.Provides,
 		}
-		// Record the origin repository's current priority when that
-		// repository is still configured; otherwise the origin is
-		// unknown and the §6.5.7 gate cannot apply.
-		if cfg, ok := configs[p.OriginRepo]; ok && p.OriginRepo != "" {
+		switch cfg, ok := configs[p.OriginRepo]; {
+		case p.OriginRepo == "":
+			// A raw local-file install: genuinely no origin, and not an
+			// orphan.
+		case ok:
 			inst.Repo = p.OriginRepo
 			inst.RepoPriority = cfg.Priority
+		default:
+			// §5.37: the origin is recorded but no longer configured —
+			// removed or revoked. Leaving it zero-valued made the
+			// cross-repository gates skip the package entirely, so
+			// revoking a repository silently *lowered* the protection on
+			// the packages it left behind. It carries its recorded origin
+			// and OrphanPriority, which is below every configurable
+			// priority, so every gate treats it as at least as trusted as
+			// anything still configured.
+			inst.Repo = p.OriginRepo
+			inst.RepoPriority = resolver.OrphanPriority
+			inst.Orphaned = true
 		}
 		installed = append(installed, inst)
 	}

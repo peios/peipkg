@@ -56,6 +56,9 @@ type worldPkg struct {
 	// origin is unknown.
 	installedRepo         string
 	installedRepoPriority int
+	// installedOrphaned marks an installed package whose origin
+	// repository has been removed or revoked (§5.37).
+	installedOrphaned bool
 	// candidate is the chosen replacement, or nil if the package is left
 	// at its installed version.
 	candidate *Candidate
@@ -128,6 +131,7 @@ func resolveCore(reqs []Request, installedByRoot map[string][]Installed, availab
 				installedVersion:      &v,
 				installedRepo:         inst.Repo,
 				installedRepoPriority: inst.RepoPriority,
+				installedOrphaned:     inst.Orphaned,
 			}
 		}
 	}
@@ -313,6 +317,7 @@ func placeCandidate(world map[string]*worldPkg, cand *Candidate, root string) {
 		wp.installedVersion = existing.installedVersion
 		wp.installedRepo = existing.installedRepo
 		wp.installedRepoPriority = existing.installedRepoPriority
+		wp.installedOrphaned = existing.installedOrphaned
 	}
 	world[key] = wp
 }
@@ -509,16 +514,26 @@ func applyReplaces(world map[string]*worldPkg, auths *[]Authorization) {
 				continue
 			}
 			superseded = append(superseded, victimKey)
+			// §5.37: an orphan carries OrphanPriority, so this gate fires
+			// for it like any other high-trust origin. Leaving an
+			// unresolvable origin zero-valued meant removing a repository
+			// *lowered* the protection on the packages it left behind.
 			if victim.installedRepo != "" &&
 				p.candidate.RepoPriority > victim.installedRepoPriority {
-				*auths = append(*auths, Authorization{
-					Kind: AuthForeignReplaces,
-					Detail: fmt.Sprintf(
-						"%q from repository %q (priority %d) replaces %q, which was "+
-							"installed from higher-priority repository %q (priority %d)",
+				detail := fmt.Sprintf(
+					"%q from repository %q (priority %d) replaces %q, which was "+
+						"installed from higher-priority repository %q (priority %d)",
+					p.name, p.candidate.Repo, p.candidate.RepoPriority,
+					r.Name, victim.installedRepo, victim.installedRepoPriority)
+				if victim.installedOrphaned {
+					detail = fmt.Sprintf(
+						"%q from repository %q (priority %d) replaces %q, which was installed "+
+							"from %q — a repository that is no longer configured, so its "+
+							"packages count as maximally trusted (§5.37)",
 						p.name, p.candidate.Repo, p.candidate.RepoPriority,
-						r.Name, victim.installedRepo, victim.installedRepoPriority),
-				})
+						r.Name, victim.installedRepo)
+				}
+				*auths = append(*auths, Authorization{Kind: AuthForeignReplaces, Detail: detail})
 			}
 		}
 	}

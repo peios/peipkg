@@ -14,6 +14,8 @@
 package resolver
 
 import (
+	"math"
+
 	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/version"
 )
@@ -109,10 +111,34 @@ type Installed struct {
 	// Repo is the repository the package was installed from, and
 	// RepoPriority that repository's current priority — used to gate a
 	// §6.5.7 foreign `replaces`. Repo is empty when the origin is
-	// unknown (a local-file install, or a repository since removed).
+	// unknown: a local-file install, or an orphan.
 	Repo         string
 	RepoPriority int
+	// Orphaned marks a package whose originating repository is recorded
+	// but no longer configured — removed or revoked (§5.37).
+	//
+	// An orphan is not a package with no origin. §5.37 requires an
+	// unknown origin to count as *at least as trusted* as any configured
+	// one wherever a gate compares priorities, so that removing a
+	// repository cannot lower the protection on the packages it left
+	// behind — which is exactly backwards when the reason for removing
+	// it was that its keys were stolen. Callers express that by setting
+	// Repo to the recorded origin and RepoPriority to [OrphanPriority];
+	// the flag is what lets a consumer *say* so in query output and
+	// refuse an upgrade.
+	//
+	// A local-file install has genuinely no origin: empty Repo, and not
+	// orphaned.
+	Orphaned bool
 }
+
+// OrphanPriority is the repository priority an orphaned package's origin
+// carries (§5.37). Priority orders ascending — a lower number is more
+// trusted — so this is below every configurable value, and every gate
+// that compares priorities therefore treats an orphan as at least as
+// trusted as anything currently configured, with no special case of its
+// own.
+const OrphanPriority = math.MinInt32
 
 // Options carries the system facts and per-transaction policy a
 // resolution depends on.

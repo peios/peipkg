@@ -1079,3 +1079,115 @@ func TestAnUnusableCachedIndexFailsTheOperation(t *testing.T) {
 		t.Errorf("error %q does not name the repository", err)
 	}
 }
+
+// §5.37: a package whose originating repository has been removed or
+// revoked is orphaned. A consumer displays it with a clear indicator,
+// surfaces the state on any operation involving it, and refuses an
+// upgrade unless a currently trusted repository now claims it.
+//
+// No orphan concept existed. A repository removed *because its keys
+// were stolen* left its packages installed, unmarked and upgradeable
+// (PEI-379).
+func TestOrphanedPackageIsMarkedAndNotUpgraded(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	fp := signature.Fingerprint(pub)
+
+	const pkgName, pkgVer = "hello", "1.0-1"
+	pkgBytes, sizeInstalled := buildSignedPackage(t, priv, pub, pkgName, pkgVer,
+		map[string]string{"usr/bin/hello": "#!/bin/sh\necho hi\n"})
+	pkgSum := sha256.Sum256(pkgBytes)
+	pkgURL := "/p/hello/1.0-1/hello_1.0-1_x86_64.peipkg"
+
+	descriptor := mustMarshal(t, map[string]any{
+		"schema_version": 1,
+		"repo": map[string]any{"name": "test", "signing": map[string]any{
+			"algorithm": "ed25519",
+			"keys": []any{map[string]any{
+				"fingerprint": fp, "url": "/keys/" + fp + ".pub", "status": "active"}}}},
+		"indexes": map[string]any{
+			"active": map[string]any{
+				"url": "/index/active.json", "signature_url": "/index/active.json.sig"},
+			"archive": map[string]any{
+				"url": "/index/archive.json", "signature_url": "/index/archive.json.sig"}},
+	})
+	index := mustMarshal(t, map[string]any{
+		"schema_version": 1, "repo": "test", "kind": "active",
+		"index_version": 1, "generated_at": daysAgo(2),
+		"packages": []any{map[string]any{
+			"name": pkgName, "version": pkgVer, "architecture": "x86_64",
+			"dependencies": []any{}, "conflicts": []any{},
+			"size_compressed": len(pkgBytes), "size_installed": sizeInstalled,
+			"hash": map[string]any{"algorithm": "sha256", "value": hex.EncodeToString(pkgSum[:])},
+			"url":  pkgURL}},
+	})
+	served := map[string][]byte{
+		"/repo.json":             descriptor,
+		"/repo.json.sig":         detachedSig(priv, descriptor),
+		"/keys/" + fp + ".pub":   []byte(pub),
+		"/index/active.json":     index,
+		"/index/active.json.sig": detachedSig(priv, index),
+		pkgURL:                   pkgBytes,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := served[r.URL.Path]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	app := newApp(t.TempDir(), strings.NewReader(""), out, errOut)
+	app.emitter = &audit.Recorder{}
+	if err := cmdRepoAdd(app, []string{"test", srv.URL, "--anchor", fp, "--insecure"}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+	if err := cmdInstall(app, []string{pkgName, "--yes"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// The repository is removed — the in-band response to a stolen key.
+	if err := cmdRepoRemove(app, []string{"test"}); err != nil {
+		t.Fatalf("repo remove: %v", err)
+	}
+
+	out.Reset()
+	if err := cmdList(app, nil); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(out.String(), "orphaned") {
+		t.Errorf("list does not mark the orphan:\n%s", out.String())
+	}
+
+	out.Reset()
+	if err := cmdInfo(app, []string{pkgName}); err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	if !strings.Contains(out.String(), "ORPHANED") {
+		t.Errorf("info does not surface the orphan state:\n%s", out.String())
+	}
+
+	// And no configured repository claims it, so an upgrade is refused
+	// rather than silently doing nothing.
+	err = cmdUpgrade(app, []string{pkgName, "--yes"})
+	if err == nil {
+		t.Fatal("an orphaned package was upgraded with no repository claiming it")
+	}
+	if !strings.Contains(err.Error(), "orphaned") {
+		t.Errorf("error %q does not explain the refusal", err)
+	}
+
+	// An every-package upgrade is not stopped by one orphan — it warns
+	// and carries on, or a single orphan would freeze the whole system.
+	errOut.Reset()
+	if err := cmdUpgrade(app, []string{"--yes"}); err != nil {
+		t.Fatalf("an every-package upgrade was blocked by one orphan: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "orphaned") {
+		t.Errorf("the every-package upgrade did not mention the orphan:\n%s", errOut.String())
+	}
+}

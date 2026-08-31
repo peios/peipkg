@@ -3,6 +3,7 @@ package resolver_test
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/peios/peipkg/internal/manifest"
@@ -887,6 +888,116 @@ func TestUnversionedProvidesDoesNotFallToEnumerationOrder(t *testing.T) {
 			}
 			if got := plan.Operations[0].ToVersion.String(); got != "2.0-1" {
 				t.Errorf("resolved %s, want 2.0-1 whatever the enumeration order", got)
+			}
+		})
+	}
+}
+
+// §5.37: an orphan's origin — a repository removed or revoked — counts
+// as at least as trusted as any configured one wherever a gate compares
+// priorities, so the §6.5.7 foreign-replaces gate still fires.
+//
+// Leaving an unresolvable origin zero-valued skipped the gate entirely,
+// so any newly added low-trust repository could declare `replaces`
+// against an orphaned ex-official package and take it over with no
+// confirmation. Revoking a repository because its keys were stolen is
+// exactly when that must not happen (PEI-379).
+func TestReplacingAnOrphanNeedsAuthorisation(t *testing.T) {
+	installed := []resolver.Installed{{
+		Name: "official-tool", Version: ver(t, "1.0-1"), Architecture: primaryArch,
+		// The origin is recorded but no longer configured.
+		Repo: "peios-official", RepoPriority: resolver.OrphanPriority, Orphaned: true,
+	}}
+	candidates := []resolver.Candidate{{
+		Name: "usurper", Version: ver(t, "1.0-1"), Architecture: primaryArch,
+		Repo: "some-third-party", RepoPriority: 500,
+		Replaces: []manifest.Replaces{{Name: "official-tool"}},
+	}}
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "usurper"}},
+		installed, candidates, resolver.Options{PrimaryArch: primaryArch})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	var found bool
+	for _, a := range plan.Authorizations {
+		if a.Kind == resolver.AuthForeignReplaces {
+			found = true
+			if !strings.Contains(a.Detail, "no longer configured") {
+				t.Errorf("authorisation detail does not explain the orphan: %s", a.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("a low-trust repository took over an orphaned package with no authorisation")
+	}
+}
+
+// The same takeover against a package whose repository is still
+// configured and higher-trust already required authorisation; this is
+// the guard that the orphan handling did not disturb it, and that a
+// same-or-higher-trust replacer still needs none.
+func TestReplacingAConfiguredPackageIsUnchanged(t *testing.T) {
+	installed := []resolver.Installed{{
+		Name: "tool", Version: ver(t, "1.0-1"), Architecture: primaryArch,
+		Repo: "official", RepoPriority: 10,
+	}}
+	candidates := []resolver.Candidate{{
+		Name: "same-trust", Version: ver(t, "1.0-1"), Architecture: primaryArch,
+		Repo: "official", RepoPriority: 10,
+		Replaces: []manifest.Replaces{{Name: "tool"}},
+	}}
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "same-trust"}},
+		installed, candidates, resolver.Options{PrimaryArch: primaryArch})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, a := range plan.Authorizations {
+		if a.Kind == resolver.AuthForeignReplaces {
+			t.Errorf("a same-priority replace demanded authorisation: %s", a.Detail)
+		}
+	}
+}
+
+// PEI-499: a republished revision of an unpinned provider silently
+// failed to reach the image. Two revisions of one package provide the
+// same unversioned capability, tie on every selection rule, and index
+// order picked the older — so `libpeios 0.3.4-2` published beside
+// `0.3.4-1` never shipped unless the manifest pinned it by name.
+//
+// The same tie as TestUnversionedProvidesDoesNotFallToEnumerationOrder,
+// but between two *revisions* of one upstream version, which is the
+// shape a farm directory actually produces.
+func TestUnpinnedProviderTakesTheHighestRevision(t *testing.T) {
+	provides := []manifest.Provides{{Name: "libpeios.so.0"}}
+	older := resolver.Candidate{Name: "libpeios", Version: ver(t, "0.3.4-1"),
+		Architecture: primaryArch, Repo: "official", Provides: provides}
+	newer := resolver.Candidate{Name: "libpeios", Version: ver(t, "0.3.4-2"),
+		Architecture: primaryArch, Repo: "official", Provides: provides}
+	consumer := resolver.Candidate{Name: "peinit", Version: ver(t, "1.0-1"),
+		Architecture: primaryArch, Repo: "official",
+		Dependencies: []manifest.Dependency{dep(t, "libpeios.so.0", "")}}
+
+	for name, candidates := range map[string][]resolver.Candidate{
+		"older listed first": {older, newer, consumer},
+		"newer listed first": {newer, older, consumer},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan, err := resolver.Resolve(
+				[]resolver.Request{{Kind: resolver.Install, Name: "peinit"}},
+				nil, candidates, resolver.Options{PrimaryArch: primaryArch})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			var got string
+			for _, op := range plan.Operations {
+				if op.Name == "libpeios" {
+					got = op.ToVersion.String()
+				}
+			}
+			if got != "0.3.4-2" {
+				t.Errorf("resolved libpeios %s, want the highest revision 0.3.4-2", got)
 			}
 		})
 	}
