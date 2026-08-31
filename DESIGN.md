@@ -413,18 +413,36 @@ peipkg has no authority the caller lacks — but it is still serious:
   declared paths, the bytes went elsewhere; uninstall, upgrade-diff and
   integrity checks silently break.
 
-Defence: resolve every install path **fd-relative** (holding a verified
-parent-directory fd; operate relative to it, never via a re-resolvable
-string path) and **refuse to follow symlinks** —
-`openat2(..., RESOLVE_NO_SYMLINKS)` (with `RESOLVE_BENEATH` /
-`NO_MAGICLINKS` / `NO_XDEV` as belt-and-braces; trimmable). No symlink
-is ever traversed, including one peipkg itself created — a well-formed
-package never has a payload file whose ancestor is a symlink, so the
-rule fires only on a malformed or hostile package, where aborting is
-correct. The justification is **correctness** (peipkg writes exactly the
-manifest, nowhere else, so the checks are real and the DB is true), with
+Defence, implemented in `internal/safepath` (PEI-375): resolve every
+install path **fd-relative** — holding a verified parent-directory fd
+and operating relative to it, never via a re-resolvable string path —
+and **refuse to follow symlinks**. No symlink is ever traversed,
+including one peipkg itself created: a well-formed package never has a
+payload file whose ancestor is a symlink, so the rule fires only on a
+malformed or hostile package, where aborting is correct. The
+justification is **correctness** (peipkg writes exactly the manifest,
+nowhere else, so the checks are real and the DB is true), with
 partial-trust containment as a secondary benefit. Symlinks as *leaf*
 payload entries are created normally; they are simply never traversed.
+
+The walk is one `openat(dirfd, comp, O_PATH|O_NOFOLLOW|O_DIRECTORY)` per
+component. `O_PATH|O_NOFOLLOW` alone would open a symlink *itself*;
+`O_DIRECTORY` is what turns that into the `ENOTDIR` the refusal rests
+on. `openat2` with `RESOLVE_NO_SYMLINKS` would fold the walk into a
+single syscall and add `RESOLVE_BENEATH`/`NO_XDEV`/`NO_MAGICLINKS`; it
+is worth having and is not needed for the guarantee, because a walk that
+never follows a symlink and never accepts a `..` component cannot leave
+the root by name.
+
+The descriptor is pinned from the moment the plan is computed until the
+commit that acts on it, which is what closes the TOCTOU window rather
+than merely narrowing it: that window spans every download,
+decompression and staging step of the whole transaction. Descriptors are
+cached per directory, so the count is the number of distinct directories
+a transaction writes into. Recovery, which has only the journal's
+strings, re-resolves them with the same refusing walk — there is no
+descriptor to carry across a crash, and no in-flight window to race
+either.
 
 ### Signature sidecars (`<path>.peios.sig`)
 

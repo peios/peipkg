@@ -263,6 +263,7 @@ func runTransaction(ctx context.Context, plan resolver.Plan, env Env) (Result, e
 // In two-phase-commit terms, reaching this state is a root's "vote".
 type preparedTxn struct {
 	env           Env
+	pins          *pinnedDirs
 	txnID         int64
 	plan          resolver.Plan
 	staged        []stagedOp
@@ -280,7 +281,18 @@ type preparedTxn struct {
 // the caller can audit the outcome. On success the transaction has
 // "voted to commit": nothing is committed, but everything is in place and
 // recorded in the journal, so it can be committed or cleanly reversed.
-func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID string) (preparedTxn, error) {
+func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID string) (
+	p preparedTxn, err error) {
+
+	// A prepared transaction hands its pinned descriptors to the commit;
+	// one that fails hands them to nobody, so it releases them here.
+	defer func() {
+		if err != nil {
+			p.pins.close()
+			p.pins = nil
+		}
+	}()
+
 	// §7.4.3: fetch and verify every package before staging any of them.
 	provided := make(map[string]ProvidedPackage)
 	for _, op := range plan.Operations {
@@ -294,11 +306,22 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 		provided[op.Name] = pp
 	}
 
-	txnID, err := env.DB.BeginCrossRootTxn(ctx, env.PeipkgVersion, journalSchemaVersion, crossRootID)
+	// §5.26: the installation root is pinned before the plan is
+	// computed and stays pinned until the commit acts on it, so every
+	// path this transaction touches is resolved once, without following
+	// a symlink, and the descriptor — not the string — is what the
+	// commit renames against.
+	pins, err := newPinnedDirs(env.Root)
 	if err != nil {
 		return preparedTxn{}, err
 	}
-	p := preparedTxn{env: env, txnID: txnID, plan: plan}
+	p.pins = pins
+
+	txnID, err := env.DB.BeginCrossRootTxn(ctx, env.PeipkgVersion, journalSchemaVersion, crossRootID)
+	if err != nil {
+		return p, err
+	}
+	p = preparedTxn{env: env, pins: pins, txnID: txnID, plan: plan}
 
 	// Compute every journal row before touching the filesystem. Once the
 	// journal is durable, any staged payload content has a recovery path.
@@ -311,10 +334,10 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 		inTxn[op.Name] = true
 	}
 	for _, op := range plan.Operations {
-		s, err := prepareOperation(ctx, env, txnID, op, provided, plannedDirs, inTxn)
+		s, err := prepareOperation(ctx, env, pins, txnID, op, provided, plannedDirs, inTxn)
 		p.staged = append(p.staged, s)
 		if err != nil {
-			return p, errors.Join(err, abandon(ctx, env, txnID, p.staged, "preparing the journal failed"))
+			return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "preparing the journal failed"))
 		}
 	}
 
@@ -322,9 +345,9 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	// transaction must create, repoint, or remove, and attach their file
 	// operations to a carrier package op so they ride the same journal,
 	// commit, and recovery path as payload files.
-	p.claimW, p.claimWarnings, err = planClaims(ctx, env, plan, provided, env.Claims, txnID, plannedDirs)
+	p.claimW, p.claimWarnings, err = planClaims(ctx, env, pins, plan, provided, env.Claims, txnID, plannedDirs)
 	if err != nil {
-		return p, errors.Join(err, abandon(ctx, env, txnID, p.staged, "planning claims failed"))
+		return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "planning claims failed"))
 	}
 	if !p.claimW.empty() {
 		carrier := len(p.staged) - 1
@@ -333,7 +356,7 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	}
 
 	if err := writeJournal(ctx, env.DB, txnID, p.staged); err != nil {
-		return p, errors.Join(err, abandon(ctx, env, txnID, p.staged, "recording the journal failed"))
+		return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "recording the journal failed"))
 	}
 
 	// For a cross-root transaction, persist the forward-commit payload now
@@ -343,10 +366,10 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	if crossRootID != "" {
 		payload, err := buildCommitPayload(p.staged, p.claimW).marshal()
 		if err != nil {
-			return p, errors.Join(err, abandon(ctx, env, txnID, p.staged, "encoding the commit payload failed"))
+			return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "encoding the commit payload failed"))
 		}
 		if err := env.DB.SetCommitPayload(ctx, txnID, payload); err != nil {
-			return p, errors.Join(err, abandon(ctx, env, txnID, p.staged, "recording the commit payload failed"))
+			return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "recording the commit payload failed"))
 		}
 	}
 
@@ -357,17 +380,17 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 		if s.op.Kind == resolver.OpRemove {
 			continue
 		}
-		if err := materializePackage(env, s, provided[s.op.Name]); err != nil {
-			return p, errors.Join(err, abandon(ctx, env, txnID, p.staged, "staging failed"))
+		if err := materializePackage(pins, s, provided[s.op.Name]); err != nil {
+			return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "staging failed"))
 		}
 	}
 	if err := materializeClaims(p.claimW); err != nil {
-		return p, errors.Join(err, abandon(ctx, env, txnID, p.staged, "staging claim links failed"))
+		return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "staging claim links failed"))
 	}
 
 	p.ops = allFileOps(p.staged)
 	if err := commitOps(p.ops); err != nil {
-		return p, errors.Join(err, finishRolledBack(ctx, env, txnID, p.ops,
+		return p, errors.Join(err, finishRolledBack(ctx, env, pins, txnID, p.ops,
 			allCreatedDirs(p.staged), "applying file changes failed"))
 	}
 	return p, nil
@@ -386,6 +409,9 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 // forward — un-committing this root in isolation would be the very torn
 // state the cross-root id exists to avoid.
 func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Result, error) {
+	// The commit is a prepared transaction's terminal operation either
+	// way, so this is where its pinned descriptors are released.
+	defer p.pins.close()
 	env := p.env
 	err := env.DB.Tx(ctx, func(tx *db.Tx) error {
 		if err := applyMetadata(ctx, tx, p.staged); err != nil {
@@ -399,7 +425,7 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 	if err != nil {
 		err = fmt.Errorf("peipkg/install: committing transaction %d: %w", p.txnID, err)
 		if rollbackOnFailure {
-			err = errors.Join(err, finishRolledBack(ctx, env, p.txnID, p.ops,
+			err = errors.Join(err, finishRolledBack(ctx, env, p.pins, p.txnID, p.ops,
 				allCreatedDirs(p.staged), "committing package state failed"))
 		}
 		return Result{TxnID: p.txnID}, err
@@ -428,7 +454,8 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 // marked rolled back. It is how a cross-root transaction backs out a root
 // that voted to commit when a sibling root failed to prepare.
 func rollbackPrepared(ctx context.Context, p preparedTxn) error {
-	return finishRolledBack(ctx, p.env, p.txnID, p.ops, allCreatedDirs(p.staged),
+	defer p.pins.close()
+	return finishRolledBack(ctx, p.env, p.pins, p.txnID, p.ops, allCreatedDirs(p.staged),
 		"rolled back: a sibling root failed to prepare")
 }
 
@@ -447,10 +474,10 @@ func rollbackPrepared(ctx context.Context, p preparedTxn) error {
 // The returned error is the rollback's own. A caller reporting a
 // rollback triggered by some other failure joins the two, so the
 // operator sees both what went wrong and that the undo did not work.
-func finishRolledBack(ctx context.Context, env Env, txnID int64,
+func finishRolledBack(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 	ops []fileOp, dirs []string, reason string) error {
 
-	err := errors.Join(rollbackOps(ops), removeCreatedDirs(dirs))
+	err := errors.Join(rollbackOps(ops), removeCreatedDirs(pins, dirs))
 	if err != nil {
 		return fmt.Errorf("peipkg/install: rolling back transaction %d did not restore the "+
 			"previous state, so this installation is now indeterminate; its journal is left "+
@@ -462,8 +489,9 @@ func finishRolledBack(ctx context.Context, env Env, txnID int64,
 
 // abandon rolls back a transaction that failed during staging and marks
 // it rolled back in the journal.
-func abandon(ctx context.Context, env Env, txnID int64, staged []stagedOp, reason string) error {
-	return finishRolledBack(ctx, env, txnID, allFileOps(staged), allCreatedDirs(staged), reason)
+func abandon(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
+	staged []stagedOp, reason string) error {
+	return finishRolledBack(ctx, env, pins, txnID, allFileOps(staged), allCreatedDirs(staged), reason)
 }
 
 // recoverPending rolls back a transaction left pending by an
@@ -506,7 +534,22 @@ func rollbackTxn(ctx context.Context, env Env, txn db.Txn, reason string) error 
 	if err != nil {
 		return err
 	}
-	if err := rollbackOps(fileOpsFromJournal(files)); err != nil {
+	// Recovery has only the journal's strings, so it re-resolves them —
+	// with the same walk, which refuses a symlink component. There is no
+	// descriptor to carry across a crash, but there is also no in-flight
+	// window to race: what matters here is that the undo lands on the
+	// paths the journal named and nowhere else (§5.26).
+	pins, err := newPinnedDirs(env.Root)
+	if err != nil {
+		return err
+	}
+	defer pins.close()
+
+	ops, err := fileOpsFromJournal(pins, files)
+	if err != nil {
+		return fmt.Errorf("peipkg/install: recovering transaction %d: %w", txn.ID, err)
+	}
+	if err := rollbackOps(ops); err != nil {
 		return fmt.Errorf("peipkg/install: recovering transaction %d: %w", txn.ID, err)
 	}
 	if txn.JournalSchemaVersion >= 2 {
@@ -514,7 +557,7 @@ func rollbackTxn(ctx context.Context, env Env, txn db.Txn, reason string) error 
 		if err != nil {
 			return err
 		}
-		if err := removeCreatedDirs(dirs); err != nil {
+		if err := removeCreatedDirs(pins, dirs); err != nil {
 			return fmt.Errorf("peipkg/install: recovering transaction %d: %w", txn.ID, err)
 		}
 	}
@@ -543,7 +586,12 @@ func rollForwardTxn(ctx context.Context, env Env, txn db.Txn, cp commitPayload) 
 	// The backups the prepared transaction retained are no longer needed
 	// (best-effort cleanup, as a normal commit does).
 	if files, err := env.DB.TxnFiles(ctx, txn.ID); err == nil {
-		discardBackups(fileOpsFromJournal(files))
+		if pins, err := newPinnedDirs(env.Root); err == nil {
+			if ops, err := fileOpsFromJournal(pins, files); err == nil {
+				discardBackups(ops)
+			}
+			pins.close()
+		}
 	}
 	return nil
 }

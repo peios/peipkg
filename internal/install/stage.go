@@ -17,6 +17,7 @@ import (
 	"github.com/peios/peipkg/internal/layout"
 	"github.com/peios/peipkg/internal/pipsig"
 	"github.com/peios/peipkg/internal/resolver"
+	"github.com/peios/peipkg/internal/safepath"
 	"github.com/peios/peipkg/internal/sdstamp"
 	"github.com/peios/peipkg/internal/version"
 )
@@ -54,13 +55,13 @@ type stagedOp struct {
 
 // prepareOperation computes one plan operation's journal rows and
 // package-database changes without touching the filesystem.
-func prepareOperation(ctx context.Context, env Env, txnID int64, op resolver.Operation,
-	provided map[string]ProvidedPackage, plannedDirs map[string]bool,
+func prepareOperation(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
+	op resolver.Operation, provided map[string]ProvidedPackage, plannedDirs map[string]bool,
 	inTxn map[string]bool) (stagedOp, error) {
 	if op.Kind == resolver.OpRemove {
-		return stageRemoval(ctx, env, txnID, op)
+		return stageRemoval(ctx, env, pins, txnID, op)
 	}
-	return preparePackage(ctx, env, txnID, op, provided[op.Name], plannedDirs, inTxn)
+	return preparePackage(ctx, env, pins, txnID, op, provided[op.Name], plannedDirs, inTxn)
 }
 
 // preparePackage computes the file operations and database rows for
@@ -69,8 +70,9 @@ func prepareOperation(ctx context.Context, env Env, txnID int64, op resolver.Ope
 //
 // Per-file metadata — type and the verified SHA-256 — comes from the
 // verified payload list, the authority for what the package owns.
-func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Operation,
-	pp ProvidedPackage, plannedDirs map[string]bool, inTxn map[string]bool) (stagedOp, error) {
+func preparePackage(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
+	op resolver.Operation, pp ProvidedPackage, plannedDirs map[string]bool,
+	inTxn map[string]bool) (stagedOp, error) {
 
 	s := stagedOp{op: op, stagedAt: map[string]string{}}
 
@@ -172,7 +174,7 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 
 		switch entry.Type {
 		case archive.EntryDir:
-			rememberCreatedDirs(env.Root, physical, plannedDirs, &s.createdDirs)
+			rememberCreatedDirs(pins, env.Root, physical, plannedDirs, &s.createdDirs)
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeDir})
 		case archive.EntryFile:
@@ -191,16 +193,20 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 			// tampering.
 			recordedHash := entry.Hash
 			preserved := false
+			parent, err := pins.dirFor(physical)
+			if err != nil {
+				return s, err
+			}
 			if old, ok := existingByPath[logical]; ok && old.Type == db.FileTypeFile &&
-				isEtcPath(logical) && exists(physical) {
-				modified, err := fileModified(physical, old.Hash)
+				isEtcPath(logical) && parent.Exists(filepath.Base(physical)) {
+				modified, err := fileModified(parent, filepath.Base(physical), old.Hash)
 				if err != nil {
 					return s, err
 				}
 				if modified {
 					dest = physical + etcNewMarker
 					preserved = true
-					if recordedHash, err = fileHash(physical); err != nil {
+					if recordedHash, err = fileHashAt(parent, filepath.Base(physical)); err != nil {
 						return s, err
 					}
 					s.warnings = append(s.warnings, fmt.Sprintf(
@@ -215,7 +221,7 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 			if preserved {
 				destLogical = logical + etcNewMarker
 			}
-			keepBackup, warn, err := unownedPolicy(ctx, env, op.Name, dest, destLogical, entry, inTxn)
+			keepBackup, warn, err := unownedPolicy(ctx, env, parent, op.Name, dest, destLogical, entry)
 			if err != nil {
 				return s, err
 			}
@@ -223,9 +229,12 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 				s.warnings = append(s.warnings, warn)
 			}
 			staged := tempPath(dest, stagedMarker, txnID)
-			rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
+			rememberCreatedDirs(pins, env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
 			s.stagedAt[logical] = staged
-			fo := plannedOp(dest, staged, txnID)
+			fo, err := plannedOp(pins, dest, staged, txnID)
+			if err != nil {
+				return s, err
+			}
 			fo.keepBackup = keepBackup
 			s.fileOps = append(s.fileOps, fo)
 			s.files = append(s.files, db.PackageFile{
@@ -241,7 +250,11 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 					Type: db.FileTypeFile, Hash: entry.Hash})
 			}
 		case archive.EntrySymlink:
-			keepBackup, warn, err := unownedPolicy(ctx, env, op.Name, physical, logical, entry, inTxn)
+			parent, err := pins.dirFor(physical)
+			if err != nil {
+				return s, err
+			}
+			keepBackup, warn, err := unownedPolicy(ctx, env, parent, op.Name, physical, logical, entry)
 			if err != nil {
 				return s, err
 			}
@@ -249,9 +262,12 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 				s.warnings = append(s.warnings, warn)
 			}
 			staged := tempPath(physical, stagedMarker, txnID)
-			rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
+			rememberCreatedDirs(pins, env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
 			s.stagedAt[logical] = staged
-			fo := plannedOp(physical, staged, txnID)
+			fo, err := plannedOp(pins, physical, staged, txnID)
+			if err != nil {
+				return s, err
+			}
 			fo.keepBackup = keepBackup
 			s.fileOps = append(s.fileOps, fo)
 			s.files = append(s.files, db.PackageFile{
@@ -267,8 +283,12 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 			continue
 		}
 		physical := filepath.Join(env.Root, f.Path)
+		dir, err := pins.existingDirFor(physical)
+		if err != nil {
+			return s, err
+		}
 		s.fileOps = append(s.fileOps, fileOp{
-			finalPath: physical, action: actionRemove,
+			finalPath: physical, action: actionRemove, dir: dir,
 			backupPath: tempPath(physical, backupMarker, txnID)})
 	}
 
@@ -288,16 +308,25 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 
 // materializePackage writes the package payload to the already-journalled
 // staged siblings and creates any directories needed for those siblings.
-func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
+func materializePackage(pins *pinnedDirs, s stagedOp, pp ProvidedPackage) error {
 	var sidecars pipsig.Sidecars
 	written := map[string]string{} // regular files written, archive path -> staged path
 	dirs := map[string]string{}    // directories created, archive path -> final path
+	root := pins.root.Path()
 	err := archive.Extract(pp.Archive, func(entry archive.PayloadEntry, content io.Reader) error {
-		physical := filepath.Join(env.Root, entry.Path)
+		physical := filepath.Join(root, entry.Path)
 		switch entry.Type {
 		case archive.EntryDir:
 			dirs[entry.Path] = physical
-			return os.MkdirAll(physical, 0o755)
+			// Resolving the whole path with MkdirAll pins it too, so a
+			// directory entry cannot be the thing that plants an ancestor
+			// for a later entry to be redirected through.
+			d, err := pins.mkdirAllAbs(physical)
+			if err != nil {
+				return err
+			}
+			_ = d
+			return nil
 		case archive.EntryFile:
 			if pipsig.IsSidecar(entry.Path) {
 				return sidecars.Add(entry.Path, content)
@@ -306,10 +335,14 @@ func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
 			if staged == "" {
 				return fmt.Errorf("no staged path planned for %s", entry.Path)
 			}
-			if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+			// The parent was resolved and pinned when this entry was
+			// planned; writing through that descriptor is what makes the
+			// content land where the manifest says it does (§5.26).
+			dir, err := pins.dirFor(staged)
+			if err != nil {
 				return err
 			}
-			if err := writeStagedFile(staged, content); err != nil {
+			if err := writeStagedFile(dir, filepath.Base(staged), content); err != nil {
 				return err
 			}
 			written[entry.Path] = staged
@@ -318,10 +351,11 @@ func materializePackage(env Env, s stagedOp, pp ProvidedPackage) error {
 			if staged == "" {
 				return fmt.Errorf("no staged path planned for %s", entry.Path)
 			}
-			if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+			dir, err := pins.dirFor(staged)
+			if err != nil {
 				return err
 			}
-			if err := os.Symlink(entry.LinkTarget, staged); err != nil {
+			if err := dir.Symlink(entry.LinkTarget, filepath.Base(staged)); err != nil {
 				return err
 			}
 		}
@@ -395,7 +429,9 @@ func checkSDOverridePolicy(env Env, op resolver.Operation, pp ProvidedPackage) e
 }
 
 // stageRemoval computes the file operations that remove a package.
-func stageRemoval(ctx context.Context, env Env, txnID int64, op resolver.Operation) (stagedOp, error) {
+func stageRemoval(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
+	op resolver.Operation) (stagedOp, error) {
+
 	s := stagedOp{op: op}
 	files, err := env.DB.PackageFiles(ctx, op.Name)
 	if err != nil {
@@ -406,8 +442,15 @@ func stageRemoval(ctx context.Context, env Env, txnID int64, op resolver.Operati
 			continue // directories are shared; left in place
 		}
 		physical := filepath.Join(env.Root, f.Path)
+		// A removal's parent is pinned like any other operation's: the
+		// file renamed aside must be the one the database recorded, not
+		// whatever the path resolves to at commit time (§5.26).
+		dir, err := pins.existingDirFor(physical)
+		if err != nil {
+			return s, err
+		}
 		s.fileOps = append(s.fileOps, fileOp{
-			finalPath: physical, action: actionRemove,
+			finalPath: physical, action: actionRemove, dir: dir,
 			backupPath: tempPath(physical, backupMarker, txnID)})
 	}
 	return s, nil
@@ -425,8 +468,8 @@ func stageRemoval(ctx context.Context, env Env, txnID int64, op resolver.Operati
 // made executable — mirroring the same interim in compose's assemble.go.
 // The correct rule (executable-in => 0o755, else 0o644, recorded in
 // files.json) is deferred.
-func writeStagedFile(staged string, content io.Reader) error {
-	f, err := os.OpenFile(staged, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
+func writeStagedFile(dir *safepath.Dir, name string, content io.Reader) error {
+	f, err := dir.Create(name, 0o755)
 	if err != nil {
 		return err
 	}
@@ -463,10 +506,10 @@ func writeStagedFile(staged string, content io.Reader) error {
 //
 // It reports whether the operation's backup must survive commit, plus a
 // warning for the operator when one is due.
-func unownedPolicy(ctx context.Context, env Env, pkgName, dest, destLogical string,
-	entry archive.PayloadEntry, inTxn map[string]bool) (keepBackup bool, warning string, err error) {
+func unownedPolicy(ctx context.Context, env Env, dir *safepath.Dir, pkgName, dest,
+	destLogical string, entry archive.PayloadEntry) (keepBackup bool, warning string, err error) {
 
-	if !exists(dest) {
+	if !dir.Exists(filepath.Base(dest)) {
 		return false, "", nil
 	}
 	owners, err := env.DB.FileOwners(ctx, destLogical)
@@ -477,7 +520,7 @@ func unownedPolicy(ctx context.Context, env Env, pkgName, dest, destLogical stri
 		return false, "", nil
 	}
 
-	same, err := matchesPayload(dest, entry)
+	same, err := matchesPayload(dir, filepath.Base(dest), entry)
 	if err != nil {
 		return false, "", err
 	}
@@ -499,17 +542,18 @@ func unownedPolicy(ctx context.Context, env Env, pkgName, dest, destLogical stri
 // matchesPayload reports whether what is at dest is already exactly what
 // entry would install. The comparison is by kind: content hash for a
 // regular file, target for a symlink. A kind mismatch is never a match.
-func matchesPayload(dest string, entry archive.PayloadEntry) (bool, error) {
-	info, err := os.Lstat(dest)
+func matchesPayload(dir *safepath.Dir, name string, entry archive.PayloadEntry) (bool, error) {
+	info, err := dir.Lstat(name)
 	if err != nil {
-		return false, fmt.Errorf("peipkg/install: examining %s: %w", dest, err)
+		return false, fmt.Errorf("peipkg/install: examining %s: %w",
+			filepath.Join(dir.Path(), name), err)
 	}
 	switch entry.Type {
 	case archive.EntryFile:
 		if !info.Mode().IsRegular() {
 			return false, nil
 		}
-		onDisk, err := fileHash(dest)
+		onDisk, err := fileHashAt(dir, name)
 		if err != nil {
 			return false, err
 		}
@@ -518,9 +562,10 @@ func matchesPayload(dest string, entry archive.PayloadEntry) (bool, error) {
 		if info.Mode()&os.ModeSymlink == 0 {
 			return false, nil
 		}
-		target, err := os.Readlink(dest)
+		target, err := dir.Readlink(name)
 		if err != nil {
-			return false, fmt.Errorf("peipkg/install: reading %s: %w", dest, err)
+			return false, fmt.Errorf("peipkg/install: reading %s: %w",
+				filepath.Join(dir.Path(), name), err)
 		}
 		return target == entry.LinkTarget, nil
 	default:
@@ -531,22 +576,32 @@ func matchesPayload(dest string, entry archive.PayloadEntry) (bool, error) {
 // plannedOp builds the file operation for a staged file or symlink: a
 // replace when something already occupies the destination, otherwise a
 // create. A displaced file is backed up by rename, never destroyed.
-func plannedOp(physical, staged string, txnID int64) fileOp {
-	op := fileOp{finalPath: physical, stagedPath: staged}
-	if exists(physical) {
+//
+// The parent directory is resolved and pinned here, at plan time, and
+// the descriptor rides the operation all the way to the commit. That is
+// what makes the plan and the commit act on the same directory rather
+// than on the same string, across a window that spans every download,
+// decompression and staging step of the transaction (§5.26).
+func plannedOp(pins *pinnedDirs, physical, staged string, txnID int64) (fileOp, error) {
+	dir, err := pins.dirFor(physical)
+	if err != nil {
+		return fileOp{}, err
+	}
+	op := fileOp{finalPath: physical, stagedPath: staged, dir: dir}
+	if dir.Exists(filepath.Base(physical)) {
 		op.action = actionReplace
 		op.backupPath = tempPath(physical, backupMarker, txnID)
 	} else {
 		op.action = actionCreate
 	}
-	return op
+	return op, nil
 }
 
 // rememberCreatedDirs records the missing directories from root down to
 // dir. The transaction may create them during staging; rollback removes
 // them in reverse if they are still empty. planned de-duplicates across
 // all operations in the transaction before any of them touch disk.
-func rememberCreatedDirs(root, dir string, planned map[string]bool, out *[]string) {
+func rememberCreatedDirs(pins *pinnedDirs, root, dir string, planned map[string]bool, out *[]string) {
 	root = filepath.Clean(root)
 	dir = filepath.Clean(dir)
 	rel, err := filepath.Rel(root, dir)
@@ -559,8 +614,13 @@ func rememberCreatedDirs(root, dir string, planned map[string]bool, out *[]strin
 			continue
 		}
 		cur = filepath.Join(cur, part)
-		if planned[cur] || exists(cur) {
+		if planned[cur] {
 			continue
+		}
+		if d, err := pins.existingDirFor(filepath.Join(cur, "x")); err == nil && d != nil {
+			if d.Exists(part) {
+				continue
+			}
 		}
 		planned[cur] = true
 		*out = append(*out, cur)
@@ -591,8 +651,8 @@ func isEtcPath(logical string) bool {
 // fileModified reports whether the file at path has content differing
 // from recordedHash — the hex SHA-256 the package database recorded for
 // it at install.
-func fileModified(path, recordedHash string) (bool, error) {
-	onDisk, err := fileHash(path)
+func fileModified(dir *safepath.Dir, name, recordedHash string) (bool, error) {
+	onDisk, err := fileHashAt(dir, name)
 	if err != nil {
 		return false, err
 	}
@@ -600,11 +660,13 @@ func fileModified(path, recordedHash string) (bool, error) {
 }
 
 // fileHash returns the lowercase-hex SHA-256 of the file at path.
-func fileHash(path string) (string, error) {
-	f, err := os.Open(path)
+func fileHashAt(dir *safepath.Dir, name string) (string, error) {
+	f, err := dir.Open(name)
 	if err != nil {
-		return "", fmt.Errorf("peipkg/install: reading %s: %w", path, err)
+		return "", fmt.Errorf("peipkg/install: reading %s: %w",
+			filepath.Join(dir.Path(), name), err)
 	}
+	path := filepath.Join(dir.Path(), name)
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {

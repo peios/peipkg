@@ -28,13 +28,23 @@ func TestFinishRolledBackLeavesAFailedRollbackPending(t *testing.T) {
 	// A committed create whose final path cannot be removed: rolling it
 	// back leaves the new file in place, which is the pre-transaction
 	// state not restored.
-	dir := t.TempDir()
-	victim := filepath.Join(dir, "locked")
+	root := t.TempDir()
+	victim := filepath.Join(root, "locked")
 	if err := os.MkdirAll(victim, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	final := filepath.Join(victim, "nginx")
 	writeFile(t, final, "the new content")
+
+	pins, err := newPinnedDirs(root)
+	if err != nil {
+		t.Fatalf("newPinnedDirs: %v", err)
+	}
+	defer pins.close()
+	d, err := pins.dirFor(final)
+	if err != nil {
+		t.Fatalf("dirFor: %v", err)
+	}
 	if err := os.Chmod(victim, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -44,10 +54,10 @@ func TestFinishRolledBackLeavesAFailedRollbackPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginTxn: %v", err)
 	}
-	op := fileOp{finalPath: final, action: actionCreate,
+	op := fileOp{finalPath: final, action: actionCreate, dir: d,
 		stagedPath: tempPath(final, stagedMarker, txnID)}
 
-	if err := finishRolledBack(ctx, env, txnID, []fileOp{op}, nil, "test"); err == nil {
+	if err := finishRolledBack(ctx, env, pins, txnID, []fileOp{op}, nil, "test"); err == nil {
 		t.Fatal("finishRolledBack reported success for a rollback that could not undo anything")
 	}
 
@@ -73,17 +83,26 @@ func TestFinishRolledBackClosesASuccessfulRollback(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	dir := t.TempDir()
-	final := filepath.Join(dir, "nginx")
+	root := t.TempDir()
+	final := filepath.Join(root, "nginx")
 	writeFile(t, final, "the new content")
+	pins, err := newPinnedDirs(root)
+	if err != nil {
+		t.Fatalf("newPinnedDirs: %v", err)
+	}
+	defer pins.close()
+	d, err := pins.dirFor(final)
+	if err != nil {
+		t.Fatalf("dirFor: %v", err)
+	}
 	txnID, err := store.BeginTxn(ctx, "0.1.0-test", journalSchemaVersion)
 	if err != nil {
 		t.Fatalf("BeginTxn: %v", err)
 	}
-	op := fileOp{finalPath: final, action: actionCreate,
+	op := fileOp{finalPath: final, action: actionCreate, dir: d,
 		stagedPath: tempPath(final, stagedMarker, txnID)}
 
-	if err := finishRolledBack(ctx, Env{DB: store}, txnID, []fileOp{op}, nil, "test"); err != nil {
+	if err := finishRolledBack(ctx, Env{DB: store}, pins, txnID, []fileOp{op}, nil, "test"); err != nil {
 		t.Fatalf("finishRolledBack: %v", err)
 	}
 	assertAbsent(t, final)

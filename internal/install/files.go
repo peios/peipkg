@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/peios/peipkg/internal/safepath"
 )
 
 // Temporary-file markers (DESIGN.md "Temporary file naming"). The names
@@ -49,6 +51,23 @@ type fileOp struct {
 	// is the whole point of the authorisation, so discarding it at
 	// commit would destroy exactly the content the rule exists to save.
 	keepBackup bool
+	// dir pins the parent directory of all three paths above — they are
+	// siblings by construction, which is what lets one descriptor serve
+	// the lot. Every effect goes through it, so a rename cannot be
+	// redirected by a path component changing between the plan and the
+	// commit (§5.26).
+	//
+	// It is nil only when recovery found the directory already gone, in
+	// which case the operation has nothing left to do.
+	dir *safepath.Dir
+}
+
+// names returns the three sibling component names the operation acts
+// on. They are components rather than paths because a Dir operation
+// takes one: that is what keeps resolution inside the pinned descriptor.
+func (op fileOp) names() (base, staged, backup string) {
+	return filepath.Base(op.finalPath), filepath.Base(op.stagedPath),
+		filepath.Base(op.backupPath)
 }
 
 // tempPath builds a sibling temporary path for finalPath: the same
@@ -79,23 +98,33 @@ func commitOps(ops []fileOp) error {
 }
 
 func commitOp(op fileOp) error {
+	if op.dir == nil {
+		// Only a removal reaches here without a pinned parent, and only
+		// when the directory was already gone when the plan was made —
+		// so the file is gone too and there is nothing to remove.
+		if op.action == actionRemove {
+			return nil
+		}
+		return fmt.Errorf("peipkg/install: %s has no pinned directory", op.finalPath)
+	}
+	base, staged, backup := op.names()
 	switch op.action {
 	case actionCreate:
-		if err := os.Rename(op.stagedPath, op.finalPath); err != nil {
+		if err := op.dir.Rename(staged, base); err != nil {
 			return fmt.Errorf("peipkg/install: installing %s: %w", op.finalPath, err)
 		}
 	case actionReplace:
-		if err := os.Rename(op.finalPath, op.backupPath); err != nil {
+		if err := op.dir.Rename(base, backup); err != nil {
 			return fmt.Errorf("peipkg/install: backing up %s: %w", op.finalPath, err)
 		}
-		if err := os.Rename(op.stagedPath, op.finalPath); err != nil {
+		if err := op.dir.Rename(staged, base); err != nil {
 			return fmt.Errorf("peipkg/install: installing %s: %w", op.finalPath, err)
 		}
 	case actionRemove:
-		if !exists(op.finalPath) {
+		if !op.dir.Exists(base) {
 			return nil // already absent — nothing to remove or back up
 		}
-		if err := os.Rename(op.finalPath, op.backupPath); err != nil {
+		if err := op.dir.Rename(base, backup); err != nil {
 			return fmt.Errorf("peipkg/install: removing %s: %w", op.finalPath, err)
 		}
 	}
@@ -119,27 +148,33 @@ func rollbackOps(ops []fileOp) error {
 }
 
 func rollbackOp(op fileOp) error {
+	if op.dir == nil {
+		// Recovery found the directory gone: nothing under it survives
+		// to be undone.
+		return nil
+	}
+	base, staged, backup := op.names()
 	switch op.action {
 	case actionCreate:
 		// Nothing existed before; discard the incoming content wherever
 		// it currently sits.
-		if err := removeIfExists(op.finalPath); err != nil {
+		if err := removeIfExists(op.dir, base); err != nil {
 			return err
 		}
-		return removeIfExists(op.stagedPath)
+		return removeIfExists(op.dir, staged)
 	case actionReplace, actionRemove:
 		// Restore the displaced original from its backup, if the
 		// transaction got far enough to make one.
-		if exists(op.backupPath) {
-			if err := removeIfExists(op.finalPath); err != nil {
+		if op.dir.Exists(backup) {
+			if err := removeIfExists(op.dir, base); err != nil {
 				return err
 			}
-			if err := os.Rename(op.backupPath, op.finalPath); err != nil {
+			if err := op.dir.Rename(backup, base); err != nil {
 				return fmt.Errorf("peipkg/install: restoring %s: %w", op.finalPath, err)
 			}
 		}
 		if op.action == actionReplace {
-			return removeIfExists(op.stagedPath)
+			return removeIfExists(op.dir, staged)
 		}
 		return nil
 	default:
@@ -159,10 +194,11 @@ func rollbackOp(op fileOp) error {
 func discardBackups(ops []fileOp) []string {
 	var warnings []string
 	for _, op := range ops {
-		if op.backupPath == "" || op.keepBackup {
+		if op.backupPath == "" || op.keepBackup || op.dir == nil {
 			continue
 		}
-		if err := os.Remove(op.backupPath); err != nil && !os.IsNotExist(err) {
+		_, _, backup := op.names()
+		if err := op.dir.Remove(backup); err != nil && !os.IsNotExist(err) {
 			warnings = append(warnings,
 				fmt.Sprintf("could not remove backup %s: %v", op.backupPath, err))
 		}
@@ -170,18 +206,12 @@ func discardBackups(ops []fileOp) []string {
 	return warnings
 }
 
-// exists reports whether a filesystem object is present at path. A
-// symlink counts as present even if its target is missing.
-func exists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
-}
-
-// removeIfExists removes the object at path, treating an already-absent
-// path as success.
-func removeIfExists(path string) error {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("peipkg/install: removing %s: %w", path, err)
+// removeIfExists removes name from dir, treating an already-absent name
+// as success.
+func removeIfExists(dir *safepath.Dir, name string) error {
+	if err := dir.Remove(name); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("peipkg/install: removing %s: %w",
+			filepath.Join(dir.Path(), name), err)
 	}
 	return nil
 }
@@ -189,10 +219,18 @@ func removeIfExists(path string) error {
 // removeCreatedDirs removes transaction-created directories in reverse
 // order. Non-empty directories are left alone: another package or an
 // operator may have populated them after the transaction began.
-func removeCreatedDirs(dirs []string) error {
+func removeCreatedDirs(pins *pinnedDirs, dirs []string) error {
 	var errs []error
 	for i := len(dirs) - 1; i >= 0; i-- {
-		if err := os.Remove(dirs[i]); err != nil {
+		parent, err := pins.existingDirFor(dirs[i])
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if parent == nil {
+			continue // the parent is gone, so the child is too
+		}
+		if err := parent.RemoveDir(filepath.Base(dirs[i])); err != nil {
 			if os.IsNotExist(err) || errors.Is(err, syscall.ENOTEMPTY) ||
 				errors.Is(err, syscall.EEXIST) {
 				continue

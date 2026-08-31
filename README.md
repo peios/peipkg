@@ -29,10 +29,19 @@ the rollback floor), `/etc` modified-detection and backup retention,
 raw local-file install, the secondary CLI verbs (`search`, `verify`,
 `clean`, `downgrade`, `undo`), and KMES audit emission.
 
-Two items remain deliberately deferred: KACS security-descriptor
-application (`sd_overrides`) — pending the §3.4 SD-override policy
-design — and `RESOLVE_NO_SYMLINKS`, parked on a kernel ABI gap. Both
-are recorded in the commit history.
+One item remains deliberately deferred: KACS security-descriptor
+application (`sd_overrides`), pending the §3.4 SD-override policy
+design. It is recorded in the commit history.
+
+Symlink-safe install-path resolution has landed (PEI-375). Every path
+under an installation root is resolved component by component against a
+pinned directory descriptor and never through a symbolic link, and the
+descriptor — not a re-walked string — is what the commit renames
+against. It is built on `openat`/`renameat` with `O_NOFOLLOW` rather
+than `openat2` with `RESOLVE_NO_SYMLINKS`, so it needs no ABI beyond
+what has been there for a decade; `openat2` would fold the walk into
+one syscall and add `RESOLVE_BENEATH`, and remains available as later
+hardening.
 
 ## Layout
 

@@ -6,6 +6,24 @@ import (
 	"testing"
 )
 
+// pinnedOp builds a fileOp with its parent directory pinned, the way
+// the planner does. Every effect goes through that descriptor (§5.26),
+// so a hand-built op needs one too.
+func pinnedOp(t *testing.T, root string, op fileOp) fileOp {
+	t.Helper()
+	pins, err := newPinnedDirs(root)
+	if err != nil {
+		t.Fatalf("newPinnedDirs: %v", err)
+	}
+	t.Cleanup(pins.close)
+	d, err := pins.dirFor(op.finalPath)
+	if err != nil {
+		t.Fatalf("dirFor: %v", err)
+	}
+	op.dir = d
+	return op
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -51,6 +69,7 @@ func TestCommitCreate(t *testing.T) {
 	writeFile(t, staged, "new content")
 
 	op := fileOp{finalPath: final, action: actionCreate, stagedPath: staged}
+	op = pinnedOp(t, dir, op)
 	if err := commitOps([]fileOp{op}); err != nil {
 		t.Fatalf("commitOps: %v", err)
 	}
@@ -67,6 +86,7 @@ func TestCommitReplace(t *testing.T) {
 	writeFile(t, staged, "new content")
 
 	op := fileOp{finalPath: final, action: actionReplace, stagedPath: staged, backupPath: backup}
+	op = pinnedOp(t, dir, op)
 	if err := commitOps([]fileOp{op}); err != nil {
 		t.Fatalf("commitOps: %v", err)
 	}
@@ -82,6 +102,7 @@ func TestCommitRemove(t *testing.T) {
 	writeFile(t, final, "doomed content")
 
 	op := fileOp{finalPath: final, action: actionRemove, backupPath: backup}
+	op = pinnedOp(t, dir, op)
 	if err := commitOps([]fileOp{op}); err != nil {
 		t.Fatalf("commitOps: %v", err)
 	}
@@ -96,6 +117,7 @@ func TestRollbackCreateBeforeCommit(t *testing.T) {
 	writeFile(t, staged, "staged content")
 
 	op := fileOp{finalPath: final, action: actionCreate, stagedPath: staged}
+	op = pinnedOp(t, dir, op)
 	if err := rollbackOps([]fileOp{op}); err != nil {
 		t.Fatalf("rollbackOps: %v", err)
 	}
@@ -110,6 +132,7 @@ func TestRollbackCreateAfterCommit(t *testing.T) {
 	writeFile(t, staged, "content")
 
 	op := fileOp{finalPath: final, action: actionCreate, stagedPath: staged}
+	op = pinnedOp(t, dir, op)
 	if err := commitOps([]fileOp{op}); err != nil {
 		t.Fatalf("commitOps: %v", err)
 	}
@@ -128,6 +151,7 @@ func TestRollbackReplaceAfterCommit(t *testing.T) {
 	writeFile(t, staged, "replacement")
 
 	op := fileOp{finalPath: final, action: actionReplace, stagedPath: staged, backupPath: backup}
+	op = pinnedOp(t, dir, op)
 	if err := commitOps([]fileOp{op}); err != nil {
 		t.Fatalf("commitOps: %v", err)
 	}
@@ -145,6 +169,7 @@ func TestRollbackRemoveAfterCommit(t *testing.T) {
 	writeFile(t, final, "content")
 
 	op := fileOp{finalPath: final, action: actionRemove, backupPath: backup}
+	op = pinnedOp(t, dir, op)
 	if err := commitOps([]fileOp{op}); err != nil {
 		t.Fatalf("commitOps: %v", err)
 	}
@@ -163,6 +188,7 @@ func TestRollbackIsIdempotent(t *testing.T) {
 	writeFile(t, staged, "replacement")
 
 	op := fileOp{finalPath: final, action: actionReplace, stagedPath: staged, backupPath: backup}
+	op = pinnedOp(t, dir, op)
 	if err := commitOps([]fileOp{op}); err != nil {
 		t.Fatalf("commitOps: %v", err)
 	}

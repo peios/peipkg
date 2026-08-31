@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/resolver"
+	"github.com/peios/peipkg/internal/safepath"
 )
 
 // ClaimDirective is the operator's install-time claim intent (§7.7.2).
@@ -48,6 +48,12 @@ type claimWork struct {
 type stagedSymlink struct {
 	staged string
 	target string
+	// dir pins the parent the link is created in, and name is the
+	// staged link's component within it. §5.26 applies to a claim link
+	// exactly as it does to payload: the link is created relative to a
+	// verified descriptor, never through a re-walked string (PEI-444).
+	dir  *safepath.Dir
+	name string
 }
 
 func (w claimWork) empty() bool {
@@ -60,7 +66,7 @@ func (w claimWork) empty() bool {
 // packages and holders) against what is on disk (§4.4.4). It returns the
 // work to apply, any withdrawal warnings (§7.7.6), or an error — a
 // path-collision or a forced role the plan does not provide.
-func planClaims(ctx context.Context, env Env, plan resolver.Plan,
+func planClaims(ctx context.Context, env Env, pins *pinnedDirs, plan resolver.Plan,
 	provided map[string]ProvidedPackage, dir ClaimDirective, txnID int64,
 	plannedDirs map[string]bool) (claimWork, []string, error) {
 
@@ -72,7 +78,7 @@ func planClaims(ctx context.Context, env Env, plan resolver.Plan,
 	if err != nil {
 		return claimWork{}, nil, err
 	}
-	w, err := reconcileClaims(ctx, env, postInstalled, current, post, txnID, plannedDirs)
+	w, err := reconcileClaims(ctx, env, pins, postInstalled, current, post, txnID, plannedDirs)
 	if err != nil {
 		return claimWork{}, nil, err
 	}
@@ -84,8 +90,9 @@ func planClaims(ctx context.Context, env Env, plan resolver.Plan,
 // to make them equal: file operations, staged symlinks, and database row
 // changes (§4.4.4). It is shared by install transactions and the
 // standalone claim command, which differ only in how post is derived.
-func reconcileClaims(ctx context.Context, env Env, postInstalled []claims.Installed,
-	current, post map[string]string, txnID int64, plannedDirs map[string]bool) (claimWork, error) {
+func reconcileClaims(ctx context.Context, env Env, pins *pinnedDirs,
+	postInstalled []claims.Installed, current, post map[string]string, txnID int64,
+	plannedDirs map[string]bool) (claimWork, error) {
 
 	desired, err := claims.Desired(postInstalled, post)
 	if err != nil {
@@ -125,7 +132,7 @@ func reconcileClaims(ctx context.Context, env Env, postInstalled []claims.Instal
 	for _, l := range append(append([]claims.Link{}, recPlan.Create...), recPlan.Repoint...) {
 		physical := filepath.Join(env.Root, l.Path)
 		staged := tempPath(physical, stagedMarker, txnID)
-		rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &w.createdDirs)
+		rememberCreatedDirs(pins, env.Root, filepath.Dir(staged), plannedDirs, &w.createdDirs)
 		// Relative target keeps the link valid under any root prefix (env.Root
 		// here, a future mount point, an image build); the DB keeps the
 		// absolute logical target. See claims.RelativeTarget.
@@ -133,13 +140,22 @@ func reconcileClaims(ctx context.Context, env Env, postInstalled []claims.Instal
 		if err != nil {
 			return claimWork{}, err
 		}
-		w.stagedSymlinks = append(w.stagedSymlinks, stagedSymlink{staged: staged, target: target})
-		w.fileOps = append(w.fileOps, plannedOp(physical, staged, txnID))
+		fo, err := plannedOp(pins, physical, staged, txnID)
+		if err != nil {
+			return claimWork{}, err
+		}
+		w.stagedSymlinks = append(w.stagedSymlinks, stagedSymlink{
+			staged: staged, target: target, dir: fo.dir, name: filepath.Base(staged)})
+		w.fileOps = append(w.fileOps, fo)
 	}
 	for _, l := range recPlan.Remove {
 		physical := filepath.Join(env.Root, l.Path)
+		d, err := pins.existingDirFor(physical)
+		if err != nil {
+			return claimWork{}, err
+		}
 		w.fileOps = append(w.fileOps, fileOp{
-			finalPath: physical, action: actionRemove,
+			finalPath: physical, action: actionRemove, dir: d,
 			backupPath: tempPath(physical, backupMarker, txnID)})
 	}
 
@@ -302,10 +318,9 @@ func withdrawalWarnings(current, post map[string]string, installed []claims.Inst
 // exists, mirroring materializePackage for payload entries.
 func materializeClaims(w claimWork) error {
 	for _, ss := range w.stagedSymlinks {
-		if err := os.MkdirAll(filepath.Dir(ss.staged), 0o755); err != nil {
-			return fmt.Errorf("peipkg/install: staging claim link: %w", err)
-		}
-		if err := os.Symlink(ss.target, ss.staged); err != nil {
+		// The parent was created and pinned when the link was planned,
+		// so there is no directory to make and no path to re-walk here.
+		if err := ss.dir.Symlink(ss.target, ss.name); err != nil {
 			return fmt.Errorf("peipkg/install: staging claim link %s: %w", ss.staged, err)
 		}
 	}
@@ -405,8 +420,15 @@ func Claim(ctx context.Context, env Env, req ClaimRequest) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	pins, err := newPinnedDirs(env.Root)
+	if err != nil {
+		_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, "opening the installation root failed")
+		return Result{TxnID: txnID}, err
+	}
+	defer pins.close()
+
 	plannedDirs := map[string]bool{}
-	w, err := reconcileClaims(ctx, env, installed, current, post, txnID, plannedDirs)
+	w, err := reconcileClaims(ctx, env, pins, installed, current, post, txnID, plannedDirs)
 	if err != nil {
 		_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, "planning the claim failed")
 		return Result{TxnID: txnID}, err
@@ -414,15 +436,15 @@ func Claim(ctx context.Context, env Env, req ClaimRequest) (Result, error) {
 
 	if err := writeClaimJournal(ctx, env.DB, txnID, req.Role, w); err != nil {
 		return Result{TxnID: txnID}, errors.Join(err,
-			abandonClaim(ctx, env, txnID, w, "recording the journal failed"))
+			abandonClaim(ctx, env, pins, txnID, w, "recording the journal failed"))
 	}
 	if err := materializeClaims(w); err != nil {
 		return Result{TxnID: txnID}, errors.Join(err,
-			abandonClaim(ctx, env, txnID, w, "staging claim links failed"))
+			abandonClaim(ctx, env, pins, txnID, w, "staging claim links failed"))
 	}
 	if err := commitOps(w.fileOps); err != nil {
 		return Result{TxnID: txnID}, errors.Join(err,
-			finishRolledBack(ctx, env, txnID, w.fileOps, w.createdDirs,
+			finishRolledBack(ctx, env, pins, txnID, w.fileOps, w.createdDirs,
 				"applying claim changes failed"))
 	}
 	err = env.DB.Tx(ctx, func(tx *db.Tx) error {
@@ -434,7 +456,7 @@ func Claim(ctx context.Context, env Env, req ClaimRequest) (Result, error) {
 	if err != nil {
 		return Result{TxnID: txnID}, errors.Join(
 			fmt.Errorf("peipkg/install: committing claim transaction %d: %w", txnID, err),
-			finishRolledBack(ctx, env, txnID, w.fileOps, w.createdDirs,
+			finishRolledBack(ctx, env, pins, txnID, w.fileOps, w.createdDirs,
 				"committing the claim failed"))
 	}
 
@@ -468,8 +490,9 @@ func writeClaimJournal(ctx context.Context, store *db.DB, txnID int64, role stri
 	return store.InsertTxnDirs(ctx, txnID, dirs)
 }
 
-func abandonClaim(ctx context.Context, env Env, txnID int64, w claimWork, reason string) error {
-	return finishRolledBack(ctx, env, txnID, w.fileOps, w.createdDirs, reason)
+func abandonClaim(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
+	w claimWork, reason string) error {
+	return finishRolledBack(ctx, env, pins, txnID, w.fileOps, w.createdDirs, reason)
 }
 
 func claimSummary(req ClaimRequest) string {

@@ -80,17 +80,25 @@ func applyMetadata(ctx context.Context, tx *db.Tx, staged []stagedOp) error {
 
 // fileOpsFromJournal reconstructs file operations from journalled rows,
 // for crash recovery.
-func fileOpsFromJournal(files []db.TxnFile) []fileOp {
+func fileOpsFromJournal(pins *pinnedDirs, files []db.TxnFile) ([]fileOp, error) {
 	ops := make([]fileOp, len(files))
 	for i, f := range files {
+		// A nil dir means the parent directory is gone, so nothing under
+		// it survives to be undone; the operation becomes a no-op rather
+		// than an error.
+		dir, err := pins.existingDirFor(f.FinalPath)
+		if err != nil {
+			return nil, err
+		}
 		ops[i] = fileOp{
 			finalPath:  f.FinalPath,
 			action:     fileActionFromDB(f.Action),
 			stagedPath: f.StagedPath,
 			backupPath: f.BackupPath,
+			dir:        dir,
 		}
 	}
-	return ops
+	return ops, nil
 }
 
 // operationSummary renders a one-line summary of a plan, for the
