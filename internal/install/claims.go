@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -412,18 +413,17 @@ func Claim(ctx context.Context, env Env, req ClaimRequest) (Result, error) {
 	}
 
 	if err := writeClaimJournal(ctx, env.DB, txnID, req.Role, w); err != nil {
-		abandonClaim(ctx, env, txnID, w, "recording the journal failed")
-		return Result{TxnID: txnID}, err
+		return Result{TxnID: txnID}, errors.Join(err,
+			abandonClaim(ctx, env, txnID, w, "recording the journal failed"))
 	}
 	if err := materializeClaims(w); err != nil {
-		abandonClaim(ctx, env, txnID, w, "staging claim links failed")
-		return Result{TxnID: txnID}, err
+		return Result{TxnID: txnID}, errors.Join(err,
+			abandonClaim(ctx, env, txnID, w, "staging claim links failed"))
 	}
 	if err := commitOps(w.fileOps); err != nil {
-		_ = rollbackOps(w.fileOps)
-		_ = removeCreatedDirs(w.createdDirs)
-		_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, "applying claim changes failed")
-		return Result{TxnID: txnID}, err
+		return Result{TxnID: txnID}, errors.Join(err,
+			finishRolledBack(ctx, env, txnID, w.fileOps, w.createdDirs,
+				"applying claim changes failed"))
 	}
 	err = env.DB.Tx(ctx, func(tx *db.Tx) error {
 		if err := applyClaimMetadata(ctx, tx, w); err != nil {
@@ -432,11 +432,10 @@ func Claim(ctx context.Context, env Env, req ClaimRequest) (Result, error) {
 		return tx.FinishTxn(ctx, txnID, db.TxnCommitted, claimSummary(req))
 	})
 	if err != nil {
-		_ = rollbackOps(w.fileOps)
-		_ = removeCreatedDirs(w.createdDirs)
-		_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, "committing the claim failed")
-		return Result{TxnID: txnID},
-			fmt.Errorf("peipkg/install: committing claim transaction %d: %w", txnID, err)
+		return Result{TxnID: txnID}, errors.Join(
+			fmt.Errorf("peipkg/install: committing claim transaction %d: %w", txnID, err),
+			finishRolledBack(ctx, env, txnID, w.fileOps, w.createdDirs,
+				"committing the claim failed"))
 	}
 
 	result := Result{TxnID: txnID}
@@ -469,10 +468,8 @@ func writeClaimJournal(ctx context.Context, store *db.DB, txnID int64, role stri
 	return store.InsertTxnDirs(ctx, txnID, dirs)
 }
 
-func abandonClaim(ctx context.Context, env Env, txnID int64, w claimWork, reason string) {
-	_ = rollbackOps(w.fileOps)
-	_ = removeCreatedDirs(w.createdDirs)
-	_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, reason)
+func abandonClaim(ctx context.Context, env Env, txnID int64, w claimWork, reason string) error {
+	return finishRolledBack(ctx, env, txnID, w.fileOps, w.createdDirs, reason)
 }
 
 func claimSummary(req ClaimRequest) string {
