@@ -57,3 +57,28 @@ func TestRecorder(t *testing.T) {
 		t.Errorf("Recorder did not record the event: %+v", r.Events)
 	}
 }
+
+// §7.6.3: an install or upgrade event carries the source repository.
+// The data was available and discarded — auditPackages read op.Candidate
+// for the architecture and ignored its Repo — so the record could not
+// answer "which repository did this come from", the field an audit
+// consumer correlates a bad install with a compromised repository
+// (PEI-410).
+func TestPackageRefCarriesTheSourceRepository(t *testing.T) {
+	b := encodeEvent(Event{
+		Type: TypeInstall, TxnID: 7, Outcome: OutcomeSuccess,
+		Timestamp: time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC),
+		Packages: []PackageRef{
+			{Name: "nginx", Version: "1.26.2-3", Architecture: "x86_64", Repo: "peios-official"},
+			// A plan can draw from several repositories, which is why the
+			// field is per package rather than per event; an empty value
+			// is a raw local-file install.
+			{Name: "local-tool", Version: "1.0-1", Architecture: "x86_64"},
+		},
+	})
+	for _, want := range []string{"repo", "peios-official"} {
+		if !bytes.Contains(b, []byte(want)) {
+			t.Errorf("the encoded event does not carry %q", want)
+		}
+	}
+}

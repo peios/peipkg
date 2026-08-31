@@ -655,6 +655,13 @@ func auditPackages(plan resolver.Plan) []audit.PackageRef {
 			ref.Version = op.ToVersion.String()
 			if op.Candidate != nil {
 				ref.Architecture = op.Candidate.Architecture
+				// §7.6.3 requires the source repository on install and
+				// upgrade events. It is what an audit consumer correlates
+				// a bad install against a compromised repository with,
+				// and a plan drawing from several repositories used to
+				// name none of them. Empty means a local file, which is
+				// itself worth recording.
+				ref.Repo = op.Candidate.Repo
 			}
 		}
 		refs = append(refs, ref)

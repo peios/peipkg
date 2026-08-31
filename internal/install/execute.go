@@ -386,6 +386,15 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	}
 	p.pins = pins
 
+	// §7.1.2.2 step 2: verify disk space before staging, per target
+	// filesystem. Before the journal is opened, so a shortage costs
+	// nothing to recover from — discovering it mid-commit leaves some
+	// files renamed into place and some originals at their backup paths,
+	// with the rollback itself then needing renames.
+	if err := checkDiskSpace(pins, plan.Operations, provided); err != nil {
+		return p, err
+	}
+
 	txnID, err := env.DB.BeginCrossRootTxn(ctx, env.PeipkgVersion, journalSchemaVersion, crossRootID)
 	if err != nil {
 		return p, err

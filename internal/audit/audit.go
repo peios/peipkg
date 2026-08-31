@@ -40,6 +40,15 @@ type PackageRef struct {
 	Name         string
 	Version      string
 	Architecture string
+	// Repo is the repository the package came from, for an install or
+	// upgrade (§7.6.3). It is per package rather than per event because
+	// one plan can draw from several repositories.
+	//
+	// An empty value is meaningful in three different ways, which the
+	// event type distinguishes: a removal has no source, a raw
+	// local-file install has no repository, and an orphaned package's
+	// origin is no longer configured.
+	Repo string
 }
 
 // Event is one audit record. Type is a canonical event-type string;

@@ -26,13 +26,15 @@ func encodeEvent(e Event) []byte {
 	b = mpStr(b, "packages")
 	b = mpArrayHeader(b, len(e.Packages))
 	for _, p := range e.Packages {
-		b = mpMapHeader(b, 3)
+		b = mpMapHeader(b, 4)
 		b = mpStr(b, "name")
 		b = mpStr(b, p.Name)
 		b = mpStr(b, "version")
 		b = mpStr(b, p.Version)
 		b = mpStr(b, "arch")
 		b = mpStr(b, p.Architecture)
+		b = mpStr(b, "repo")
+		b = mpStr(b, p.Repo)
 	}
 	return b
 }
