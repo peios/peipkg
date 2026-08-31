@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/peios/peipkg/internal/archive"
 	packvalidate "github.com/peios/peipkg/internal/build/pack"
@@ -34,7 +35,10 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 	bypassPaths bool, record func(relPath, name string, value []byte) error) error {
 	// How each security.* attribute reaches the object it belongs to:
 	// set directly, or — for a builder that cannot set one — handed to
-	// the caller against the path relative to out.
+	// the caller against the path relative to out. Payloads extract in
+	// parallel, and the caller's record hook was promised one call at a
+	// time, so a shared mutex serialises the stamps.
+	var stampMu sync.Mutex
 	forAttr := func(name string, direct func(string, []byte) error) func(string, []byte) error {
 		if record == nil {
 			return direct
@@ -44,6 +48,8 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 			if err != nil {
 				return err
 			}
+			stampMu.Lock()
+			defer stampMu.Unlock()
 			return record(filepath.ToSlash(rel), name, value)
 		}
 	}
@@ -113,11 +119,14 @@ func assembleRoot(ctx context.Context, rootDir string, m Manifest,
 	}
 	// Payloads are extracted only after the database has accepted the
 	// closure, so a cross-package path collision is caught by the
-	// package_file UNIQUE constraint before any file is written.
-	for _, fp := range fetched {
-		if err := extractPayload(rootDir, fp, stamp, stampSD); err != nil {
-			return err
-		}
+	// package_file UNIQUE constraint before any file is written — which
+	// is also what makes parallel extraction safe: the accepted closure
+	// writes disjoint paths, and concurrent MkdirAll of shared parents
+	// is idempotent. The stamps are serialised by the caller's mutex.
+	if _, err := parallelMap(len(fetched), 0, func(i int) (struct{}, error) {
+		return struct{}{}, extractPayload(rootDir, fetched[i], stamp, stampSD)
+	}); err != nil {
+		return err
 	}
 	// Claim symlinks land after payloads so a claim contending with a real
 	// payload file fails on the already-present path rather than overwriting.

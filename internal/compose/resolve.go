@@ -202,21 +202,32 @@ func ResolveWithSources(ctx context.Context, m Manifest, manifestName string,
 	// ones are verified and hashed now, so the lock keeps its guarantee:
 	// every entry names format-valid bytes by content hash. The same file
 	// may be chosen into more than one root — one verification serves both
-	// entries.
-	hashed := map[string]string{}
+	// entries — and the files are independent, so they verify in parallel.
+	var chosen []*LockedPackage
+	seen := map[string]bool{}
 	for i := range lock.Packages {
 		lp := &lock.Packages[i]
-		if lp.Source != LocalSource {
+		if lp.Source != LocalSource || seen[lp.URL] {
 			continue
 		}
-		h, ok := hashed[lp.URL]
-		if !ok {
-			if h, err = verifyLocalPackage(lp.URL, lp.Name, lp.Version, lp.Architecture); err != nil {
-				return Lock{}, err
-			}
-			hashed[lp.URL] = h
+		seen[lp.URL] = true
+		chosen = append(chosen, lp)
+	}
+	hashes, err := parallelMap(len(chosen), 0, func(i int) (string, error) {
+		lp := chosen[i]
+		return verifyLocalPackage(lp.URL, lp.Name, lp.Version, lp.Architecture)
+	})
+	if err != nil {
+		return Lock{}, err
+	}
+	hashed := map[string]string{}
+	for i, lp := range chosen {
+		hashed[lp.URL] = hashes[i]
+	}
+	for i := range lock.Packages {
+		if lp := &lock.Packages[i]; lp.Source == LocalSource {
+			lp.Hash = hashed[lp.URL]
 		}
-		lp.Hash = h
 	}
 	return lock, nil
 }
@@ -339,9 +350,10 @@ func indexCandidates(cfg config.RepoConfig, idx repository.Index,
 
 // localCandidates reads the manifest's local .peipkg files and returns a
 // resolver candidate for each. A glob matching nothing is not an error;
-// a file that fails format verification is.
+// a file whose manifest cannot be read is. The files are independent, so
+// they are read in parallel; the candidate order stays the glob order.
 func localCandidates(patterns []string, baseDir string) ([]resolver.Candidate, error) {
-	var candidates []resolver.Candidate
+	var paths []string
 	seen := map[string]bool{}
 	for _, pattern := range patterns {
 		resolved := pattern
@@ -361,14 +373,12 @@ func localCandidates(patterns []string, baseDir string) ([]resolver.Candidate, e
 				continue
 			}
 			seen[abs] = true
-			cand, err := localCandidate(abs)
-			if err != nil {
-				return nil, err
-			}
-			candidates = append(candidates, cand)
+			paths = append(paths, abs)
 		}
 	}
-	return candidates, nil
+	return parallelMap(len(paths), 0, func(i int) (resolver.Candidate, error) {
+		return localCandidate(paths[i])
+	})
 }
 
 // localCandidate reads one local .peipkg's manifest — the archive's

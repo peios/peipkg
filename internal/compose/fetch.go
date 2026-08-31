@@ -31,17 +31,12 @@ type fetchedPackage struct {
 // the lock. The path serves locked and non-locked builds alike: the
 // lock's hash is the carried-forward result of the index signature
 // verification done at lock time, and matching it confirms the bytes
-// are exactly what the resolver chose.
+// are exactly what the resolver chose. The packages are independent, so
+// they fetch and verify in parallel; the result keeps the lock's order.
 func fetchAll(ctx context.Context, lock Lock, fetcher repository.Fetcher) ([]fetchedPackage, error) {
-	fetched := make([]fetchedPackage, 0, len(lock.Packages))
-	for _, lp := range lock.Packages {
-		fp, err := fetchOne(ctx, lp, fetcher)
-		if err != nil {
-			return nil, err
-		}
-		fetched = append(fetched, fp)
-	}
-	return fetched, nil
+	return parallelMap(len(lock.Packages), 0, func(i int) (fetchedPackage, error) {
+		return fetchOne(ctx, lock.Packages[i], fetcher)
+	})
 }
 
 // fetchOne retrieves one package by its lock entry. A repository
