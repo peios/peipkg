@@ -124,7 +124,16 @@ func bestForDependency(idx candidateIndex, dep manifest.Dependency,
 		if seen[candidateKey(c)] {
 			return
 		}
-		if !satisfies(c.Name, c.Version, c.Architecture, c.Provides, dep, dependerArch) {
+		if !satisfies(c.Name, c.Version, c.Architecture, c.Provides, dep,
+			dependerArch, primaryArch) {
+			return
+		}
+		// bestNamed and bestForGoal both filter by installability; this
+		// path did not, so a candidate that satisfies the dependency but
+		// cannot be installed on this system could still win rules 1-6
+		// and be placed, to be rejected later by checkConsistency —
+		// which fails the whole resolution rather than this candidate.
+		if !installableArch(c.Architecture, primaryArch) {
 			return
 		}
 		m := matchFor(c, dep.Name)

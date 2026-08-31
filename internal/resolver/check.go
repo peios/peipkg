@@ -40,7 +40,8 @@ func checkConsistency(world map[string]*worldPkg, opts Options, downgradeAllowed
 				if a.root != b.root {
 					continue
 				}
-				if satisfies(b.name, b.version, b.architecture, b.provides, conflict, a.architecture) {
+				if satisfies(b.name, b.version, b.architecture, b.provides, conflict,
+					a.architecture, opts.PrimaryArch) {
 					return &Rejection{Reason: ReasonConflict,
 						Detail: fmt.Sprintf("packages %q and %q cannot be installed together",
 							a.name, b.name)}

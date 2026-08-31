@@ -797,3 +797,61 @@ func TestSelectionRule2AppliesToAnInstalledDepender(t *testing.T) {
 			"the rule must not depend on whether the depender is in the transaction", repo)
 	}
 }
+
+// §5.21: a depending package's effective architecture is its own when
+// arch-specific, and the system's primary architecture when the depender
+// is noarch.
+//
+// Skipping the architecture test outright for a noarch depender let any
+// architecture satisfy, foreign ones included. The foreign candidate
+// then entered the matching set, won on version, was placed, and was
+// caught only by checkConsistency — which rejects the *entire*
+// resolution. §4.2.5(1) permits failure only when no available package
+// satisfies, and a satisfying noarch candidate was available the whole
+// time (PEI-395).
+func TestNoarchDependerResolvesAgainstThePrimaryArchitecture(t *testing.T) {
+	candidates := []resolver.Candidate{
+		{Name: "build-meta", Version: ver(t, "1.0-1"), Architecture: "noarch",
+			Dependencies: []manifest.Dependency{dep(t, "tool", "")}},
+		{Name: "tool", Version: ver(t, "2.0-1"), Architecture: "aarch64"},
+		{Name: "tool", Version: ver(t, "1.0-1"), Architecture: "noarch"},
+	}
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "build-meta"}},
+		nil, candidates, resolver.Options{PrimaryArch: primaryArch})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	var got string
+	for _, op := range plan.Operations {
+		if op.Name == "tool" {
+			got = op.ToVersion.String() + " " + op.Candidate.Architecture
+		}
+	}
+	if got != "1.0-1 noarch" {
+		t.Errorf("tool resolved to %q, want the noarch candidate", got)
+	}
+}
+
+// The primary-architecture candidate still outranks a noarch one, so
+// the effective-architecture rule has not turned into "prefer noarch".
+func TestNoarchDependerPrefersThePrimaryArchitecture(t *testing.T) {
+	candidates := []resolver.Candidate{
+		{Name: "build-meta", Version: ver(t, "1.0-1"), Architecture: "noarch",
+			Dependencies: []manifest.Dependency{dep(t, "tool", "")}},
+		{Name: "tool", Version: ver(t, "2.0-1"), Architecture: primaryArch},
+		{Name: "tool", Version: ver(t, "1.0-1"), Architecture: "noarch"},
+	}
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: "build-meta"}},
+		nil, candidates, resolver.Options{PrimaryArch: primaryArch})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	for _, op := range plan.Operations {
+		if op.Name == "tool" && op.Candidate.Architecture != primaryArch {
+			t.Errorf("tool resolved to %s, want the %s candidate",
+				op.Candidate.Architecture, primaryArch)
+		}
+	}
+}

@@ -21,7 +21,7 @@ type removedPkg struct {
 // target root; dependency ordering follows edges across roots, so a
 // cross-root dependency is sequenced before the dependent that needs it.
 func buildPlan(world map[string]*worldPkg, installedByRoot map[string][]Installed,
-	refToPath map[string]string) (Plan, error) {
+	refToPath map[string]string, primaryArch string) (Plan, error) {
 
 	var forward []Operation
 	for _, key := range sortedKeys(world) {
@@ -55,11 +55,11 @@ func buildPlan(world map[string]*worldPkg, installedByRoot map[string][]Installe
 		}
 	}
 
-	removeOps, err := orderRemovals(removed, refToPath)
+	removeOps, err := orderRemovals(removed, refToPath, primaryArch)
 	if err != nil {
 		return Plan{}, err
 	}
-	forwardOps, err := orderForward(forward, world, refToPath)
+	forwardOps, err := orderForward(forward, world, refToPath, primaryArch)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -68,7 +68,8 @@ func buildPlan(world map[string]*worldPkg, installedByRoot map[string][]Installe
 
 // orderForward sorts install/upgrade/downgrade operations so each
 // package follows the in-plan packages it depends on, across roots.
-func orderForward(ops []Operation, world map[string]*worldPkg, refToPath map[string]string) ([]Operation, error) {
+func orderForward(ops []Operation, world map[string]*worldPkg, refToPath map[string]string,
+	primaryArch string) ([]Operation, error) {
 	byKey := make(map[string]Operation, len(ops))
 	inPlan := make(map[string]bool, len(ops))
 	keys := make([]string, 0, len(ops))
@@ -79,7 +80,7 @@ func orderForward(ops []Operation, world map[string]*worldPkg, refToPath map[str
 		keys = append(keys, k)
 	}
 	ordered, err := topoSort(keys, func(key string) []string {
-		return planDependencies(key, world, inPlan, refToPath)
+		return planDependencies(key, world, inPlan, refToPath, primaryArch)
 	})
 	if err != nil {
 		return nil, err
@@ -93,7 +94,8 @@ func orderForward(ops []Operation, world map[string]*worldPkg, refToPath map[str
 
 // orderRemovals sorts removal operations so each package precedes the
 // packages it depended on (§4.2.1), across roots.
-func orderRemovals(removed []removedPkg, refToPath map[string]string) ([]Operation, error) {
+func orderRemovals(removed []removedPkg, refToPath map[string]string,
+	primaryArch string) ([]Operation, error) {
 	byKey := make(map[string]removedPkg, len(removed))
 	keys := make([]string, 0, len(removed))
 	for _, rp := range removed {
@@ -102,7 +104,7 @@ func orderRemovals(removed []removedPkg, refToPath map[string]string) ([]Operati
 		keys = append(keys, k)
 	}
 	ordered, err := topoSort(keys, func(key string) []string {
-		return removedDependencies(byKey[key], byKey, refToPath)
+		return removedDependencies(byKey[key], byKey, refToPath, primaryArch)
 	})
 	if err != nil {
 		return nil, err
@@ -122,7 +124,7 @@ func orderRemovals(removed []removedPkg, refToPath map[string]string) ([]Operati
 // key's package depends on, routing each dependency to its target root so
 // a cross-root edge orders correctly.
 func planDependencies(key string, world map[string]*worldPkg, inPlan map[string]bool,
-	refToPath map[string]string) []string {
+	refToPath map[string]string, primaryArch string) []string {
 
 	p := world[key]
 	if p == nil {
@@ -143,7 +145,8 @@ func planDependencies(key string, world map[string]*worldPkg, inPlan map[string]
 			if s.root != targetRoot {
 				continue
 			}
-			if satisfies(s.name, s.version, s.architecture, s.provides, dep, p.architecture) {
+			if satisfies(s.name, s.version, s.architecture, s.provides, dep,
+				p.architecture, primaryArch) {
 				seen[other] = true
 				deps = append(deps, other)
 			}
@@ -156,7 +159,7 @@ func planDependencies(key string, world map[string]*worldPkg, inPlan map[string]
 // removedDependencies returns, among the removed packages, the keys inst
 // depended on, routing each dependency to its target root.
 func removedDependencies(rp removedPkg, removed map[string]removedPkg,
-	refToPath map[string]string) []string {
+	refToPath map[string]string, primaryArch string) []string {
 
 	others := make([]string, 0, len(removed))
 	for key := range removed {
@@ -181,7 +184,7 @@ func removedDependencies(rp removedPkg, removed map[string]removedPkg,
 				continue
 			}
 			if satisfies(o.inst.Name, o.inst.Version, o.inst.Architecture, o.inst.Provides,
-				dep, rp.inst.Architecture) {
+				dep, rp.inst.Architecture, primaryArch) {
 				seen[other] = true
 				deps = append(deps, other)
 			}

@@ -166,7 +166,7 @@ func resolveCore(reqs []Request, installedByRoot map[string][]Installed, availab
 	if err := checkConsistency(world, opts, downgradeAllowed); err != nil {
 		return Plan{}, err
 	}
-	plan, err := buildPlan(world, installedByRoot, refToPath)
+	plan, err := buildPlan(world, installedByRoot, refToPath, opts.PrimaryArch)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -346,7 +346,7 @@ func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []stri
 					Detail: fmt.Sprintf("package %q depends on %q placed in root %q, "+
 						"which is not a registered root", pkg.name, dep.Name, dep.Root)}
 			}
-			if worldSatisfiesInRoot(world, dep, pkg.architecture, targetRoot) {
+			if worldSatisfiesInRoot(world, dep, pkg.architecture, opts.PrimaryArch, targetRoot) {
 				continue
 			}
 			depRepo, depPriority := pkg.originRepo()
@@ -369,17 +369,28 @@ func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []stri
 // worldSatisfiesInRoot reports whether some package in targetRoot already
 // satisfies dep for a depender of architecture dependerArch.
 func worldSatisfiesInRoot(world map[string]*worldPkg, dep manifest.Dependency,
-	dependerArch, targetRoot string) bool {
+	dependerArch, primaryArch, targetRoot string) bool {
 
 	for _, p := range world {
 		if p.root != targetRoot {
 			continue
 		}
-		if satisfies(p.name, p.version, p.architecture, p.provides, dep, dependerArch) {
+		if satisfies(p.name, p.version, p.architecture, p.provides, dep, dependerArch, primaryArch) {
 			return true
 		}
 	}
 	return false
+}
+
+// effectiveArch is a package's architecture for resolution purposes
+// (§5.21): its own when arch-specific, and the system's primary
+// architecture when it is noarch. A noarch package's payload is
+// architecture-independent, but its resolution context is not.
+func effectiveArch(arch, primaryArch string) string {
+	if arch == archNoarch && primaryArch != "" {
+		return primaryArch
+	}
+	return arch
 }
 
 // satisfies reports whether a package — described by its name, version,
@@ -388,17 +399,24 @@ func worldSatisfiesInRoot(world map[string]*worldPkg, dep manifest.Dependency,
 // to the dependency's target root; satisfaction within that root is what
 // this checks.
 func satisfies(name string, ver version.Version, arch string, provides []manifest.Provides,
-	dep manifest.Dependency, dependerArch string) bool {
+	dep manifest.Dependency, dependerArch, primaryArch string) bool {
 
-	// §4.1.3: with the v0.22 `any` arch qualifier, the satisfier's
-	// architecture must be noarch or equal the depender's *effective*
-	// architecture. A noarch depender's payload is
-	// architecture-independent but its resolution context is not: its
-	// effective architecture is the system's primary architecture, so
-	// any satisfier qualifies here — installability against the primary
-	// architecture is enforced separately (checkPlan), and within a plan
-	// or installed set every package already passes it.
-	if arch != archNoarch && dependerArch != archNoarch && arch != dependerArch {
+	// §4.1.3/§5.21: the satisfier's architecture must be noarch or equal
+	// the depender's *effective* architecture — its own when
+	// arch-specific, and the system's primary architecture when the
+	// depender is noarch.
+	//
+	// Skipping the test outright for a noarch depender let any
+	// architecture satisfy, a foreign one included. That candidate then
+	// entered the matching set, could win rules 1-6, was placed, and was
+	// caught only by checkConsistency — which rejects the *entire*
+	// resolution. §4.2.5(1) permits failure only when no available
+	// package satisfies, and §4.2.5(3) is a check on the proposed plan,
+	// not a licence to build a bad one and then reject it. A noarch
+	// depender with a noarch candidate available was failing outright
+	// because a foreign-arch candidate outranked it.
+	if arch != archNoarch && effectiveArch(dependerArch, primaryArch) != archNoarch &&
+		arch != effectiveArch(dependerArch, primaryArch) {
 		return false
 	}
 	if name == dep.Name && dep.Constraint.Matches(ver) {

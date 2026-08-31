@@ -26,7 +26,7 @@ func applyRemovals(world map[string]*worldPkg, targets []string,
 	// A removal can leave a remaining package's dependency unsatisfied.
 	// Such a package is itself removed (cascade) or the removal refused.
 	for {
-		brokenKey, dep := firstBroken(world, refToPath)
+		brokenKey, dep := firstBroken(world, refToPath, opts.PrimaryArch)
 		if brokenKey == "" {
 			return nil
 		}
@@ -45,7 +45,8 @@ func applyRemovals(world map[string]*worldPkg, targets []string,
 // the world is whole. A dependency routed to a root not represented in
 // the world (an unregistered reference) is skipped — it is not this
 // world's concern to satisfy.
-func firstBroken(world map[string]*worldPkg, refToPath map[string]string) (key, dep string) {
+func firstBroken(world map[string]*worldPkg, refToPath map[string]string,
+	primaryArch string) (key, dep string) {
 	for _, k := range sortedKeys(world) {
 		p := world[k]
 		deps := append([]manifest.Dependency(nil), p.dependencies...)
@@ -55,7 +56,7 @@ func firstBroken(world map[string]*worldPkg, refToPath map[string]string) (key, 
 			if !ok {
 				continue
 			}
-			if !worldSatisfiesInRoot(world, d, p.architecture, targetRoot) {
+			if !worldSatisfiesInRoot(world, d, p.architecture, primaryArch, targetRoot) {
 				return k, d.Name
 			}
 		}

@@ -15,6 +15,7 @@ import (
 	packvalidate "github.com/peios/peipkg/internal/build/pack"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/layout"
+	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/pipsig"
 	"github.com/peios/peipkg/internal/resolver"
 	"github.com/peios/peipkg/internal/safepath"
@@ -51,6 +52,12 @@ type stagedOp struct {
 	// stagedAt maps payload logical paths to their incoming staged
 	// sibling. It is staging-only state; the journal gets fileOps.
 	stagedAt map[string]string
+	// removedFiles are the ownership rows of a package being removed.
+	// They are not written anywhere — a removal writes no rows — but a
+	// side effect has to see them: §5.24 ties an effect to files whose
+	// *absence* affects its target, so a kernel release whose modules
+	// this transaction deletes still needs reindexing.
+	removedFiles []db.PackageFile
 	// untouched are the payload logical paths §7.2.2 classifies as
 	// unchanged across an upgrade: present in both versions with the
 	// same content hash, and present on disk. They get a package_file
@@ -510,10 +517,29 @@ func stageRemoval(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 	op resolver.Operation) (stagedOp, error) {
 
 	s := stagedOp{op: op}
+	// §5.24: a side effect is invoked when a transaction removes files
+	// whose absence affects its target — removing the last owner of a
+	// shared library requires ldconfig, removing kernel modules requires
+	// depmod — whether or not any package still installed declares it.
+	// Without this, /etc/ld.so.cache went on naming a deleted .so and
+	// modules.dep stayed stale until some later transaction happened to
+	// declare the effect. The declaration is on the removed package's
+	// stored manifest, which is right here.
+	if pkg, found, err := env.DB.GetPackage(ctx, op.Name); err != nil {
+		return s, err
+	} else if found {
+		if m, err := manifest.Decode([]byte(pkg.Manifest)); err == nil {
+			for _, e := range m.SideEffects {
+				s.sideEffects = append(s.sideEffects, string(e))
+			}
+		}
+	}
+
 	files, err := env.DB.PackageFiles(ctx, op.Name)
 	if err != nil {
 		return s, err
 	}
+	s.removedFiles = files
 	for _, f := range files {
 		if f.Type == db.FileTypeDir {
 			continue // directories are shared; left in place

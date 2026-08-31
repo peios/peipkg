@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/resolver"
 )
 
 func modulePackage(name string, paths ...string) stagedOp {
@@ -121,6 +122,53 @@ func TestNonDepmodEffectsAreUnchanged(t *testing.T) {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
 	want := []sideEffect{{name: "man-db", argv: []string{"/bin/mandb", "-q"}}}
+	if !reflect.DeepEqual(effects, want) {
+		t.Fatalf("effects = %+v, want %+v", effects, want)
+	}
+}
+
+// §5.24: a side effect runs when a transaction removes files whose
+// absence affects its target — removing the last owner of a shared
+// library requires ldconfig, removing kernel modules requires depmod —
+// whether or not any package still installed declares it.
+//
+// plannedSideEffects skipped every stagedOp with a nil pkg, which is
+// every removal, so /etc/ld.so.cache went on naming a deleted .so and
+// modules.dep stayed stale until some later transaction happened to
+// declare the effect (PEI-397).
+func TestRemovalContributesItsSideEffects(t *testing.T) {
+	// A removal carries no package row — that is what marks it a removal
+	// — but stageRemoval reads its declarations off the stored manifest.
+	removal := stagedOp{
+		op:          resolver.Operation{Kind: resolver.OpRemove, Name: "docs"},
+		sideEffects: []string{"man-db"},
+	}
+	effects, warnings := plannedSideEffects([]stagedOp{removal})
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(effects) != 1 || effects[0].name != "man-db" {
+		t.Fatalf("effects = %+v, want man-db to run for the removal", effects)
+	}
+}
+
+// The same for depmod, which needs the affected kernel *release*: it
+// comes from the removed package's ownership rows, since a removal
+// installs no payload to read it from.
+func TestDepmodReindexesAReleaseWhoseModulesWereRemoved(t *testing.T) {
+	removal := stagedOp{
+		op:          resolver.Operation{Kind: resolver.OpRemove, Name: "kernel-modules"},
+		sideEffects: []string{"depmod"},
+		removedFiles: []db.PackageFile{
+			{PackageName: "kernel-modules", Type: db.FileTypeFile,
+				Path: "/usr/lib/modules/7.0.9-peios-X/kernel/fs/xfs/xfs.ko"},
+		},
+	}
+	effects, warnings := plannedSideEffects([]stagedOp{removal})
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	want := []sideEffect{{name: "depmod", argv: []string{depmodBinary, "-a", "7.0.9-peios-X"}}}
 	if !reflect.DeepEqual(effects, want) {
 		t.Fatalf("effects = %+v, want %+v", effects, want)
 	}

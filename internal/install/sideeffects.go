@@ -53,9 +53,11 @@ func plannedSideEffects(staged []stagedOp) ([]sideEffect, []string) {
 	var names []string
 	var warnings []string
 	for _, s := range staged {
-		if s.pkg == nil {
-			continue // a removal declares no side effects
-		}
+		// A removal contributes its side effects too: §5.24 ties an
+		// effect to files whose *absence* affects its target, so
+		// removing the last owner of a shared library needs ldconfig and
+		// removing kernel modules needs depmod, exactly as installing
+		// them does. stageRemoval reads them off the stored manifest.
 		for _, e := range s.sideEffects {
 			if !seen[e] {
 				seen[e] = true
@@ -91,13 +93,14 @@ func plannedSideEffects(staged []stagedOp) ([]sideEffect, []string) {
 // reindexing whichever package in the transaction carried the change, and
 // splitting a release's modules across packages is exactly what
 // kernel-modules and kernel-modules-irf do.
+//
+// A removal's files count for the same reason (§5.24): deleting a
+// release's modules changes that release's module set as surely as
+// adding to it, and leaves modules.dep naming files that are gone.
 func depmodCommands(staged []stagedOp) ([]sideEffect, string) {
 	seen := map[string]bool{}
 	for _, s := range staged {
-		if s.pkg == nil {
-			continue
-		}
-		for _, f := range s.files {
+		for _, f := range append(append([]db.PackageFile(nil), s.files...), s.removedFiles...) {
 			if release, ok := moduleRelease(f); ok {
 				seen[release] = true
 			}
@@ -108,7 +111,8 @@ func depmodCommands(staged []stagedOp) ([]sideEffect, string) {
 		// modules without the declaration — but cannot rule this out, and
 		// falling back to `depmod -a` would reintroduce exactly the
 		// running-kernel bug this replaced.
-		return nil, "side effect depmod declared, but the payload contains no kernel modules: nothing reindexed"
+		return nil, "side effect depmod declared, but neither the payload nor the removed " +
+			"files contain kernel modules: nothing reindexed"
 	}
 	releases := make([]string, 0, len(seen))
 	for release := range seen {
