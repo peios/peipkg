@@ -398,4 +398,13 @@ func TestComposeLayoutRefusesLclPolicyEvenUnderBypass(t *testing.T) {
 	if err := checkComposeLayout(fp, true); err != nil {
 		t.Errorf("the bypass no longer waives an ordinary layout violation: %v", err)
 	}
+
+	// And the empty skeleton fsbase mints is not content, so it composes.
+	fp.Pkg.Payload = []archive.PayloadEntry{
+		{Path: "lcl/policy", Type: archive.EntryDir},
+		{Path: "lcl/policy/autorun.d", Type: archive.EntryDir},
+	}
+	if err := checkComposeLayout(fp, true); err != nil {
+		t.Errorf("minting the empty /lcl/policy skeleton was refused: %v", err)
+	}
 }

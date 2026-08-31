@@ -35,9 +35,16 @@ var forbiddenPrefixes = []string{
 // installation root, with no leading slash — is inside a forbidden
 // tree, and names the tree if so.
 //
-// The prefix matches the directory itself as well as anything under it:
-// creating `lcl/policy` is as much a way to own what lands there as
-// writing into it.
+// The tree's own directory and the directories beneath it are NOT
+// forbidden, and that is deliberate. What §5.14 protects is the tree
+// "whose contents grant authority": an empty directory grants nothing,
+// and something has to mint the skeleton — on Peios that is fsbase,
+// which ships `lcl/policy/autorun.d` and `lcl/policy/autoapply.d` as
+// empty-directory payload entries and is the archetype §5.14 has in
+// mind when it describes special system packages. Arbitrary code at
+// boot needs a *file* in autorun.d, and a file is what this refuses.
+//
+// See [Check] for the one caller that has no entry kind to consult.
 func Forbidden(p string) (string, bool) {
 	clean := strings.TrimPrefix(path.Clean("/"+p), "/")
 	for _, f := range forbiddenPrefixes {
@@ -48,14 +55,23 @@ func Forbidden(p string) (string, bool) {
 	return "", false
 }
 
-// Check returns an error naming the tree when p is forbidden. p is a
-// payload path relative to an installation root; a leading slash is
-// tolerated so an absolute claim path can be passed straight in.
-func Check(p string) error {
-	if tree, bad := Forbidden(p); bad {
-		return fmt.Errorf("%q is under %s, which no package may write to under any "+
-			"circumstance: it is the tree whose contents grant authority (PSPU §5.14)",
-			p, tree)
+// CheckEntry returns an error naming the tree when a payload entry of
+// this kind at this path is forbidden. isDir exempts a directory, which
+// carries no content and therefore grants no authority.
+func CheckEntry(p string, isDir bool) error {
+	tree, bad := Forbidden(p)
+	if !bad || isDir {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("%q is under %s, which no package may put content into under any "+
+		"circumstance: it is the tree whose contents grant authority (PSPU §5.14). "+
+		"An empty directory there is permitted; a file or a symbolic link is not",
+		p, tree)
+}
+
+// Check is [CheckEntry] for a path with no entry kind — a claim path,
+// where the thing materialised is always a symbolic link and so is
+// always content.
+func Check(p string) error {
+	return CheckEntry(p, false)
 }

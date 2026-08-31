@@ -9,19 +9,32 @@ import (
 
 func TestForbidden(t *testing.T) {
 	forbidden := []string{
-		"lcl/policy",
-		"lcl/policy/",
 		"lcl/policy/autorun.d/pwn.sh",
 		"/lcl/policy/autorun.d/pwn.sh",
 		"lcl/policy/./autorun.d/x",
 		"lcl/foo/../policy/x",
-		"/lcl/policy",
+		"lcl/policy/x",
 	}
 	for _, p := range forbidden {
 		if err := layout.Check(p); err == nil {
-			t.Errorf("Check(%q) allowed a path under /lcl/policy", p)
+			t.Errorf("Check(%q) allowed content under /lcl/policy", p)
 		} else if !strings.Contains(err.Error(), "/lcl/policy") {
 			t.Errorf("Check(%q) = %v, want it to name the tree", p, err)
+		}
+	}
+
+	// An empty directory carries no content and so grants no authority.
+	// fsbase mints lcl/policy/autorun.d and lcl/policy/autoapply.d as
+	// empty-directory payload entries — laying that skeleton down is
+	// exactly the job §5.14 describes special system packages as
+	// existing for — so a rule that refused them would refuse the base
+	// filesystem.
+	for _, p := range []string{"lcl/policy", "lcl/policy/autorun.d", "lcl/policy/autoapply.d"} {
+		if err := layout.CheckEntry(p, true); err != nil {
+			t.Errorf("CheckEntry(%q, dir) = %v, want an empty directory permitted", p, err)
+		}
+		if err := layout.CheckEntry(p, false); err == nil && p != "lcl/policy" {
+			t.Errorf("CheckEntry(%q, file) allowed a file where a directory is meant", p)
 		}
 	}
 

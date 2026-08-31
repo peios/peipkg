@@ -107,6 +107,10 @@ func TestSpecialSystemPackageStillRecordsFiles(t *testing.T) {
 // So the sentence has to hold for the one case that turns both keys —
 // which is exactly the case that used to skip the layout check outright,
 // with no residual denylist behind it (PEI-380).
+//
+// What it protects is *content*: an empty directory grants no authority,
+// and fsbase mints lcl/policy/autorun.d as one. See
+// TestBothKeysMayStillMintTheEmptySkeleton.
 func TestBothKeysStillCannotReachLclPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -114,8 +118,6 @@ func TestBothKeysStillCannotReachLclPolicy(t *testing.T) {
 	}{
 		{name: "file", pkg: testPkg{name: "fsbase", version: "1.0-1", special: true,
 			files: map[string]string{"lcl/policy/autorun.d/pwn.sh": "#!/bin/sh\n"}}},
-		{name: "directory", pkg: testPkg{name: "fsbase", version: "1.0-1", special: true,
-			dirs: []string{"lcl/policy"}}},
 		{name: "symlink", pkg: testPkg{name: "fsbase", version: "1.0-1", special: true,
 			files:    map[string]string{"usr/bin/x": "x"},
 			symlinks: map[string]string{"lcl/policy/autorun.d/pwn.sh": "/usr/bin/x"}}},
@@ -145,6 +147,29 @@ func TestBothKeysStillCannotReachLclPolicy(t *testing.T) {
 // fails rather than overwriting it. Before this the file was overwritten
 // silently and its backup deleted seconds later at commit, permanently
 // destroying the content the rule exists to protect (PEI-376).
+// The other half of the rule: laying down the empty skeleton is what a
+// special system package is for, so fsbase's lcl/policy/autorun.d must
+// still compose and install.
+func TestBothKeysMayStillMintTheEmptySkeleton(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	pkg := testPkg{name: "fsbase", version: "1.0-1", special: true,
+		dirs: []string{"lcl/policy", "lcl/policy/autorun.d"}}
+	env := install.Env{
+		Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider:               fakeProvider{"fsbase": provide(t, pkg)},
+		BypassPathRestrictions: true,
+	}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "fsbase", "1.0-1")}},
+		env); err != nil {
+		t.Fatalf("minting the empty /lcl/policy skeleton was refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "lcl/policy/autorun.d")); err != nil {
+		t.Errorf("the skeleton directory was not created: %v", err)
+	}
+}
+
 func TestUnownedFilePolicy(t *testing.T) {
 	pkg := testPkg{name: "nginx", version: "1.0-1",
 		files: map[string]string{"usr/bin/nginx": "the packaged binary"}}

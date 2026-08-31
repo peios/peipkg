@@ -628,7 +628,7 @@ func checkPayloadLayout(env Env, pp ProvidedPackage) error {
 	// §5.14's absolute rule, checked before and independent of the
 	// bypass: no waiver reaches /lcl/policy.
 	for _, e := range pp.Pkg.Payload {
-		if err := layout.Check(e.Path); err != nil {
+		if err := layout.CheckEntry(e.Path, e.Type == archive.EntryDir); err != nil {
 			return fmt.Errorf("%s: %w", pp.Pkg.Manifest.Name, err)
 		}
 	}

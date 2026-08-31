@@ -359,7 +359,7 @@ func checkComposeLayout(fp fetchedPackage, bypassPaths bool) error {
 	// §5.14's absolute rule, checked before and independent of the
 	// bypass: no waiver reaches /lcl/policy.
 	for _, e := range fp.Pkg.Payload {
-		if err := layout.Check(e.Path); err != nil {
+		if err := layout.CheckEntry(e.Path, e.Type == archive.EntryDir); err != nil {
 			return fmt.Errorf("peipkg/compose: %s: %w", fp.Locked.Name, err)
 		}
 	}
