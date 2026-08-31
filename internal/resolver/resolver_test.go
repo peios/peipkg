@@ -855,3 +855,39 @@ func TestNoarchDependerPrefersThePrimaryArchitecture(t *testing.T) {
 		}
 	}
 }
+
+// §4.2.4 rule 6's rationale: "Rule 6 guarantees the rules impose a total
+// order, so a resolution never depends on enumeration order."
+//
+// Two different versions of the same package matched through an
+// *unversioned* provides tie on every rule above — a provides entry
+// carries the role's version, not the package's — and then on name and
+// on repository, so the winner was whichever the index enumerated first
+// (PEI-418).
+func TestUnversionedProvidesDoesNotFallToEnumerationOrder(t *testing.T) {
+	provides := []manifest.Provides{{Name: "sh"}}
+	older := resolver.Candidate{Name: "foo", Version: ver(t, "1.0-1"),
+		Architecture: primaryArch, Repo: "official", Provides: provides}
+	newer := resolver.Candidate{Name: "foo", Version: ver(t, "2.0-1"),
+		Architecture: primaryArch, Repo: "official", Provides: provides}
+
+	for name, candidates := range map[string][]resolver.Candidate{
+		"older first": {older, newer},
+		"newer first": {newer, older},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plan, err := resolver.Resolve(
+				[]resolver.Request{{Kind: resolver.Install, Name: "sh"}},
+				nil, candidates, resolver.Options{PrimaryArch: primaryArch})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if len(plan.Operations) != 1 {
+				t.Fatalf("plan = %+v, want one operation", plan.Operations)
+			}
+			if got := plan.Operations[0].ToVersion.String(); got != "2.0-1" {
+				t.Errorf("resolved %s, want 2.0-1 whatever the enumeration order", got)
+			}
+		})
+	}
+}
