@@ -321,6 +321,38 @@ func provideAll(ctx context.Context, plan resolver.Plan, env Env) (
 	return provided, nil
 }
 
+// resolveClaimOverRemoval settles the one case where a package removal
+// and a claim materialisation want the same path in one transaction:
+// the package that owned the path is being uninstalled, and a role's
+// link is to take its place.
+//
+// The post-transaction state is legal — that is why the collision check
+// permits it — but two file operations on one path are not: they would
+// journal two rows for the same final_path and race each other for the
+// same backup name. So the removal is dropped and the claim's operation
+// takes over the displacement, which is exactly what it does anyway:
+// back the old entry up by rename, then put the link in its place. The
+// removed package's ownership row goes at commit either way.
+func resolveClaimOverRemoval(staged []stagedOp, claimOps []fileOp) {
+	if len(claimOps) == 0 {
+		return
+	}
+	claimed := make(map[string]bool, len(claimOps))
+	for _, c := range claimOps {
+		claimed[c.finalPath] = true
+	}
+	for i := range staged {
+		kept := staged[i].fileOps[:0]
+		for _, op := range staged[i].fileOps {
+			if op.action == actionRemove && claimed[op.finalPath] {
+				continue
+			}
+			kept = append(kept, op)
+		}
+		staged[i].fileOps = kept
+	}
+}
+
 // prepareTxn runs a plan's prepare phase against packages already
 // fetched and verified. A nil provided runs §7.4.3's fetch-and-verify
 // itself, which is what a single-root transaction does.
@@ -387,6 +419,7 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 		return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "planning claims failed"))
 	}
 	if !p.claimW.empty() {
+		resolveClaimOverRemoval(p.staged, p.claimW.fileOps)
 		carrier := len(p.staged) - 1
 		p.staged[carrier].fileOps = append(p.staged[carrier].fileOps, p.claimW.fileOps...)
 		p.staged[carrier].createdDirs = append(p.staged[carrier].createdDirs, p.claimW.createdDirs...)

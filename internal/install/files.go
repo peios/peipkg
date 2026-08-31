@@ -34,6 +34,16 @@ const (
 	actionReplace
 	// actionRemove deletes an existing file, which is backed up first.
 	actionRemove
+	// actionSwap replaces an existing entry atomically, leaving the
+	// displaced one at backupPath. It exists for claim repoints: §5.23
+	// requires each repoint of a holder swap to be atomic, so that no
+	// consumer of a claim path ever observes the path absent.
+	//
+	// The payload path deliberately does NOT use it. There, backup-by-
+	// rename before the install is the point — the displaced original is
+	// what a rollback restores, and it must be aside before the new
+	// content lands.
+	actionSwap
 )
 
 // fileOp is one file-level step of a transaction — the in-memory form
@@ -127,6 +137,18 @@ func commitOp(op fileOp) error {
 		if err := op.dir.Rename(base, backup); err != nil {
 			return fmt.Errorf("peipkg/install: removing %s: %w", op.finalPath, err)
 		}
+	case actionSwap:
+		// Exchange, then move what was displaced aside. After the
+		// exchange the staged name holds the OLD entry, so the second
+		// rename puts it at backupPath — which is exactly where rollback
+		// and recovery expect to find it, so the atomicity costs them
+		// nothing.
+		if err := op.dir.Exchange(staged, base); err != nil {
+			return fmt.Errorf("peipkg/install: repointing %s: %w", op.finalPath, err)
+		}
+		if err := op.dir.Rename(staged, backup); err != nil {
+			return fmt.Errorf("peipkg/install: backing up %s: %w", op.finalPath, err)
+		}
 	}
 	return nil
 }
@@ -162,7 +184,7 @@ func rollbackOp(op fileOp) error {
 			return err
 		}
 		return removeIfExists(op.dir, staged)
-	case actionReplace, actionRemove:
+	case actionReplace, actionRemove, actionSwap:
 		// Restore the displaced original from its backup, if the
 		// transaction got far enough to make one.
 		if op.dir.Exists(backup) {
@@ -173,7 +195,7 @@ func rollbackOp(op fileOp) error {
 				return fmt.Errorf("peipkg/install: restoring %s: %w", op.finalPath, err)
 			}
 		}
-		if op.action == actionReplace {
+		if op.action == actionReplace || op.action == actionSwap {
 			return removeIfExists(op.dir, staged)
 		}
 		return nil

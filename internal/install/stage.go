@@ -148,6 +148,28 @@ func preparePackage(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 		return s, err
 	}
 
+	// §5.23: the materialised claim links must at all times equal the
+	// cross-product of the role's slots and its holder's declarations.
+	// A payload entry landing on a live claim path was planned as an
+	// ordinary replace — the symlink renamed aside, the file taking the
+	// path, and the claim_link row surviving — and reconciliation could
+	// never repair it, because claims.Reconcile diffs the recorded link
+	// set against the desired one and both agree the link exists. It
+	// compares database to database and never looks at disk, so the link
+	// was gone permanently with the database still asserting it.
+	if err := checkClaimLinkCollisions(ctx, env, op, pp); err != nil {
+		return s, err
+	}
+
+	// §5.23: a provider's claim target must name a path the declaring
+	// package itself ships, checked against the payload actually
+	// received. The only implementation was pack's, called by pekit —
+	// a producer-side lint that says nothing about a package built
+	// anywhere else, which the format explicitly contemplates.
+	if err := checkClaimTargets(op.Name, pp); err != nil {
+		return s, err
+	}
+
 	// The files the package's previous version owns — empty for a fresh
 	// install — diffed against the new payload to find removed files.
 	var existing []db.PackageFile
@@ -775,6 +797,80 @@ func checkPayloadLayout(env Env, pp ProvidedPackage) error {
 				"--dangerously-bypass-path-restrictions: %w", pp.Pkg.Manifest.Name, err)
 	}
 	return err
+}
+
+// checkClaimLinkCollisions rejects a payload entry whose destination is
+// a claim path a role currently materialises.
+//
+// Refusing is the right way round: a claim link is the manager's
+// property, placed there because a role names it, and a package that
+// wants that path is in conflict with the role rather than entitled to
+// win it. The alternative — letting the payload take the path and
+// retiring the claim_link row in the same transaction — would let any
+// package silently displace a role's well-known entry point.
+func checkClaimLinkCollisions(ctx context.Context, env Env, op resolver.Operation,
+	pp ProvidedPackage) error {
+
+	links, err := env.DB.ClaimLinks(ctx)
+	if err != nil {
+		return err
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	byPath := make(map[string]db.ClaimLink, len(links))
+	for _, l := range links {
+		byPath[l.Path] = l
+	}
+	for _, entry := range pp.Pkg.Payload {
+		if entry.Type == archive.EntryFile && pipsig.IsSidecar(entry.Path) {
+			continue
+		}
+		if l, ok := byPath["/"+entry.Path]; ok {
+			return fmt.Errorf(
+				"peipkg/install: %s payload path /%s is the claim path of role %s (slot %s), "+
+					"held by another package; revoke or repoint the role first",
+				op.Name, entry.Path, l.Role, l.Slot)
+		}
+	}
+	return nil
+}
+
+// checkClaimTargets enforces §5.23's target-ownership rule on the
+// consumer side: every provider slot's target must name a path this
+// package's own payload installs.
+//
+// A target outside the package's payload materialises as a dangling
+// link at best and, at worst, as a manager-owned symlink pointing at an
+// arbitrary in-root path the package neither owns nor answers for. It is
+// also the cheapest route to constraining targets by destination: a
+// target that must be a payload path is destination-checked
+// transitively, because payload paths already are.
+func checkClaimTargets(pkgName string, pp ProvidedPackage) error {
+	if pp.Pkg == nil {
+		return nil
+	}
+	var owns map[string]bool
+	for _, prov := range pp.Pkg.Manifest.Provides {
+		for slot, decl := range prov.Claims {
+			if decl.Target == "" {
+				continue // a consumer-side or path-only slot owns no target
+			}
+			if owns == nil {
+				owns = make(map[string]bool, len(pp.Pkg.Payload))
+				for _, e := range pp.Pkg.Payload {
+					owns["/"+e.Path] = true
+				}
+			}
+			if !owns[decl.Target] {
+				return fmt.Errorf(
+					"peipkg/install: %s provides %s slot %q with target %s, which is not a "+
+						"path this package ships (§5.23)",
+					pkgName, prov.Name, slot, decl.Target)
+			}
+		}
+	}
+	return nil
 }
 
 // checkPayloadCollisions reports a planned payload path already owned by

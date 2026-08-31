@@ -286,6 +286,24 @@ func (d *Dir) Rename(from, to string) error {
 	return nil
 }
 
+// Exchange atomically swaps two names within the directory. Both must
+// exist. It is renameat2's RENAME_EXCHANGE, and it is the only way to
+// replace one entry with another without the path being momentarily
+// absent — which matters wherever something else may be resolving that
+// path at the same instant.
+func (d *Dir) Exchange(a, b string) error {
+	if err := checkName(a); err != nil {
+		return err
+	}
+	if err := checkName(b); err != nil {
+		return err
+	}
+	if err := unix.Renameat2(d.fd, a, d.fd, b, unix.RENAME_EXCHANGE); err != nil {
+		return &os.PathError{Op: "exchange", Path: path.Join(d.abs, b), Err: err}
+	}
+	return nil
+}
+
 // Remove deletes name, file or directory.
 func (d *Dir) Remove(name string) error {
 	if err := checkName(name); err != nil {

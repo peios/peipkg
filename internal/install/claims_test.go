@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/peios/peipkg/internal/archive"
@@ -257,4 +258,220 @@ func hasWarning(warnings []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+// §5.23: a claim path must not collide with a path owned by any
+// installed package, judged against the state the transaction will
+// produce rather than the state it started from.
+//
+// Reading package_file asks the pre-transaction question, because an
+// in-flight package's rows are not written until commit — so installing
+// the owner and the provider together passed the check and committed
+// both a package_file row and a claim_link row for one path (PEI-391).
+func TestClaimPathCollidesWithAPayloadInTheSameTransaction(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+
+	// One package owns /usr/sbin/registryd as payload; another provides
+	// the role whose default claim path is exactly that.
+	owner := testPkg{name: "otherd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/registryd": "somebody else's binary"}}
+	loregd := testPkg{name: "loregd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{
+			"otherd": claimProvide(t, owner, nil, nil),
+			"loregd": claimProvide(t, loregd,
+				providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil),
+		}}
+	plan := resolver.Plan{Operations: []resolver.Operation{
+		installOp(t, "otherd", "1.0-1"),
+		installOp(t, "loregd", "1.0-1"),
+	}}
+	_, err := install.Execute(ctx, plan, env)
+	if err == nil {
+		t.Fatal("a claim path colliding with a payload path in the same transaction was allowed")
+	}
+	if !strings.Contains(err.Error(), "owned by package otherd") {
+		t.Errorf("error %q does not name the owning package", err)
+	}
+}
+
+// The symmetric false positive: uninstalling the owner in the same
+// transaction that materialises the claim is legal, because the
+// post-transaction state has no collision.
+func TestClaimPathFreedByARemovalInTheSameTransaction(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+
+	owner := testPkg{name: "otherd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/registryd": "somebody else's binary"}}
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{"otherd": claimProvide(t, owner, nil, nil)}}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "otherd", "1.0-1")}},
+		env); err != nil {
+		t.Fatalf("installing the owner: %v", err)
+	}
+
+	loregd := testPkg{name: "loregd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
+	env.Provider = fakeProvider{"loregd": claimProvide(t, loregd,
+		providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil)}
+	plan := resolver.Plan{Operations: []resolver.Operation{
+		{Kind: resolver.OpRemove, Name: "otherd", FromVersion: mustVer(t, "1.0-1")},
+		installOp(t, "loregd", "1.0-1"),
+	}}
+	if _, err := install.Execute(ctx, plan, env); err != nil {
+		t.Fatalf("the owner is removed in the same transaction, so there is no collision: %v", err)
+	}
+	if target, err := os.Readlink(filepath.Join(root, "usr/sbin/registryd")); err != nil ||
+		target != "loregd" {
+		t.Errorf("claim symlink: target %q err %v", target, err)
+	}
+}
+
+// §5.23: the materialised links must at all times equal the
+// cross-product of a role's slots and its holder's declarations. A
+// payload entry landing on a live claim path was planned as an ordinary
+// replace, and reconciliation could never repair it — claims.Reconcile
+// diffs the recorded link set against the desired one, both agree the
+// link exists, and it never looks at disk (PEI-392).
+func TestPayloadCannotBeInstalledOverALiveClaimLink(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+
+	loregd := testPkg{name: "loregd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{"loregd": claimProvide(t, loregd,
+			providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil)}}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "loregd", "1.0-1")}},
+		env); err != nil {
+		t.Fatalf("installing the holder: %v", err)
+	}
+
+	// A second package whose payload wants the materialised claim path.
+	squatter := testPkg{name: "squatter", version: "1.0-1",
+		files: map[string]string{"usr/sbin/registryd": "not the role's binary"}}
+	env.Provider = fakeProvider{"squatter": claimProvide(t, squatter, nil, nil)}
+	_, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "squatter", "1.0-1")}}, env)
+	if err == nil {
+		t.Fatal("a payload path was installed over a live claim link")
+	}
+	if !strings.Contains(err.Error(), "claim path of role registryd") {
+		t.Errorf("error %q does not name the role whose link it protected", err)
+	}
+	// The link is intact and still agrees with the database.
+	if target, err := os.Readlink(filepath.Join(root, "usr/sbin/registryd")); err != nil ||
+		target != "loregd" {
+		t.Errorf("the claim link was disturbed: target %q err %v", target, err)
+	}
+}
+
+// §5.23: a provider's claim target names a path the declaring package
+// itself installs. The only check was pack's, called by pekit — a
+// producer-side lint that says nothing about a package built anywhere
+// else, which the format explicitly contemplates (PEI-394).
+func TestClaimTargetMustBeThePackagesOwnPayload(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+
+	// The target names a path this package does not ship.
+	loregd := testPkg{name: "loregd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{"loregd": claimProvide(t, loregd,
+			providesRole("registryd", "/usr/sbin/somebody-elses-binary", "/usr/sbin/registryd"),
+			nil)}}
+	_, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "loregd", "1.0-1")}}, env)
+	if err == nil {
+		t.Fatal("a claim target outside the package's own payload was accepted")
+	}
+	if !strings.Contains(err.Error(), "not a path this package ships") {
+		t.Errorf("error %q does not explain the refusal", err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "usr/sbin/registryd")); !os.IsNotExist(err) {
+		t.Errorf("a dangling claim link was materialised anyway (err %v)", err)
+	}
+}
+
+// §5.23: each repoint of a holder swap is atomic, so no consumer of a
+// claim path ever observes it absent. It was two renames — the old link
+// aside, then the new one in — so a supervisor exec'ing the path during
+// `peipkg claim <role> grant <pkg>` got ENOENT, in a window covering a
+// full rename round-trip on every link of the role (PEI-393).
+func TestClaimRepointNeverLeavesThePathAbsent(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	path := filepath.Join(root, "usr/sbin/registryd")
+
+	loregd := testPkg{name: "loregd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
+	altregd := testPkg{name: "altregd", version: "1.0-1",
+		files: map[string]string{"usr/sbin/altregd": "the other daemon"}}
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{
+			"loregd": claimProvide(t, loregd,
+				providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil),
+			"altregd": claimProvide(t, altregd,
+				providesRole("registryd", "/usr/sbin/altregd", "/usr/sbin/registryd"), nil),
+		}}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "loregd", "1.0-1")}},
+		env); err != nil {
+		t.Fatalf("installing the first holder: %v", err)
+	}
+	if _, err := install.Execute(ctx,
+		resolver.Plan{Operations: []resolver.Operation{installOp(t, "altregd", "1.0-1")}},
+		env); err != nil {
+		t.Fatalf("installing the second provider: %v", err)
+	}
+
+	// Watch the path for as long as the repoint takes. A two-rename
+	// repoint leaves a window; an exchange does not.
+	stop := make(chan struct{})
+	missing := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := os.Lstat(path); err != nil {
+				select {
+				case missing <- err.Error():
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	if _, err := install.Claim(ctx, env,
+		install.ClaimRequest{Role: "registryd", Holder: "altregd"}); err != nil {
+		close(stop)
+		<-done
+		t.Fatalf("repointing the role: %v", err)
+	}
+	close(stop)
+	<-done
+	select {
+	case err := <-missing:
+		t.Errorf("the claim path was absent during the repoint: %s", err)
+	default:
+	}
+
+	if target, err := os.Readlink(path); err != nil || target != "altregd" {
+		t.Errorf("after the repoint: target %q err %v, want altregd", target, err)
+	}
+	if holder, found, _ := store.ClaimHolder(ctx, "registryd"); !found || holder != "altregd" {
+		t.Errorf("ClaimHolder: %q found=%v, want altregd", holder, found)
+	}
 }

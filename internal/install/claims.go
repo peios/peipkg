@@ -8,9 +8,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/claims"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/manifest"
+	"github.com/peios/peipkg/internal/pipsig"
 	"github.com/peios/peipkg/internal/resolver"
 	"github.com/peios/peipkg/internal/safepath"
 )
@@ -78,7 +80,8 @@ func planClaims(ctx context.Context, env Env, pins *pinnedDirs, plan resolver.Pl
 	if err != nil {
 		return claimWork{}, nil, err
 	}
-	w, err := reconcileClaims(ctx, env, pins, postInstalled, current, post, txnID, plannedDirs)
+	w, err := reconcileClaims(ctx, env, pins, plan, provided, postInstalled, current, post,
+		txnID, plannedDirs)
 	if err != nil {
 		return claimWork{}, nil, err
 	}
@@ -90,27 +93,50 @@ func planClaims(ctx context.Context, env Env, pins *pinnedDirs, plan resolver.Pl
 // to make them equal: file operations, staged symlinks, and database row
 // changes (§4.4.4). It is shared by install transactions and the
 // standalone claim command, which differ only in how post is derived.
-func reconcileClaims(ctx context.Context, env Env, pins *pinnedDirs,
-	postInstalled []claims.Installed, current, post map[string]string, txnID int64,
+func reconcileClaims(ctx context.Context, env Env, pins *pinnedDirs, plan resolver.Plan,
+	provided map[string]ProvidedPackage, postInstalled []claims.Installed,
+	current, post map[string]string, txnID int64,
 	plannedDirs map[string]bool) (claimWork, error) {
 
 	desired, err := claims.Desired(postInstalled, post)
 	if err != nil {
 		return claimWork{}, err
 	}
-	// §4.4.4: a claim path must not collide with a package-owned file.
+	// §4.4.4/§5.23: a claim path must not collide with a path owned by
+	// any installed package, judged against what the transaction will
+	// *produce* — not against what it started from.
+	//
+	// Reading package_file directly asks the pre-transaction question,
+	// because an in-flight package's rows are not written until
+	// applyMetadata at commit. That let a fresh install of a package
+	// owning /usr/bin/registryd and a provider claiming the same path go
+	// through together: no rows yet, the check passed, and both a
+	// payload operation and a claim operation were queued for one
+	// destination. Both committed, last writer won, and the database
+	// ended up holding a package_file row *and* a claim_link row for the
+	// same path. It also refused the legal case — uninstalling the owner
+	// in the transaction that materialises the claim.
+	owned, err := postTransactionOwnership(ctx, env, plan, provided)
+	if err != nil {
+		return claimWork{}, err
+	}
 	for _, l := range desired {
-		owners, err := env.DB.FileOwners(ctx, l.Path)
-		if err != nil {
-			return claimWork{}, err
+		o, ok := owned[l.Path]
+		if !ok {
+			continue
 		}
-		for _, o := range owners {
-			if o.Type != db.FileTypeDir {
-				return claimWork{}, fmt.Errorf(
-					"peipkg/install: claim path %s (role %s) is owned by package %s",
-					l.Path, l.Role, o.PackageName)
-			}
+		// A directory owner used to be waved through, and plannedOp then
+		// renamed the package's directory aside to make room for the
+		// symlink — silently relocating it and its contents, after which
+		// discardBackups could not remove the non-empty backup and left
+		// the orphan behind. A claim link cannot occupy a directory path.
+		kind := "file"
+		if o.Type == db.FileTypeDir {
+			kind = "directory"
 		}
+		return claimWork{}, fmt.Errorf(
+			"peipkg/install: claim path %s (role %s) is a %s owned by package %s",
+			l.Path, l.Role, kind, o.PackageName)
 	}
 
 	actual, err := env.DB.ClaimLinks(ctx)
@@ -143,6 +169,24 @@ func reconcileClaims(ctx context.Context, env Env, pins *pinnedDirs,
 		fo, err := plannedOp(pins, physical, staged, txnID)
 		if err != nil {
 			return claimWork{}, err
+		}
+		// §5.23: each repoint of a holder swap is atomic, so no consumer
+		// of a claim path ever observes it absent. A create has nothing
+		// to displace and stays a create; a repoint — which is what
+		// plannedOp calls a replace here, because the old link still
+		// occupies the path — becomes a swap. Before this, a supervisor
+		// exec'ing the path during `peipkg claim <role> grant <pkg>` got
+		// ENOENT, in a window covering a full rename round-trip on every
+		// link of the role.
+		//
+		// A path freed by a package removal in this same transaction is
+		// still occupied *now*, so plannedOp sees a replace there too —
+		// and a swap is right for it as well: the link appears in one
+		// step, with the displaced file at the backup path a rollback
+		// restores from. resolveClaimOverRemoval drops the removal's own
+		// operation so the two do not both act on the path.
+		if fo.action == actionReplace {
+			fo.action = actionSwap
 		}
 		w.stagedSymlinks = append(w.stagedSymlinks, stagedSymlink{
 			staged: staged, target: target, dir: fo.dir, name: filepath.Base(staged)})
@@ -210,6 +254,61 @@ func postInstalledManifests(ctx context.Context, env Env, plan resolver.Plan,
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// postTransactionOwnership is the package_file set as the transaction
+// will leave it: the recorded rows, minus the files of packages being
+// removed or replaced by this transaction, plus the payload each
+// in-flight package brings. It is the ownership counterpart of
+// postInstalledManifests.
+func postTransactionOwnership(ctx context.Context, env Env, plan resolver.Plan,
+	provided map[string]ProvidedPackage) (map[string]db.PackageFile, error) {
+
+	owned := map[string]db.PackageFile{}
+	pkgs, err := env.DB.ListPackages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	inFlight := make(map[string]bool, len(plan.Operations))
+	for _, op := range plan.Operations {
+		inFlight[op.Name] = true
+	}
+	for _, p := range pkgs {
+		if inFlight[p.Name] {
+			continue // its rows are about to be rewritten or removed
+		}
+		files, err := env.DB.PackageFiles(ctx, p.Name)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			owned[f.Path] = f
+		}
+	}
+	for _, op := range plan.Operations {
+		if op.Kind == resolver.OpRemove {
+			continue
+		}
+		pp, ok := provided[op.Name]
+		if !ok || pp.Pkg == nil {
+			continue
+		}
+		for _, e := range pp.Pkg.Payload {
+			if e.Type == archive.EntryFile && pipsig.IsSidecar(e.Path) {
+				continue // never installed, so never owned
+			}
+			t := db.FileTypeFile
+			switch e.Type {
+			case archive.EntryDir:
+				t = db.FileTypeDir
+			case archive.EntrySymlink:
+				t = db.FileTypeSymlink
+			}
+			owned["/"+e.Path] = db.PackageFile{
+				PackageName: op.Name, Path: "/" + e.Path, Type: t, Hash: e.Hash}
+		}
+	}
+	return owned, nil
 }
 
 // computeHolders returns the role holders before and after the
@@ -428,7 +527,10 @@ func Claim(ctx context.Context, env Env, req ClaimRequest) (Result, error) {
 	defer pins.close()
 
 	plannedDirs := map[string]bool{}
-	w, err := reconcileClaims(ctx, env, pins, installed, current, post, txnID, plannedDirs)
+	// A standalone claim carries no package plan: the post-transaction
+	// ownership set is simply the current one.
+	w, err := reconcileClaims(ctx, env, pins, resolver.Plan{}, nil, installed, current, post,
+		txnID, plannedDirs)
 	if err != nil {
 		_ = env.DB.FinishTxn(ctx, txnID, db.TxnRolledBack, "planning the claim failed")
 		return Result{TxnID: txnID}, err

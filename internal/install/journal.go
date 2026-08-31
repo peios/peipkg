@@ -145,7 +145,13 @@ func txnFileAction(a fileAction) db.FileAction {
 	switch a {
 	case actionCreate:
 		return db.FileCreate
-	case actionReplace:
+	case actionReplace, actionSwap:
+		// A swap is journalled as a replace. What the journal records is
+		// how to *undo* an operation, and the two undo identically —
+		// restore the backup, discard the staged entry. The difference
+		// is only in how the commit lands, and recovery never re-runs a
+		// commit: it rolls back, or rolls forward from state already on
+		// disk.
 		return db.FileReplace
 	default:
 		return db.FileRemove
