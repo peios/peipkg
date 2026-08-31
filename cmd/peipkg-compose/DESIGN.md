@@ -211,6 +211,13 @@ version = "9.9.1"
   resolver's candidate set, exactly as `peipkg install ./foo.peipkg`
   makes a local file a candidate. This is the bootstrap path: building
   the first Peios image, when packages exist only as build output.
+  Candidacy costs a manifest read (§3.2.2 fixes the manifest as the
+  archive's first entry); the full format verification and the content
+  hash the lock records happen at lock time, for the packages the
+  resolver chooses. A pool the glob matches can therefore be large and
+  cheap to resolve against — and a file with a corrupt payload fails
+  only the locks that would ship it, though its manifest must still
+  parse or the scan errors as before.
 - **`[[package]]`** entries are top-level *wants*, each a name and a
   version constraint. A constraint may be a range or an exact pin —
   both are just constraints to the resolver. An optional

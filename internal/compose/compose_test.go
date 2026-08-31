@@ -344,6 +344,50 @@ func TestLocalCandidatesResolveRelativeToManifestDir(t *testing.T) {
 	}
 }
 
+// Local candidacy costs a manifest read; verification and hashing are
+// deferred to the packages the resolver chooses. So a pool file whose
+// payload is corrupt poisons only the locks that would ship it — and a
+// chosen package's lock entry carries a hash the file's bytes actually
+// have.
+func TestResolveVerifiesOnlyChosenLocalPackages(t *testing.T) {
+	dir := t.TempDir()
+	good := buildPeipkg(t,
+		minimalManifestJSON(t, "foo", "1.0-1", "x86_64", 1),
+		[]testEntry{{Path: "usr/bin/foo", Content: []byte("x")}})
+	// size_installed disagrees with the payload: the manifest decodes,
+	// VerifyFormat rejects.
+	bad := buildPeipkg(t,
+		minimalManifestJSON(t, "bar", "1.0-1", "x86_64", 5),
+		[]testEntry{{Path: "usr/bin/bar", Content: []byte("x")}})
+	for name, raw := range map[string][]byte{"foo.peipkg": good, "bar.peipkg": bad} {
+		if err := os.WriteFile(filepath.Join(dir, name), raw, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	m := Manifest{
+		Arch:                "x86_64",
+		SourceDate:          time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		LocalPackages:       []string{"*.peipkg"},
+		LocalPackageBaseDir: dir,
+		Packages:            []PackageRequest{{Name: "foo"}},
+	}
+
+	lock, err := Resolve(context.Background(), m, "test", fakeFetcher{}, nil)
+	if err != nil {
+		t.Fatalf("Resolve with the corrupt package unchosen: %v", err)
+	}
+	sum := sha256.Sum256(good)
+	if len(lock.Packages) != 1 || lock.Packages[0].Hash != hex.EncodeToString(sum[:]) {
+		t.Fatalf("lock = %+v, want foo with its content hash", lock.Packages)
+	}
+
+	m.Packages = []PackageRequest{{Name: "bar"}}
+	if _, err := Resolve(context.Background(), m, "test", fakeFetcher{}, nil); err == nil ||
+		!strings.Contains(err.Error(), "bar.peipkg") {
+		t.Fatalf("Resolve choosing the corrupt package = %v, want an error naming it", err)
+	}
+}
+
 func TestBuildWithResultUsesExplicitLockPath(t *testing.T) {
 	payload := []byte("#!/bin/sh\n")
 	raw := buildPeipkg(t,

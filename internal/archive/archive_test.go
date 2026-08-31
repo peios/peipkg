@@ -398,6 +398,67 @@ func TestVerifyRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestReadManifest(t *testing.T) {
+	pub, priv := keypair(t)
+	data := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files:    []pkgFile{{"usr/bin/testpkg", []byte("#!/bin/sh\n")}},
+		pub:      pub, priv: priv,
+	})
+	m, err := archive.ReadManifest(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if m.Name != "testpkg" || m.Version.String() != "1.0.0-1" || m.Architecture != "x86_64" {
+		t.Errorf("manifest: got %s %s %s", m.Name, m.Version, m.Architecture)
+	}
+}
+
+// ReadManifest is candidacy, not verification: an archive whose payload
+// would fail VerifyFormat still yields its manifest.
+func TestReadManifestIgnoresPayload(t *testing.T) {
+	pub, priv := keypair(t)
+	data := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files:    []pkgFile{{"usr/bin/testpkg", []byte("#!/bin/sh\n")}},
+		pub:      pub, priv: priv, wrongFileHash: true,
+	})
+	if _, err := archive.VerifyFormat(bytes.NewReader(data)); err == nil {
+		t.Fatal("fixture is not actually malformed")
+	}
+	m, err := archive.ReadManifest(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if m.Name != "testpkg" {
+		t.Errorf("Name: got %q", m.Name)
+	}
+}
+
+func TestReadManifestRejectsMisplacedManifest(t *testing.T) {
+	pub, priv := keypair(t)
+	data := buildPkg(t, pkgSpec{
+		manifest: validManifest(),
+		files:    []pkgFile{{"usr/bin/testpkg", []byte("#!/bin/sh\n")}},
+		pub:      pub, priv: priv,
+		tweakHeader: func(hdr *tar.Header) {
+			if hdr.Name == ".peipkg/manifest.json" {
+				hdr.Name = ".peipkg/zz-manifest.json"
+			}
+		},
+	})
+	if _, err := archive.ReadManifest(bytes.NewReader(data)); err == nil ||
+		!strings.Contains(err.Error(), "first archive entry") {
+		t.Errorf("ReadManifest = %v, want a first-entry error", err)
+	}
+}
+
+func TestReadManifestRejectsGarbage(t *testing.T) {
+	if _, err := archive.ReadManifest(bytes.NewReader([]byte("not a zstd archive"))); err == nil {
+		t.Error("ReadManifest should reject input that is not a .peipkg archive")
+	}
+}
+
 func TestExtract(t *testing.T) {
 	pub, priv := keypair(t)
 	data := buildPkg(t, pkgSpec{

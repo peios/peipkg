@@ -135,6 +135,26 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 		}
 		return lock.Packages[i].Name < lock.Packages[j].Name
 	})
+	// A local candidate joined the set on its manifest alone; the chosen
+	// ones are verified and hashed now, so the lock keeps its guarantee:
+	// every entry names format-valid bytes by content hash. The same file
+	// may be chosen into more than one root — one verification serves both
+	// entries.
+	hashed := map[string]string{}
+	for i := range lock.Packages {
+		lp := &lock.Packages[i]
+		if lp.Source != LocalSource {
+			continue
+		}
+		h, ok := hashed[lp.URL]
+		if !ok {
+			if h, err = verifyLocalPackage(lp.URL, lp.Name, lp.Version, lp.Architecture); err != nil {
+				return Lock{}, err
+			}
+			hashed[lp.URL] = h
+		}
+		lp.Hash = h
+	}
 	return lock, nil
 }
 
@@ -288,21 +308,25 @@ func localCandidates(patterns []string, baseDir string) ([]resolver.Candidate, e
 	return candidates, nil
 }
 
-// localCandidate reads, format-verifies, and hashes one local .peipkg,
-// returning the synthetic resolver candidate for it. An empty Repo
-// marks it as local; URL carries the absolute file path; priority 0
-// lets an explicit local file outrank any repository version.
+// localCandidate reads one local .peipkg's manifest — the archive's
+// first entry, so candidacy costs kilobytes however large the file —
+// and returns the synthetic resolver candidate for it. The archive is
+// not verified or hashed here: that work is done at lock time for the
+// packages the resolver chooses (see verifyLocalPackage), which is what
+// keeps a large pool cheap to resolve against. An empty Repo marks the
+// candidate as local; URL carries the absolute file path; priority 0
+// lets an explicit local file outrank any repository version; Hash is
+// filled when the package is chosen.
 func localCandidate(abs string) (resolver.Candidate, error) {
-	raw, err := os.ReadFile(abs)
+	f, err := os.Open(abs)
 	if err != nil {
 		return resolver.Candidate{}, fmt.Errorf("peipkg/compose: reading local package: %w", err)
 	}
-	pkg, err := archive.VerifyFormat(bytes.NewReader(raw))
+	defer f.Close()
+	m, err := archive.ReadManifest(f)
 	if err != nil {
 		return resolver.Candidate{}, fmt.Errorf("peipkg/compose: local package %s: %w", abs, err)
 	}
-	sum := sha256.Sum256(raw)
-	m := pkg.Manifest
 	return resolver.Candidate{
 		Name:          m.Name,
 		Version:       m.Version,
@@ -315,9 +339,32 @@ func localCandidate(abs string) (resolver.Candidate, error) {
 		Repo:          "",
 		RepoPriority:  0,
 		URL:           abs,
-		Hash:          hex.EncodeToString(sum[:]),
 		SizeInstalled: m.SizeInstalled,
 	}, nil
+}
+
+// verifyLocalPackage format-verifies a chosen local .peipkg and returns
+// the content hash the lock records for it. The identity check mirrors
+// fetchOne's: the archive's manifest must agree with the candidate the
+// resolver chose, or the file changed between the candidate scan and
+// now.
+func verifyLocalPackage(abs, name, ver, arch string) (string, error) {
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		return "", fmt.Errorf("peipkg/compose: reading local package %s: %w", abs, err)
+	}
+	pkg, err := archive.VerifyFormat(bytes.NewReader(raw))
+	if err != nil {
+		return "", fmt.Errorf("peipkg/compose: local package %s: %w", abs, err)
+	}
+	m := pkg.Manifest
+	if m.Name != name || m.Version.String() != ver || m.Architecture != arch {
+		return "", fmt.Errorf("peipkg/compose: local package %s carries %s %s %s, the resolver "+
+			"chose %s %s %s (did the file change during resolution?)",
+			abs, m.Name, m.Version, m.Architecture, name, ver, arch)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // applyManifestPins filters the candidate set by the manifest's

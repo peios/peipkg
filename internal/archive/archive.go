@@ -139,6 +139,42 @@ func VerifyFormat(r io.ReadSeeker) (*Package, error) {
 		Payload: res.payload, Signed: res.signed}, nil
 }
 
+// ReadManifest reads a .peipkg archive's manifest and nothing else.
+// §3.2.2 fixes .peipkg/manifest.json as the first archive entry, so a
+// package's identity — name, version, architecture, its dependency
+// edges — costs a few decompressed kilobytes, however large the
+// archive. Nothing is verified beyond the manifest's own schema: the
+// payload is not walked, no hash is checked, and a signature is not
+// even reached. A caller that goes on to trust the archive's content
+// must still Verify or VerifyFormat it.
+func ReadManifest(r io.Reader) (manifest.Manifest, error) {
+	zr, err := zstd.NewReader(r)
+	if err != nil {
+		return manifest.Manifest{}, fmt.Errorf("peipkg/archive: open zstd stream: %w", err)
+	}
+	defer zr.Close()
+	// The cap covers exactly what is read: the manifest entry's header
+	// block and its §3.2.7-bounded content.
+	tr := tar.NewReader(&cappedReader{r: zr, limit: maxManifest + 4*tarBlock})
+	hdr, err := tr.Next()
+	if err != nil {
+		return manifest.Manifest{}, fmt.Errorf("peipkg/archive: reading tar: %w", err)
+	}
+	if hdr.Name != metadataManifest {
+		return manifest.Manifest{}, fmt.Errorf("peipkg/archive: first archive entry is %q, want %q",
+			hdr.Name, metadataManifest)
+	}
+	data, err := readMetadata(tr, hdr, maxManifest, "manifest.json")
+	if err != nil {
+		return manifest.Manifest{}, err
+	}
+	m, err := manifest.Decode(data)
+	if err != nil {
+		return manifest.Manifest{}, fmt.Errorf("peipkg/archive: %w", err)
+	}
+	return m, nil
+}
+
 // walkResult carries everything pass one of Verify extracts.
 type walkResult struct {
 	manifest     manifest.Manifest
