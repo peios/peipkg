@@ -30,7 +30,7 @@ name = "peipkg"
 # defaults. Gated per repository by a new allow_sd_overrides key defaulting to
 # false; a package carrying overrides from a repository that does not permit
 # them is refused rather than quietly installed without them.
-version      = "0.1.1-7"
+version      = "0.1.1-8"
 architecture = "x86_64"
 description  = "Peios package manager client (peipkg consumer; static, CGO-free)"
 license      = "MIT"
