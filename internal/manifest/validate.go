@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/peios/peipkg/internal/capability"
+	"github.com/peios/peipkg/internal/layout"
 	"github.com/peios/peipkg/internal/version"
 
 	sdpkg "github.com/peios/libp-go/sd"
@@ -452,7 +453,11 @@ func validateClaimPath(p string) error {
 	if top == "" {
 		return fmt.Errorf("%q has no path component", p)
 	}
-	return nil
+	// §5.23: a claim path is deliberately exempt from the §3.4
+	// subdirectory rules, but not from §5.14's absolute one. This route
+	// needs no flag and no operator opt-in, so it is the cheaper of the
+	// two ways to reach /lcl/policy.
+	return layout.Check(p)
 }
 
 // validateProvides validates the provides array (§4.1.4).

@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/config"
+	"github.com/peios/peipkg/internal/manifest"
 	"github.com/peios/peipkg/internal/repository"
 	"github.com/peios/peipkg/internal/signature"
 )
@@ -365,5 +367,35 @@ func TestResolveCarriesTrustIntoTheBuild(t *testing.T) {
 	decoded.Sources[0].TrustKeys = trustJSON(t, pub, "revoked", time.Time{})
 	if _, err := fetchAll(ctx, decoded, fetcher); err == nil {
 		t.Fatal("fetchAll accepted a package whose signing key the lock records as revoked")
+	}
+}
+
+// The compose half of §5.14's absolute rule: assemble skipped
+// ValidateInstallPaths entirely for a special package under
+// bypass_path_restrictions, with no residual denylist behind it, so a
+// composed image could ship /lcl/policy/autorun.d content (PEI-380).
+func TestComposeLayoutRefusesLclPolicyEvenUnderBypass(t *testing.T) {
+	fp := fetchedPackage{
+		Locked: LockedPackage{Name: "fsbase"},
+		Pkg: &archive.Package{
+			Manifest: manifest.Manifest{Name: "fsbase", SpecialSystemPackage: true},
+			Payload: []archive.PayloadEntry{
+				{Path: "lcl/policy/autorun.d/pwn.sh", Type: archive.EntryFile},
+			},
+		},
+	}
+	err := checkComposeLayout(fp, true) // bypass enabled: both keys turned
+	if err == nil {
+		t.Fatal("compose accepted a payload entry under /lcl/policy")
+	}
+	if !strings.Contains(err.Error(), "/lcl/policy") {
+		t.Errorf("error = %v, want it to name the tree it refused", err)
+	}
+
+	// The bypass still does what it is for: an out-of-layout path that is
+	// not forbidden composes.
+	fp.Pkg.Payload = []archive.PayloadEntry{{Path: "opt/vendor/agent", Type: archive.EntryFile}}
+	if err := checkComposeLayout(fp, true); err != nil {
+		t.Errorf("the bypass no longer waives an ordinary layout violation: %v", err)
 	}
 }

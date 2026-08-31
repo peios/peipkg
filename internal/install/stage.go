@@ -14,6 +14,7 @@ import (
 	"github.com/peios/peipkg/internal/archive"
 	packvalidate "github.com/peios/peipkg/internal/build/pack"
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/layout"
 	"github.com/peios/peipkg/internal/pipsig"
 	"github.com/peios/peipkg/internal/resolver"
 	"github.com/peios/peipkg/internal/sdstamp"
@@ -207,10 +208,26 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 							"default was written to %s%s", logical, logical, etcNewMarker))
 				}
 			}
+			// §7.1.5, against the path actually written: on the
+			// modified-/etc branch that is the .peipkg-new sibling, not
+			// the operator's file, which is being deliberately preserved.
+			destLogical := logical
+			if preserved {
+				destLogical = logical + etcNewMarker
+			}
+			keepBackup, warn, err := unownedPolicy(ctx, env, op.Name, dest, destLogical, entry, inTxn)
+			if err != nil {
+				return s, err
+			}
+			if warn != "" {
+				s.warnings = append(s.warnings, warn)
+			}
 			staged := tempPath(dest, stagedMarker, txnID)
 			rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
 			s.stagedAt[logical] = staged
-			s.fileOps = append(s.fileOps, plannedOp(dest, staged, txnID))
+			fo := plannedOp(dest, staged, txnID)
+			fo.keepBackup = keepBackup
+			s.fileOps = append(s.fileOps, fo)
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeFile, Hash: recordedHash})
 			if preserved {
@@ -224,10 +241,19 @@ func preparePackage(ctx context.Context, env Env, txnID int64, op resolver.Opera
 					Type: db.FileTypeFile, Hash: entry.Hash})
 			}
 		case archive.EntrySymlink:
+			keepBackup, warn, err := unownedPolicy(ctx, env, op.Name, physical, logical, entry, inTxn)
+			if err != nil {
+				return s, err
+			}
+			if warn != "" {
+				s.warnings = append(s.warnings, warn)
+			}
 			staged := tempPath(physical, stagedMarker, txnID)
 			rememberCreatedDirs(env.Root, filepath.Dir(staged), plannedDirs, &s.createdDirs)
 			s.stagedAt[logical] = staged
-			s.fileOps = append(s.fileOps, plannedOp(physical, staged, txnID))
+			fo := plannedOp(physical, staged, txnID)
+			fo.keepBackup = keepBackup
+			s.fileOps = append(s.fileOps, fo)
 			s.files = append(s.files, db.PackageFile{
 				PackageName: op.Name, Path: logical, Type: db.FileTypeSymlink,
 				SymlinkTarget: entry.LinkTarget})
@@ -412,6 +438,96 @@ func writeStagedFile(staged string, content io.Reader) error {
 	return closeErr
 }
 
+// unownedPolicy applies the §7.1.5 unowned-file rule to a destination
+// that may already hold something.
+//
+// A pre-existing file that no installed package claims is on this
+// machine because somebody put it there — a hand-placed binary, or
+// filesystem state inherited from a non-Peios installation — and peipkg
+// was never asked to manage it. Three outcomes:
+//
+//   - byte-identical to what would be installed: **adopted**. Installing
+//     changes nothing on disk, and refusing would make a re-run of a
+//     half-finished install impossible.
+//   - different, with no authorisation: the install **fails**. Before
+//     this, it was silently overwritten and the backup deleted seconds
+//     later at commit, which permanently destroyed the very content the
+//     rule exists to protect.
+//   - different, authorised by the operator: **displaced**. The
+//     original is renamed aside as usual, and keepBackup stops commit
+//     from discarding it.
+//
+// A destination owned by an installed package is not this rule's
+// business: the same-package case is an ordinary replace, and the
+// other-package case checkPayloadCollisions has already refused.
+//
+// It reports whether the operation's backup must survive commit, plus a
+// warning for the operator when one is due.
+func unownedPolicy(ctx context.Context, env Env, pkgName, dest, destLogical string,
+	entry archive.PayloadEntry, inTxn map[string]bool) (keepBackup bool, warning string, err error) {
+
+	if !exists(dest) {
+		return false, "", nil
+	}
+	owners, err := env.DB.FileOwners(ctx, destLogical)
+	if err != nil {
+		return false, "", err
+	}
+	if len(owners) > 0 {
+		return false, "", nil
+	}
+
+	same, err := matchesPayload(dest, entry)
+	if err != nil {
+		return false, "", err
+	}
+	if same {
+		return false, "", nil
+	}
+	if !env.OverwriteUnowned {
+		return false, "", fmt.Errorf(
+			"peipkg/install: %s would overwrite %s, which is already on this system and "+
+				"belongs to no installed package; its content differs from the package's. "+
+				"Move it aside, or pass --overwrite-unowned to displace it (the displaced "+
+				"copy is kept)", pkgName, destLogical)
+	}
+	return true, fmt.Sprintf(
+		"%s overwrote %s, which belonged to no package; the previous content is kept at %s",
+		pkgName, destLogical, filepath.Base(tempPath(dest, backupMarker, 0))), nil
+}
+
+// matchesPayload reports whether what is at dest is already exactly what
+// entry would install. The comparison is by kind: content hash for a
+// regular file, target for a symlink. A kind mismatch is never a match.
+func matchesPayload(dest string, entry archive.PayloadEntry) (bool, error) {
+	info, err := os.Lstat(dest)
+	if err != nil {
+		return false, fmt.Errorf("peipkg/install: examining %s: %w", dest, err)
+	}
+	switch entry.Type {
+	case archive.EntryFile:
+		if !info.Mode().IsRegular() {
+			return false, nil
+		}
+		onDisk, err := fileHash(dest)
+		if err != nil {
+			return false, err
+		}
+		return onDisk == entry.Hash, nil
+	case archive.EntrySymlink:
+		if info.Mode()&os.ModeSymlink == 0 {
+			return false, nil
+		}
+		target, err := os.Readlink(dest)
+		if err != nil {
+			return false, fmt.Errorf("peipkg/install: reading %s: %w", dest, err)
+		}
+		return target == entry.LinkTarget, nil
+	default:
+		return false, nil
+	}
+}
+
 // plannedOp builds the file operation for a staged file or symlink: a
 // replace when something already occupies the destination, otherwise a
 // create. A displaced file is backed up by rename, never destroyed.
@@ -509,6 +625,14 @@ func checkPayloadLayout(env Env, pp ProvidedPackage) error {
 	if pp.Pkg == nil {
 		return nil
 	}
+	// §5.14's absolute rule, checked before and independent of the
+	// bypass: no waiver reaches /lcl/policy.
+	for _, e := range pp.Pkg.Payload {
+		if err := layout.Check(e.Path); err != nil {
+			return fmt.Errorf("%s: %w", pp.Pkg.Manifest.Name, err)
+		}
+	}
+
 	special := pp.Pkg.Manifest.SpecialSystemPackage
 	if special && env.BypassPathRestrictions {
 		return nil

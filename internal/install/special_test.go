@@ -1,6 +1,8 @@
 package install_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -95,4 +97,145 @@ func TestSpecialSystemPackageStillRecordsFiles(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("a bypassed install must still record its files in the database")
 	}
+}
+
+// §5.14: "/lcl/policy MUST NOT be reachable by this route under any
+// circumstance. It is the tree whose contents grant authority, and an
+// exemption that could reach it would convert a structural guarantee
+// into a policy one."
+//
+// So the sentence has to hold for the one case that turns both keys —
+// which is exactly the case that used to skip the layout check outright,
+// with no residual denylist behind it (PEI-380).
+func TestBothKeysStillCannotReachLclPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pkg  testPkg
+	}{
+		{name: "file", pkg: testPkg{name: "fsbase", version: "1.0-1", special: true,
+			files: map[string]string{"lcl/policy/autorun.d/pwn.sh": "#!/bin/sh\n"}}},
+		{name: "directory", pkg: testPkg{name: "fsbase", version: "1.0-1", special: true,
+			dirs: []string{"lcl/policy"}}},
+		{name: "symlink", pkg: testPkg{name: "fsbase", version: "1.0-1", special: true,
+			files:    map[string]string{"usr/bin/x": "x"},
+			symlinks: map[string]string{"lcl/policy/autorun.d/pwn.sh": "/usr/bin/x"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			store, root, lock := freshEnv(t)
+			env := install.Env{
+				Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+				Provider:               fakeProvider{"fsbase": provide(t, tc.pkg)},
+				BypassPathRestrictions: true, // both keys turned
+			}
+			_, err := install.Execute(ctx,
+				resolver.Plan{Operations: []resolver.Operation{installOp(t, "fsbase", "1.0-1")}}, env)
+			if err == nil {
+				t.Fatal("a special system package installed with the bypass reached /lcl/policy")
+			}
+			if !strings.Contains(err.Error(), "/lcl/policy") {
+				t.Errorf("error %q does not name the tree it refused", err)
+			}
+		})
+	}
+}
+
+// §7.1.5: an unowned pre-existing file is adopted when it is
+// byte-identical to what would be installed, and otherwise the install
+// fails rather than overwriting it. Before this the file was overwritten
+// silently and its backup deleted seconds later at commit, permanently
+// destroying the content the rule exists to protect (PEI-376).
+func TestUnownedFilePolicy(t *testing.T) {
+	pkg := testPkg{name: "nginx", version: "1.0-1",
+		files: map[string]string{"usr/bin/nginx": "the packaged binary"}}
+
+	run := func(t *testing.T, onDisk string, authorise bool) (string, install.Result, error) {
+		t.Helper()
+		ctx := t.Context()
+		store, root, lock := freshEnv(t)
+		victim := filepath.Join(root, "usr/bin/nginx")
+		if err := os.MkdirAll(filepath.Dir(victim), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(victim, []byte(onDisk), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		env := install.Env{
+			Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+			Provider:         fakeProvider{"nginx": provide(t, pkg)},
+			OverwriteUnowned: authorise,
+		}
+		res, err := install.Execute(ctx,
+			resolver.Plan{Operations: []resolver.Operation{installOp(t, "nginx", "1.0-1")}}, env)
+		return root, res, err
+	}
+
+	t.Run("differing content fails", func(t *testing.T) {
+		root, _, err := run(t, "a hand-placed binary", false)
+		if err == nil {
+			t.Fatal("install overwrote an unowned file with different content")
+		}
+		if !strings.Contains(err.Error(), "belongs to no installed package") {
+			t.Errorf("error %q does not explain why it refused", err)
+		}
+		// And the operator's file is still there, untouched.
+		got, readErr := os.ReadFile(filepath.Join(root, "usr/bin/nginx"))
+		if readErr != nil {
+			t.Fatalf("the unowned file is gone: %v", readErr)
+		}
+		if string(got) != "a hand-placed binary" {
+			t.Errorf("the unowned file now holds %q", got)
+		}
+	})
+
+	t.Run("identical content is adopted", func(t *testing.T) {
+		root, _, err := run(t, "the packaged binary", false)
+		if err != nil {
+			t.Fatalf("install refused a byte-identical unowned file: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(root, "usr/bin/nginx"))
+		if err != nil || string(got) != "the packaged binary" {
+			t.Errorf("after adoption the file holds %q (err %v)", got, err)
+		}
+	})
+
+	t.Run("authorised overwrite keeps the displaced content", func(t *testing.T) {
+		root, res, err := run(t, "a hand-placed binary", true)
+		if err != nil {
+			t.Fatalf("authorised install failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(root, "usr/bin/nginx"))
+		if err != nil || string(got) != "the packaged binary" {
+			t.Errorf("the package's content did not land: %q (err %v)", got, err)
+		}
+		// The whole point of the authorisation: the displaced content
+		// survives the commit that used to delete it.
+		entries, err := os.ReadDir(filepath.Join(root, "usr/bin"))
+		if err != nil {
+			t.Fatalf("readdir: %v", err)
+		}
+		var backup string
+		for _, e := range entries {
+			if strings.Contains(e.Name(), "peipkg-backup") {
+				backup = filepath.Join(root, "usr/bin", e.Name())
+			}
+		}
+		if backup == "" {
+			t.Fatalf("the displaced content was discarded at commit; %s holds %v",
+				filepath.Join(root, "usr/bin"), entries)
+		}
+		kept, err := os.ReadFile(backup)
+		if err != nil || string(kept) != "a hand-placed binary" {
+			t.Errorf("kept backup holds %q (err %v)", kept, err)
+		}
+		var told bool
+		for _, w := range res.Warnings {
+			if strings.Contains(w, "belonged to no package") {
+				told = true
+			}
+		}
+		if !told {
+			t.Errorf("the operator was not told; warnings were %v", res.Warnings)
+		}
+	})
 }

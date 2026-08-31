@@ -15,6 +15,7 @@ import (
 	"github.com/peios/peipkg/internal/claims"
 	"github.com/peios/peipkg/internal/config"
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/layout"
 	"github.com/peios/peipkg/internal/pipsig"
 	"github.com/peios/peipkg/internal/sdstamp"
 )
@@ -355,6 +356,14 @@ func checkComposeLayout(fp fetchedPackage, bypassPaths bool) error {
 	if fp.Pkg == nil {
 		return nil
 	}
+	// §5.14's absolute rule, checked before and independent of the
+	// bypass: no waiver reaches /lcl/policy.
+	for _, e := range fp.Pkg.Payload {
+		if err := layout.Check(e.Path); err != nil {
+			return fmt.Errorf("peipkg/compose: %s: %w", fp.Locked.Name, err)
+		}
+	}
+
 	special := fp.Pkg.Manifest.SpecialSystemPackage
 	if special && bypassPaths {
 		return nil

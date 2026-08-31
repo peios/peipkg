@@ -129,6 +129,22 @@ func TestClaimsRejected(t *testing.T) {
 			"name":   "registryd",
 			"claims": map[string]any{"-bad-": map[string]any{"path": "/usr/sbin/registryd"}},
 		}),
+		// §5.23: claim paths escape the §3.4 subdirectory rules, but not
+		// §5.14's absolute one. This route needs no flag and no operator
+		// opt-in, which made it the cheaper of the two ways a package
+		// could reach /lcl/policy (PEI-380).
+		"consumer path under /lcl/policy": withDeps(map[string]any{
+			"name":   "registryd",
+			"claims": map[string]any{"binary": map[string]any{"path": "/lcl/policy/autorun.d/x"}},
+		}),
+		"provider target under /lcl/policy": withProvides(map[string]any{
+			"name":   "registryd",
+			"claims": map[string]any{"binary": map[string]any{"target": "/lcl/policy/autorun.d/x"}},
+		}),
+		"claim path is /lcl/policy itself": withDeps(map[string]any{
+			"name":   "registryd",
+			"claims": map[string]any{"binary": map[string]any{"path": "/lcl/policy"}},
+		}),
 	}
 	for name, m := range cases {
 		t.Run(name, func(t *testing.T) { wantReject(t, m) })
