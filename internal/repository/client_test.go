@@ -385,3 +385,135 @@ func TestClientAddRequiredRejectsMissingSignature(t *testing.T) {
 		t.Error("Add should fail for a required-policy repository with no descriptor signature")
 	}
 }
+
+// §5.34 says a consumer never resets a recorded freshness floor as a
+// side effect of any operation other than removing the repository —
+// and `peipkg repo add <name>` on an already-configured repository
+// reads as idempotent, so a convergence loop runs it routinely (PEI-378).
+func TestClientAddDoesNotResetTheFreshnessFloor(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
+
+	add := repository.NewClient(publishRepo(t, pub, priv, 97, indexGeneratedAt(generatedBaseline)), store, cache)
+	if err := add.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// A stale-but-correctly-signed index replayed at the add. Refresh
+	// refuses this; so must a re-add, or the rollback becomes permanent.
+	rollback := repository.NewClient(publishRepo(t, pub, priv, 40, indexGeneratedAt(generatedOlder)), store, cache)
+	if err := rollback.Add(t.Context(), cfg); err == nil {
+		t.Fatal("a re-add serving a rolled-back index should be refused")
+	}
+	row, found, err := store.GetRepository(t.Context(), testRepoName)
+	if err != nil || !found {
+		t.Fatalf("GetRepository: %v (found=%v)", err, found)
+	}
+	if row.HighestIndexVersion != 97 {
+		t.Errorf("recorded floor = %d, want it held at 97", row.HighestIndexVersion)
+	}
+}
+
+// A re-add that serves exactly the recorded index is a frozen
+// repository, not a fresh one: it may be used, but it must not advance
+// the last-refresh time, or a freeze defeats the maximum-trusted-age
+// gate (§6.2.3).
+func TestClientAddOnAFrozenRepositoryDoesNotAdvanceLastRefresh(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
+	repo := publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline))
+
+	client := repository.NewClient(repo, store, cache)
+	if err := client.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	first, _, err := store.GetRepository(t.Context(), testRepoName)
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	// Roll the recorded refresh time back, so an advance is visible.
+	first.LastRefreshAt = first.LastRefreshAt.Add(-48 * time.Hour)
+	if err := store.UpsertRepository(t.Context(), first); err != nil {
+		t.Fatalf("UpsertRepository: %v", err)
+	}
+
+	if err := client.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("re-Add of an unchanged repository: %v", err)
+	}
+	second, _, err := store.GetRepository(t.Context(), testRepoName)
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	if !second.LastRefreshAt.Equal(first.LastRefreshAt) {
+		t.Errorf("last refresh advanced from %s to %s on a frozen index",
+			first.LastRefreshAt, second.LastRefreshAt)
+	}
+}
+
+// `repo remove` then `repo add` is the sanctioned way to clear a floor:
+// removing the repository discards its whole trust state, which is what
+// makes the reset an explicit operator act rather than a side effect.
+func TestClientAddAfterRemoveStartsFromNoFloor(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
+
+	add := repository.NewClient(publishRepo(t, pub, priv, 97, indexGeneratedAt(generatedBaseline)), store, cache)
+	if err := add.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := store.DeleteRepository(t.Context(), testRepoName); err != nil {
+		t.Fatalf("DeleteRepository: %v", err)
+	}
+	readd := repository.NewClient(publishRepo(t, pub, priv, 40, indexGeneratedAt(generatedOlder)), store, cache)
+	if err := readd.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add after remove: %v", err)
+	}
+	row, _, err := store.GetRepository(t.Context(), testRepoName)
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	if row.HighestIndexVersion != 40 {
+		t.Errorf("recorded floor = %d, want 40 after a remove/add", row.HighestIndexVersion)
+	}
+}
+
+// §5.34's freshness requirements apply to both indexes, and §5.35 gives
+// the archive index identical index_version semantics. The archive
+// index is the candidate source for every downgrade and pin, so a
+// replayed one steers an operator back onto a withdrawn version (PEI-386).
+func TestArchiveIndexRejectsRollback(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
+
+	add := repository.NewClient(publishRepo(t, pub, priv, 6, indexGeneratedAt(generatedNewer)), store, cache)
+	if err := add.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// An old, still validly signed archive index substituted at fetch.
+	replay := repository.NewClient(publishRepo(t, pub, priv, 3, indexGeneratedAt(generatedOlder)), store, cache)
+	if _, err := replay.ArchiveIndex(t.Context(), cfg); err == nil {
+		t.Fatal("ArchiveIndex should reject a rolled-back archive index")
+	} else if !strings.Contains(err.Error(), "rolled-back archive index") {
+		t.Errorf("ArchiveIndex error = %v, want a rollback rejection", err)
+	}
+}
+
+// The archive index sits at the recorded floor in the ordinary case —
+// repopub publishes both indexes at one version — so the floor must not
+// turn a current archive into a rejection.
+func TestArchiveIndexAcceptsTheRecordedVersion(t *testing.T) {
+	pub, priv := keypair(t)
+	store, cache, cfg := newTestStore(t), t.TempDir(), testConfig(pub)
+	repo := publishRepo(t, pub, priv, 6, indexGeneratedAt(generatedNewer))
+
+	client := repository.NewClient(repo, store, cache)
+	if err := client.Add(t.Context(), cfg); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	idx, err := client.ArchiveIndex(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("ArchiveIndex at the recorded version: %v", err)
+	}
+	if idx.IndexVersion != 6 {
+		t.Errorf("archive index version = %d, want 6", idx.IndexVersion)
+	}
+}

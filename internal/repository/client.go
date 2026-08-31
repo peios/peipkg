@@ -57,6 +57,44 @@ func UnsignedMode(cfg config.RepoConfig) bool {
 	return cfg.SignaturePolicy == config.PolicyOptional && len(cfg.TrustAnchors) == 0
 }
 
+// applyFreshnessFloor applies the §6.2.3 rollback/freeze gate to a
+// freshly fetched active index and fills row's freshness floor from the
+// outcome. op names the operation for the rejection message.
+//
+// prev is the repository's previously recorded row, and found says
+// whether one existed. A repository with no recorded row has no floor
+// and adopts the served index's — that is the first add, and it is the
+// only sanctioned way to lower a floor (§5.34): `repo remove` deletes
+// the row, and a subsequent add starts afresh.
+func applyFreshnessFloor(row *db.Repository, idx Index, prev db.Repository, found bool,
+	now time.Time, op string) error {
+
+	if !found {
+		row.HighestIndexVersion = idx.IndexVersion
+		row.GeneratedAtFloor = idx.GeneratedAt.Unix()
+		row.LastRefreshAt = now
+		return nil
+	}
+	switch CheckFreshness(idx, prev.HighestIndexVersion, time.Unix(prev.GeneratedAtFloor, 0)) {
+	case FreshnessRejected:
+		return fmt.Errorf("peipkg/repository: %q served a rolled-back index "+
+			"(version %d, recorded floor %d); %s refused",
+			row.Name, idx.IndexVersion, prev.HighestIndexVersion, op)
+	case FreshnessNoProgress:
+		// §6.2.3: the descriptor's trust state is adopted, but the
+		// freshness floor and last-refresh time do not advance — a
+		// frozen index must not satisfy the maximum-trusted-age check.
+		row.HighestIndexVersion = prev.HighestIndexVersion
+		row.GeneratedAtFloor = prev.GeneratedAtFloor
+		row.LastRefreshAt = prev.LastRefreshAt
+	default: // FreshnessProgress
+		row.HighestIndexVersion = idx.IndexVersion
+		row.GeneratedAtFloor = idx.GeneratedAt.Unix()
+		row.LastRefreshAt = now
+	}
+	return nil
+}
+
 // Add performs the first-add trust ceremony (§6.5.2): it fetches the
 // descriptor and verifies it against the operator-supplied trust
 // anchors, fetches and verifies the active index, and records the
@@ -108,13 +146,19 @@ func (c *Client) Add(ctx context.Context, cfg config.RepoConfig) error {
 	if err != nil {
 		return err
 	}
-	return c.record(ctx, db.Repository{
-		Name:                cfg.Name,
-		HighestIndexVersion: idx.IndexVersion,
-		GeneratedAtFloor:    idx.GeneratedAt.Unix(),
-		LastRefreshAt:       now,
-		TrustKeys:           trustJSON,
-	}, idxBytes, idxSig)
+	// §5.34: a floor is never reset as a side effect of any operation
+	// but removing the repository. `repo add` on an already-added
+	// repository re-runs the anchor ceremony, but the anti-rollback
+	// floor it recorded survives.
+	prev, found, err := c.store.GetRepository(ctx, cfg.Name)
+	if err != nil {
+		return err
+	}
+	row := db.Repository{Name: cfg.Name, TrustKeys: trustJSON}
+	if err := applyFreshnessFloor(&row, idx, prev, found, now, "repo-add"); err != nil {
+		return err
+	}
+	return c.record(ctx, row, idxBytes, idxSig)
 }
 
 // Refresh re-fetches a repository's descriptor and active index,
@@ -171,22 +215,8 @@ func (c *Client) Refresh(ctx context.Context, cfg config.RepoConfig) error {
 	}
 
 	row := db.Repository{Name: cfg.Name, TrustKeys: trustJSON}
-	switch CheckFreshness(idx, prev.HighestIndexVersion, time.Unix(prev.GeneratedAtFloor, 0)) {
-	case FreshnessRejected:
-		return fmt.Errorf("peipkg/repository: %q served a rolled-back index "+
-			"(version %d, recorded floor %d); refresh refused",
-			cfg.Name, idx.IndexVersion, prev.HighestIndexVersion)
-	case FreshnessNoProgress:
-		// §6.2.3: the descriptor's trust state is adopted, but the
-		// freshness floor and last-refresh time do not advance — a
-		// frozen index must not satisfy the maximum-trusted-age check.
-		row.HighestIndexVersion = prev.HighestIndexVersion
-		row.GeneratedAtFloor = prev.GeneratedAtFloor
-		row.LastRefreshAt = prev.LastRefreshAt
-	default: // FreshnessProgress
-		row.HighestIndexVersion = idx.IndexVersion
-		row.GeneratedAtFloor = idx.GeneratedAt.Unix()
-		row.LastRefreshAt = now
+	if err := applyFreshnessFloor(&row, idx, prev, true, now, "refresh"); err != nil {
+		return err
 	}
 	return c.record(ctx, row, idxBytes, idxSig)
 }
@@ -270,13 +300,19 @@ func (c *Client) addUnsigned(ctx context.Context, cfg config.RepoConfig, now tim
 			"configured minimum %d; repo-add refused (§6.2.3)",
 			cfg.Name, idx.IndexVersion, cfg.MinIndexVersion)
 	}
-	return c.record(ctx, db.Repository{
-		Name:                cfg.Name,
-		HighestIndexVersion: idx.IndexVersion,
-		GeneratedAtFloor:    idx.GeneratedAt.Unix(),
-		LastRefreshAt:       now,
-		TrustKeys:           "", // an empty trust set marks unsigned mode
-	}, idxBytes, nil)
+	prev, found, err := c.store.GetRepository(ctx, cfg.Name)
+	if err != nil {
+		return err
+	}
+	// §5.34: as in Add, a re-add must not reset the recorded floor.
+	row := db.Repository{
+		Name:      cfg.Name,
+		TrustKeys: "", // an empty trust set marks unsigned mode
+	}
+	if err := applyFreshnessFloor(&row, idx, prev, found, now, "repo-add"); err != nil {
+		return err
+	}
+	return c.record(ctx, row, idxBytes, nil)
 }
 
 // refreshUnsigned re-fetches an unsigned-mode repository's descriptor
@@ -300,19 +336,8 @@ func (c *Client) refreshUnsigned(ctx context.Context, cfg config.RepoConfig, now
 	}
 
 	row := db.Repository{Name: cfg.Name, TrustKeys: ""}
-	switch CheckFreshness(idx, prev.HighestIndexVersion, time.Unix(prev.GeneratedAtFloor, 0)) {
-	case FreshnessRejected:
-		return fmt.Errorf("peipkg/repository: %q served a rolled-back index "+
-			"(version %d, recorded floor %d); refresh refused",
-			cfg.Name, idx.IndexVersion, prev.HighestIndexVersion)
-	case FreshnessNoProgress:
-		row.HighestIndexVersion = prev.HighestIndexVersion
-		row.GeneratedAtFloor = prev.GeneratedAtFloor
-		row.LastRefreshAt = prev.LastRefreshAt
-	default: // FreshnessProgress
-		row.HighestIndexVersion = idx.IndexVersion
-		row.GeneratedAtFloor = idx.GeneratedAt.Unix()
-		row.LastRefreshAt = now
+	if err := applyFreshnessFloor(&row, idx, prev, true, now, "refresh"); err != nil {
+		return err
 	}
 	return c.record(ctx, row, idxBytes, nil)
 }
@@ -329,19 +354,26 @@ func (c *Client) ArchiveIndex(ctx context.Context, cfg config.RepoConfig) (Index
 	now := time.Now()
 	descriptorURL := cfg.BaseURL + "/repo.json"
 
+	row, found, err := c.store.GetRepository(ctx, cfg.Name)
+	if err != nil {
+		return Index{}, err
+	}
+
 	if UnsignedMode(cfg) {
 		desc, err := c.fetchDescriptorDocument(ctx, cfg)
 		if err != nil {
 			return Index{}, err
 		}
 		idx, _, err := c.fetchIndexDocument(ctx, cfg, desc, desc.ArchiveIndex, IndexArchive)
-		return idx, err
+		if err != nil {
+			return Index{}, err
+		}
+		if err := checkArchiveFreshness(cfg.Name, idx, row, found); err != nil {
+			return Index{}, err
+		}
+		return idx, nil
 	}
 
-	row, found, err := c.store.GetRepository(ctx, cfg.Name)
-	if err != nil {
-		return Index{}, err
-	}
 	if !found {
 		return Index{}, fmt.Errorf(
 			"peipkg/repository: %q has no recorded trust state; add it first", cfg.Name)
@@ -365,7 +397,38 @@ func (c *Client) ArchiveIndex(ctx context.Context, cfg config.RepoConfig) (Index
 	if err != nil {
 		return Index{}, err
 	}
-	return c.fetchArchiveIndex(ctx, cfg, desc, descriptorURL, trust, now)
+	idx, err := c.fetchArchiveIndex(ctx, cfg, desc, descriptorURL, trust, now)
+	if err != nil {
+		return Index{}, err
+	}
+	if err := checkArchiveFreshness(cfg.Name, idx, row, found); err != nil {
+		return Index{}, err
+	}
+	return idx, nil
+}
+
+// checkArchiveFreshness applies the §5.34 anti-rollback floor to an
+// archive index. §5.35 gives the archive index the same index_version
+// semantics as the active one, and repopub publishes both at a single
+// index_version and a single generated_at precisely because the
+// consumer floors them together — so the floor recorded from the active
+// index is the archive index's floor too.
+//
+// Only a rollback is refused. An archive index at exactly the recorded
+// floor is the current archive rather than a frozen one, and the
+// archive index never advances the floor: it is not cached, and the
+// active index owns that state.
+func checkArchiveFreshness(name string, idx Index, prev db.Repository, found bool) error {
+	if !found {
+		return nil
+	}
+	res := CheckFreshness(idx, prev.HighestIndexVersion, time.Unix(prev.GeneratedAtFloor, 0))
+	if res == FreshnessRejected {
+		return fmt.Errorf("peipkg/repository: %q served a rolled-back archive index "+
+			"(version %d, recorded floor %d); refused",
+			name, idx.IndexVersion, prev.HighestIndexVersion)
+	}
+	return nil
 }
 
 // fetchDescriptor fetches and decodes a repository's descriptor and its
