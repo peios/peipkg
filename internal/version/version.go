@@ -87,14 +87,25 @@ func parse(s string, revisionOptional bool) (Version, error) {
 
 	upstream := rest
 	if idx := strings.LastIndexByte(rest, '-'); idx >= 0 {
-		revision, err := parseDecimal(rest[idx+1:])
+		group := rest[idx+1:]
+		revision, err := parseDecimal(group)
 		switch {
 		case err == nil && revision != "0":
 			v.revision = revision
 			upstream = rest[:idx]
-		case revisionOptional:
-			// The trailing hyphen group is not a revision; the whole
-			// remainder is the upstream version.
+		case revisionOptional && hasNonDigit(group):
+			// The trailing hyphen group is not a revision at all, so the
+			// whole remainder is the upstream version: `1.0-rc1` is an
+			// upstream version, not a version with revision "rc1".
+			//
+			// §5.7 defines exactly one relaxation — a constraint operand
+			// may *omit* the revision — and says nothing about a group
+			// that is present but malformed. Falling through for those
+			// too silently reinterpreted `= 1.0-0`, a revision §5.5
+			// reserves and forbids, as "upstream literally equals
+			// `1.0-0`, any revision", which matches nothing. The producer
+			// got no diagnostic and the dependency quietly became
+			// unsatisfiable.
 		case err != nil:
 			return Version{}, fmt.Errorf("peipkg/version: invalid revision in %q: %w", s, err)
 		default:
@@ -134,6 +145,19 @@ func parseDecimal(s string) (string, error) {
 		return "", fmt.Errorf("%q has a leading zero", s)
 	}
 	return s, nil
+}
+
+// hasNonDigit reports whether s contains a character that could not be
+// part of a revision. An empty group counts as all-digits, so a trailing
+// bare hyphen is reported as the malformed revision it is rather than
+// absorbed into the upstream version.
+func hasNonDigit(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isDigit(s[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateUpstream checks the upstream version against the §2.2.3

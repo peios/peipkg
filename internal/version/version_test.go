@@ -76,3 +76,46 @@ func TestParseInvalid(t *testing.T) {
 		})
 	}
 }
+
+// §5.7 defines exactly one relaxation — a constraint operand may *omit*
+// the revision — and says nothing about a trailing group that is present
+// but malformed. Falling through for those too silently reinterpreted
+// `= 1.0-0` as "upstream literally equals `1.0-0`, any revision", which
+// matches nothing: the producer got no diagnostic and the dependency
+// quietly became unsatisfiable (PEI-421).
+func TestParseRelaxedRejectsAMalformedRevision(t *testing.T) {
+	for _, s := range []string{
+		"1.0-0",  // §5.5 reserves and forbids revision 0
+		"1.0-01", // leading zero
+		"1.0-",   // present but empty
+	} {
+		if _, err := version.ParseRelaxed(s); err == nil {
+			t.Errorf("ParseRelaxed(%q) accepted a malformed revision", s)
+		}
+		// The strict path has always rejected these; relaxed now agrees.
+		if _, err := version.Parse(s); err == nil {
+			t.Errorf("Parse(%q) accepted a malformed revision", s)
+		}
+	}
+}
+
+// The relaxation itself still works: an omitted revision is fine, and a
+// trailing group that is not a number at all is part of the upstream
+// version rather than a broken revision.
+func TestParseRelaxedStillAcceptsTheRelaxation(t *testing.T) {
+	for s, wantUpstream := range map[string]string{
+		"3.0":     "3.0",
+		"1.0-rc1": "1.0-rc1",
+		"1.0~rc1": "1.0~rc1",
+		"1.0-2":   "1.0", // a real revision is still parsed as one
+	} {
+		v, err := version.ParseRelaxed(s)
+		if err != nil {
+			t.Errorf("ParseRelaxed(%q): %v", s, err)
+			continue
+		}
+		if v.Upstream() != wantUpstream {
+			t.Errorf("ParseRelaxed(%q).Upstream() = %q, want %q", s, v.Upstream(), wantUpstream)
+		}
+	}
+}
