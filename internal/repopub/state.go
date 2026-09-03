@@ -11,9 +11,9 @@
 // and internally consistent, which is exactly what this package
 // maintains.
 //
-// The counterpart lives in internal/repository, which reads what this
-// writes. The two share their wire structs deliberately (see
-// repository/encode.go): a publisher and a client with independent
+// The counterpart lives in internal/repodata, which reads what this
+// writes. The publisher and consumer share those wire structs deliberately:
+// a publisher and a client with independent
 // definitions of repo.json is the one failure this design cannot
 // tolerate, because it produces a repository that verifies for its
 // author and nobody else.
@@ -33,7 +33,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peios/peipkg/internal/repository"
+	repository "github.com/peios/peipkg/internal/repodata"
 	"github.com/peios/peipkg/internal/signature"
 )
 
@@ -96,7 +96,7 @@ var ErrNotRepository = errors.New("peipkg/repopub: not a repository state direct
 
 // Open reads the state at dir.
 //
-// Every document is decoded through internal/repository — the same code
+// Every document is decoded through internal/repodata — the same wire codec
 // a consumer uses — so a state this tool cannot open is one no consumer
 // could have used either. Reading through the client's own decoder is
 // the cheapest available guarantee that a publish never builds on a

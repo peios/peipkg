@@ -1,9 +1,11 @@
-// Package repository decodes, verifies, and tracks the freshness of a
-// package repository's metadata: the descriptor (PSD-009 §6.1), the
-// active and archive indexes (§6.2, §6.3), the per-repository trust set
-// of signing keys (§5.2.5, §6.1.4), and the §6.2.3 rollback/freeze
-// defence.
-package repository
+// Package repodata decodes and encodes the on-disk metadata documents of
+// a package repository: the descriptor (PSD-009 §6.1) and the active and
+// archive indexes (§6.2, §6.3).
+//
+// It deliberately contains no repository-client or package-database code,
+// so publishers can share the consumer's exact wire format without pulling
+// SQLite into their binaries.
+package repodata
 
 import (
 	"fmt"
@@ -181,7 +183,7 @@ func decodeKeys(wires []wireKey) ([]DescriptorKey, error) {
 				return nil, fmt.Errorf(
 					"peipkg/repository: transitioning key %s has no valid_until", key.Fingerprint)
 			}
-			ts, err := parseUTCTimestamp(w.ValidUntil)
+			ts, err := ParseUTCTimestamp(w.ValidUntil)
 			if err != nil {
 				return nil, fmt.Errorf(
 					"peipkg/repository: key %s valid_until: %w", key.Fingerprint, err)
@@ -236,9 +238,9 @@ func validateHexFingerprint(s string) error {
 	return nil
 }
 
-// parseUTCTimestamp parses an RFC 3339 timestamp that must be UTC, i.e.
+// ParseUTCTimestamp parses an RFC 3339 timestamp that must be UTC, i.e.
 // end with Z.
-func parseUTCTimestamp(s string) (time.Time, error) {
+func ParseUTCTimestamp(s string) (time.Time, error) {
 	if !strings.HasSuffix(s, "Z") {
 		return time.Time{}, fmt.Errorf("timestamp %q must be UTC (end with Z)", s)
 	}

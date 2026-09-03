@@ -1,4 +1,4 @@
-package repository
+package repodata
 
 import (
 	"bytes"
@@ -429,7 +429,7 @@ func encodeIndexEntry(e IndexEntry) (wireIndexEntryOut, error) {
 	return out, nil
 }
 
-// formatUTCTimestamp renders t in the form parseUTCTimestamp accepts:
+// formatUTCTimestamp renders t in the form ParseUTCTimestamp accepts:
 // RFC 3339, in UTC, ending in Z. The conversion to UTC is not a
 // formality — a timestamp rendered with a numeric offset parses as
 // valid RFC 3339 and is then rejected by the consumer for not ending

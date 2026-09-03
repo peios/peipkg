@@ -1,4 +1,4 @@
-package repository
+package repodata
 
 import (
 	"encoding/json"
@@ -154,7 +154,7 @@ func DecodeIndex(data []byte) (Index, error) {
 	if idx.IndexVersion < 1 {
 		return Index{}, fmt.Errorf("peipkg/repository: index_version must be a positive integer")
 	}
-	generatedAt, err := parseUTCTimestamp(*w.GeneratedAt)
+	generatedAt, err := ParseUTCTimestamp(*w.GeneratedAt)
 	if err != nil {
 		return Index{}, fmt.Errorf("peipkg/repository: index generated_at: %w", err)
 	}
@@ -298,7 +298,7 @@ func decodeIndexEntry(w wireIndexEntry) (IndexEntry, error) {
 	}
 
 	if w.Build != nil && w.Build.Timestamp != "" {
-		ts, err := parseUTCTimestamp(w.Build.Timestamp)
+		ts, err := ParseUTCTimestamp(w.Build.Timestamp)
 		if err != nil {
 			return IndexEntry{}, fmt.Errorf("build timestamp: %w", err)
 		}

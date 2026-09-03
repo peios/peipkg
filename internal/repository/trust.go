@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/peios/peipkg/internal/repodata"
 	"github.com/peios/peipkg/internal/signature"
 )
 
@@ -154,7 +155,7 @@ func ParseTrustSet(s string) (TrustSet, error) {
 			Status:      KeyStatus(w.Status),
 		}
 		if w.ValidUntil != "" {
-			validUntil, err := parseUTCTimestamp(w.ValidUntil)
+			validUntil, err := repodata.ParseUTCTimestamp(w.ValidUntil)
 			if err != nil {
 				return TrustSet{}, fmt.Errorf(
 					"peipkg/repository: trust key %s valid_until: %w", w.Fingerprint, err)

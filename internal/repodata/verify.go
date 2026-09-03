@@ -1,4 +1,4 @@
-package repository
+package repodata
 
 import (
 	"crypto/ed25519"

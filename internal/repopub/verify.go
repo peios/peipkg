@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/peios/peipkg/internal/repository"
+	repository "github.com/peios/peipkg/internal/repodata"
 	"github.com/peios/peipkg/internal/signature"
 	"github.com/peios/peipkg/internal/version"
 )
