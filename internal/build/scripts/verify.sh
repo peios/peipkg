@@ -189,7 +189,18 @@ with tarfile.open(ARCHIVE, mode="r:") as tf:
     # Payload entries (everything after the metadata, before the signature)
     # must be sorted lex and MUST NOT use the reserved .peipkg/ prefix.
     payload = middle
-    sorted_payload = sorted(payload, key=lambda m: m.name.encode("utf-8"))
+    # tarfile normalises directory member names by dropping their trailing
+    # slash. The archive ordering rule applies to the encoded tar path, where
+    # directories retain that slash (and therefore sort after a same-prefix
+    # file such as `include`). Reconstruct the wire name before comparing so
+    # this checker agrees with archive.VerifyFormat.
+    def wire_name(member):
+        name = member.name
+        if member.isdir() and not name.endswith("/"):
+            name += "/"
+        return name.encode("utf-8")
+
+    sorted_payload = sorted(payload, key=wire_name)
     for a, b in zip(payload, sorted_payload):
         if a.name != b.name:
             fail(f"payload not lex-sorted: saw {a.name!r}, expected {b.name!r}")

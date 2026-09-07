@@ -3,6 +3,7 @@ package pack_test
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -51,5 +52,19 @@ func TestPackOrdersFileDirPrefixCollision(t *testing.T) {
 
 	if _, err := archive.VerifyFormat(bytes.NewReader(buf.Bytes()), archive.NoDeclaredSize); err != nil {
 		t.Fatalf("VerifyFormat rejected a packed archive with a file/dir prefix collision: %v", err)
+	}
+
+	for _, bin := range []string{"bash", "zstd", "python3"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("verify.sh requires %s, not found in PATH", bin)
+		}
+	}
+	out := filepath.Join(t.TempDir(), "prefix-collision.peipkg")
+	if err := os.WriteFile(out, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	verify := filepath.Join(buildRoot(t), "scripts", "verify.sh")
+	if output, err := exec.Command("bash", verify, out).CombinedOutput(); err != nil {
+		t.Fatalf("verify.sh rejected a packed archive with a file/dir prefix collision: %v\noutput:\n%s", err, output)
 	}
 }
