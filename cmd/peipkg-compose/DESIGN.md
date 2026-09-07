@@ -89,6 +89,14 @@ payload-extraction primitive, already lives decoupled in
 and a written build report; the *seeded* DB carries the booted
 system's own record (see "The output root").
 
+The CLI's optional `--record-xattrs <file>` output is JSONL, one
+deterministically ordered `{path,name,value}` object per implied extended
+attribute, with the binary value encoded as base64 by JSON. It selects the
+library's `RecordXattr` path: `security.peios.sig` and `security.peios.sd` are
+recorded instead of being set on the composed directory. This lets an
+unprivileged outer builder preserve the attributes for its image writer; a
+throwaway package build root may discard the record with the root.
+
 ## The model
 
 compose is a thin orchestration over machinery peipkg already has. A
