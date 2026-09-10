@@ -27,11 +27,25 @@ SOURCE_FIELDS = (
     "HFiles",
     "FFiles",
     "SFiles",
+    "SysoFiles",
     "SwigFiles",
     "SwigCXXFiles",
     "EmbedFiles",
 )
 LICENCE_NAMES = ("license", "licence", "copying", "notice")
+
+# These are not packaging-policy guesses. They record the two upstream module
+# archives whose redistribution terms still require an explicit legal decision.
+# A different module/version without licence text remains a hard error too.
+KNOWN_UNRESOLVED = {
+    ("github.com/peios/libp-go", "v0.8.0"): (
+        "the published module archive contains no licence file"
+    ),
+    ("github.com/peios/pkm/uapi/go", "v0.20.0"): (
+        "the published Go UAPI archive contains no licence file, and the "
+        "licence inherited from the wider PKM repository is ambiguous"
+    ),
+}
 
 
 def records(raw: str):
@@ -124,12 +138,26 @@ def main() -> int:
             modules.setdefault(module["Path"], (module, source_dir, import_path))
 
     goroot = Path(subprocess.check_output(["go", "env", "GOROOT"], text=True).strip())
-    go_licence = goroot / "LICENSE"
-    if not go_licence.is_file():
-        raise RuntimeError(f"Go toolchain licence is missing: {go_licence}")
+    # Peios deliberately splits the toolchain sources from the executable
+    # GOROOT. Its canonical package licence therefore lives under
+    # /usr/share/licenses even though upstream binary archives put it at the
+    # GOROOT top level. Accept only those two explicit layouts.
+    go_licence = next(
+        (
+            candidate
+            for candidate in (
+                goroot / "LICENSE",
+                Path("/usr/share/licenses/org.golang.go/LICENSE"),
+            )
+            if candidate.is_file()
+        ),
+        None,
+    )
+    if go_licence is None:
+        raise RuntimeError("Go toolchain licence is missing from its recognized package locations")
     copy_unique(go_licence, args.licence_root / "go" / "LICENSE")
 
-    missing = []
+    missing: list[tuple[str, str]] = []
     for module_path, (module, package_dir, import_path) in sorted(modules.items()):
         root = module_root(module, package_dir, import_path)
         found = []
@@ -140,18 +168,18 @@ def main() -> int:
                 if lower.startswith(LICENCE_NAMES):
                     found.append(Path(current) / name)
         if not found:
-            missing.append(module_path)
+            missing.append((module_path, module.get("Version", "unknown")))
             continue
         destination_root = args.licence_root / safe_relative(module_path)
         for source in found:
             copy_unique(source, destination_root / source.relative_to(root))
 
     if missing:
-        print(
-            "missing distributable licence text for Go module(s): "
-            + ", ".join(missing),
-            file=sys.stderr,
-        )
+        print("missing distributable licence text for Go module(s):", file=sys.stderr)
+        for module_path, version in missing:
+            detail = KNOWN_UNRESOLVED.get((module_path, version))
+            suffix = f": {detail}" if detail else ""
+            print(f"  {module_path} {version}{suffix}", file=sys.stderr)
         return 1
     return 0
 

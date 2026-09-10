@@ -3,6 +3,11 @@
 # publisher/verifier. The shared test suite and debug sources remain one
 # release family, while each executable and its symbols can be installed
 # independently.
+#
+# Build with the workspace's peipkg-net environment. Only build.vendor crosses
+# the network boundary to materialize the checksum-locked Go module graph; the
+# main build and tests use the native org.golang.go toolchain with GOPROXY and
+# the checksum database disabled.
 
 out_dir = "out"
 
@@ -16,11 +21,15 @@ SRC=$(pwd -P)
 export GOCACHE="$PEKIT_OUT/gocache"
 export GOMODCACHE="$PEKIT_OUT/modcache"
 export GOWORK=off
+[ ! -d "$GOMODCACHE" ] || chmod -R u+w "$GOMODCACHE"
+rm -rf "$GOCACHE" "$GOMODCACHE" "$PEKIT_OUT/vendor"
 mkdir -p "$GOCACHE" "$GOMODCACHE" "$PEKIT_OUT/vendor"
 cd "$SRC"
 go mod verify
 go mod vendor -o "$PEKIT_OUT/vendor"
 test -s "$PEKIT_OUT/vendor/modules.txt"
+[ ! -d "$GOMODCACHE" ] || chmod -R u+w "$GOMODCACHE"
+rm -rf "$GOCACHE" "$GOMODCACHE"
 '''
 
 [build.vendor.dependencies.peipkg]
@@ -53,7 +62,8 @@ for tool in go find grep sed sort cmp readelf objcopy strip gzip python3; do
   }
 done
 
-rm -rf "$BUILD"
+rm -rf "$BUILD" "$LICENSE_ROOT" "$PEKIT_OUT/debug" "$PEKIT_OUT/usr" \
+  "$PEKIT_OUT/repro" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
 mkdir -p "$BUILD" "$PEKIT_OUT/usr/bin"
 cp -a "$SRC/." "$BUILD/"
 rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor"
@@ -61,12 +71,17 @@ cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
 export GOENV=off GOWORK=off GOPROXY=off GOSUMDB=off
-export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
+export GOFLAGS='-mod=vendor -buildvcs=false'
 export GOCACHE="$PEKIT_OUT/gocache-a"
 mkdir -p "$GOCACHE"
 
 cd "$BUILD"
+# Several upstream tests locate checked-in fixtures through runtime.Caller.
+# Applying -trimpath to their disposable test binaries turns that absolute
+# source location into an import path and makes the fixture lookup invalid.
+# Shipped executables are still compiled with -trimpath below.
 go test -count=1 ./...
+export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
 
 build_program() {
   name=$1
@@ -109,10 +124,11 @@ done
 # exact files named by the compiler rather than rewriting the ELF. The same
 # pass gathers the licence text for every linked module and fails closed when
 # a module does not provide one.
+metadata_status=0
 python3 "$SRC/tools/collect-go-metadata.py" \
   --debug-root "$DEBUG_ROOT" \
   --licence-root "$LICENSE_ROOT" \
-  ./cmd/peipkg ./cmd/peipkg-compose ./cmd/peipkg-repo
+  ./cmd/peipkg ./cmd/peipkg-compose ./cmd/peipkg-repo || metadata_status=$?
 test -n "$(find "$DEBUG_ROOT" -type f -print -quit)"
 test -n "$(find "$LICENSE_ROOT" -type f -print -quit)"
 
@@ -128,7 +144,7 @@ done
 split_debug() {
   elf=$1
   component=$2
-  build_id=$(readelf -n "$elf" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
+  build_id=$(readelf -n "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
   [ -n "$build_id" ] || {
     echo "peipkg: $elf has no GNU build ID" >&2
     exit 1
@@ -148,31 +164,39 @@ split_debug "$PEKIT_OUT/usr/bin/peipkg-repo" repo
 
 for name in peipkg peipkg-compose peipkg-repo; do
   elf="$PEKIT_OUT/usr/bin/$name"
-  readelf -h "$elf" | grep -Eq 'Type:[[:space:]]+DYN'
-  readelf -lW "$elf" | grep -q 'GNU_RELRO'
-  readelf -lW "$elf" | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
-  ! readelf -lW "$elf" | grep -Eq 'GNU_STACK[[:space:]].*RWE'
-  readelf -dW "$elf" | grep -q 'BIND_NOW'
-  readelf -dW "$elf" | grep -Eq 'FLAGS_1.*PIE'
+  readelf -h "$elf" 2>/dev/null | grep -Eq 'Type:[[:space:]]+DYN'
+  readelf -lW "$elf" 2>/dev/null | grep -q 'GNU_RELRO'
+  readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
+  ! readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RWE'
+  readelf -dW "$elf" 2>/dev/null | grep -q 'BIND_NOW'
+  readelf -dW "$elf" 2>/dev/null | grep -Eq 'FLAGS_1.*PIE'
   ! readelf -dW "$elf" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH)'
-  ! readelf -SW "$elf" | grep -q '\.debug_info'
-  ! readelf -SW "$elf" | grep -q '\.symtab'
+  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.debug_info'
+  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.symtab'
 
-  build_id=$(readelf -n "$elf" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
+  build_id=$(readelf -n "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
   component=$name
   [ "$name" != peipkg-compose ] || component=compose
   [ "$name" != peipkg-repo ] || component=repo
   debug="$PEKIT_OUT/debug/$component/usr/lib/debug/.build-id/$(printf %s "$build_id" | cut -c1-2)/$(printf %s "$build_id" | cut -c3-).debug"
   test -s "$debug"
-  readelf -SW "$debug" | grep -q '\.debug_info'
-  test "$(readelf -n "$debug" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$build_id"
+  readelf -SW "$debug" 2>/dev/null | grep -q '\.debug_info'
+  test "$(readelf -n "$debug" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$build_id"
   go version -m "$elf" | grep -F 'github.com/peios/peipkg'
   for forbidden in "$SRC" "$BUILD" "$PEKIT_OUT_BASE" "$PEKIT_WORKSPACE_ROOT"; do
     ! grep -aF "$forbidden" "$elf" "$debug" >/dev/null
   done
 done
 
+# Compiler scratch state is never package payload. Remove it on both success
+# and the deliberate licence-gate failure so a blocked release does not retain
+# two complete build trees and two Go caches.
 rm -rf "$BUILD" "$REPRO" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
+
+if [ "$metadata_status" -ne 0 ]; then
+  echo "peipkg: refusing to emit packages until every linked module has reviewed redistribution terms" >&2
+  exit "$metadata_status"
+fi
 '''
 
 [build.main.dependencies.peipkg]
@@ -199,13 +223,13 @@ command = '''
 set -eu
 SRC=$(pwd -P)
 BUILD="$PEKIT_OUT/test-build"
-rm -rf "$BUILD"
+rm -rf "$BUILD" "$PEKIT_OUT/gocache"
 mkdir -p "$BUILD"
 cp -a "$SRC/." "$BUILD/"
 rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor"
 cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 export CGO_ENABLED=0 GOENV=off GOWORK=off GOPROXY=off GOSUMDB=off
-export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
+export GOFLAGS='-mod=vendor -buildvcs=false'
 export GOCACHE="$PEKIT_OUT/gocache"
 mkdir -p "$GOCACHE"
 (cd "$BUILD" && go test -count=1 ./...)
