@@ -4,8 +4,6 @@ side_effects = ["man-db"]
 name        = "dev.peios.peipkg-compose"
 description = "Offline Peios package-root composer"
 
-[provides]
-peipkg-compose = "{{version}}-1"
 
 [dependencies]
 "org.gnu.glibc" = "*"

@@ -4,11 +4,7 @@ side_effects = ["man-db"]
 name        = "dev.peios.peipkg"
 description = "Peios live-system package manager"
 
-[provides]
-peipkg = "{{version}}-1"
 
-[replaces]
-peipkg = "<= 0.1.1-8"
 
 [dependencies]
 # The Go internal-linker PIE has no DT_NEEDED entries, but the kernel still

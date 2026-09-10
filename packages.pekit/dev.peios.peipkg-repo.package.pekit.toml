@@ -4,8 +4,6 @@ side_effects = ["man-db"]
 name        = "dev.peios.peipkg-repo"
 description = "Peios repository publisher and verifier"
 
-[provides]
-peipkg-repo = "{{version}}-1"
 
 [dependencies]
 "org.gnu.glibc" = "*"
