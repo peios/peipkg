@@ -521,6 +521,68 @@ func TestReplacesSupersedesInstalled(t *testing.T) {
 	}
 }
 
+// A package rename can be made reachable to an already-shipped upgrader
+// without weakening named-upgrade identity. The final legacy-name release is
+// a dependency-only trampoline: upgrading it selects the concrete successor,
+// whose explicit replaces edge removes the installed legacy package. The
+// trampoline itself consequently never enters the final world.
+func TestLegacyUpgradeTraversesExplicitMigrationPackage(t *testing.T) {
+	const legacy = "peios-experimental"
+	const concrete = "dev.peios.peios-experimental"
+
+	bridge := cand(t, legacy, "2026.8-10", dep(t, concrete, ">= 2026.8-12"))
+	bridge.Architecture = "noarch"
+	successor := cand(t, concrete, "2026.8-12")
+	successor.Replaces = []manifest.Replaces{{
+		Name:       legacy,
+		Constraint: dep(t, legacy, "<= 2026.8-10").Constraint,
+	}}
+	// This also makes the bridge impossible to install into an empty root:
+	// it is only meaningful while a matching installed victim lets replaces
+	// eliminate it from the transaction.
+	successor.Conflicts = []manifest.Dependency{dep(t, legacy, "")}
+
+	plan, err := resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Upgrade, Name: legacy}},
+		[]resolver.Installed{inst(t, legacy, "2026.8-9")},
+		[]resolver.Candidate{bridge, successor},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{
+		"remove peios-experimental",
+		"install dev.peios.peios-experimental",
+	}) {
+		t.Errorf("migration plan: got %v", got)
+	}
+
+	_, err = resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Install, Name: legacy}},
+		nil,
+		[]resolver.Candidate{bridge, successor},
+		defaultOptions())
+	assertRejection(t, err, resolver.ReasonConflict)
+
+	// Once migration has committed, the old identity is no longer involved:
+	// every later upgrade is an ordinary concrete-name upgrade.
+	next := cand(t, concrete, "2026.8-13")
+	plan, err = resolver.Resolve(
+		[]resolver.Request{{Kind: resolver.Upgrade, Name: concrete}},
+		[]resolver.Installed{inst(t, concrete, "2026.8-12")},
+		[]resolver.Candidate{bridge, successor, next},
+		defaultOptions())
+	if err != nil {
+		t.Fatalf("Resolve subsequent qualified upgrade: %v", err)
+	}
+	if got := summary(plan); !slices.Equal(got, []string{"upgrade " + concrete}) {
+		t.Errorf("subsequent upgrade plan: got %v", got)
+	}
+	if op := plan.Operations[0]; op.FromVersion.String() != "2026.8-12" || op.ToVersion.String() != "2026.8-13" {
+		t.Errorf("subsequent upgrade versions: %s -> %s", op.FromVersion, op.ToVersion)
+	}
+}
+
 func TestForeignReplacesRaisesAuthorization(t *testing.T) {
 	// A package from a low-priority repository replacing one installed
 	// from a higher-priority repository is an elevated action (§6.5.7).
