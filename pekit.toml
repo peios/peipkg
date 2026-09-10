@@ -250,6 +250,3 @@ golang-go = ">= 2:1.26~"
 dash      = "*"
 coreutils = "*"
 findutils = "*"
-
-[clean]
-command = "rm -rf out"
