@@ -3,10 +3,9 @@ format = "peipkg"
 [package]
 version       = "{{version}}-1"
 architecture  = "x86_64"
-# This is the licence of Peipkg's own source. The build deliberately fails
-# before emitting binary packages while either linked Peios module lacks
-# reviewed redistribution terms; the aggregate expression must be revisited
-# together with those two legal decisions rather than guessed here.
-license       = "MIT"
+# Peipkg and libp-go are MIT; the generated PKM UAPI binding carries the
+# kernel userspace exception. The remaining linked Go modules are permissive
+# and their exact texts are collected into every applicable binary package.
+license       = "MIT AND BSD-3-Clause AND (GPL-2.0-only WITH Linux-syscall-note)"
 license_class = "free"
 homepage      = "https://github.com/peios/peipkg"

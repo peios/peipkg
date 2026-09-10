@@ -34,19 +34,6 @@ SOURCE_FIELDS = (
 )
 LICENCE_NAMES = ("license", "licence", "copying", "notice")
 
-# These are not packaging-policy guesses. They record the two upstream module
-# archives whose redistribution terms still require an explicit legal decision.
-# A different module/version without licence text remains a hard error too.
-KNOWN_UNRESOLVED = {
-    ("github.com/peios/libp-go", "v0.8.0"): (
-        "the published module archive contains no licence file"
-    ),
-    ("github.com/peios/pkm/uapi/go", "v0.20.0"): (
-        "the published Go UAPI archive contains no licence file, and the "
-        "licence inherited from the wider PKM repository is ambiguous"
-    ),
-}
-
 
 def records(raw: str):
     decoder = json.JSONDecoder()
@@ -177,9 +164,7 @@ def main() -> int:
     if missing:
         print("missing distributable licence text for Go module(s):", file=sys.stderr)
         for module_path, version in missing:
-            detail = KNOWN_UNRESOLVED.get((module_path, version))
-            suffix = f": {detail}" if detail else ""
-            print(f"  {module_path} {version}{suffix}", file=sys.stderr)
+            print(f"  {module_path} {version}", file=sys.stderr)
         return 1
     return 0
 

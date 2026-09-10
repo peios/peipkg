@@ -65,8 +65,10 @@ done
 rm -rf "$BUILD" "$LICENSE_ROOT" "$PEKIT_OUT/debug" "$PEKIT_OUT/usr" \
   "$PEKIT_OUT/repro" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
 mkdir -p "$BUILD" "$PEKIT_OUT/usr/bin"
-cp -a "$SRC/." "$BUILD/"
-rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor"
+find "$SRC" -mindepth 1 -maxdepth 1 \
+  ! -name .git ! -name out \
+  -exec cp -a '{}' "$BUILD/" ';'
+rm -rf "$BUILD/vendor"
 cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
@@ -225,8 +227,10 @@ SRC=$(pwd -P)
 BUILD="$PEKIT_OUT/test-build"
 rm -rf "$BUILD" "$PEKIT_OUT/gocache"
 mkdir -p "$BUILD"
-cp -a "$SRC/." "$BUILD/"
-rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor"
+find "$SRC" -mindepth 1 -maxdepth 1 \
+  ! -name .git ! -name out \
+  -exec cp -a '{}' "$BUILD/" ';'
+rm -rf "$BUILD/vendor"
 cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
 export CGO_ENABLED=0 GOENV=off GOWORK=off GOPROXY=off GOSUMDB=off
 export GOFLAGS='-mod=vendor -buildvcs=false'
@@ -239,11 +243,13 @@ rm -rf "$BUILD" "$GOCACHE"
 [test.dependencies.peipkg]
 "dev.peios.build-essentials" = ">= 1.0.0-9"
 "org.golang.go"              = ">= 1.26.2"
+"org.gnu.findutils"          = "*"
 
 [test.dependencies.apt]
 golang-go = ">= 2:1.26~"
 dash      = "*"
 coreutils = "*"
+findutils = "*"
 
 [clean]
 command = "rm -rf out"

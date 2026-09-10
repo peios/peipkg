@@ -52,13 +52,12 @@ per-binary debuginfo packages, shared debug sources, corresponding source, and
 the licence notices for the exact linked Go module closure are published with
 the runtime packages.
 
-Release packaging currently fails closed at the licence-closure gate for two
-published dependencies. `github.com/peios/libp-go` v0.8.0 contains no licence
-file in its module archive. `github.com/peios/pkm/uapi/go` v0.20.0 also contains
-no licence file, and it is not yet clear which terms the Go UAPI archive inherits
-from the wider PKM repository. Packaging must not publish binaries until both
-redistribution decisions are made and the resulting aggregate package licence
-expression is reviewed.
+Release packaging fails closed if any linked module omits its distributable
+licence text. The Peios dependencies now satisfy that gate explicitly:
+`github.com/peios/libp-go` v0.8.1 is MIT licensed, while
+`github.com/peios/pkm/uapi/go` v0.20.1 carries the kernel UAPI expression
+`GPL-2.0-only WITH Linux-syscall-note`. The package metadata records that
+combined source closure and the payload ships every collected licence text.
 
 ## Building
 
