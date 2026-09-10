@@ -20,9 +20,10 @@ import (
 	"github.com/peios/peipkg/internal/db"
 )
 
-// peipkgVersion is the peipkg build version, recorded on every
-// transaction.
-const peipkgVersion = "0.1.0"
+// peipkgVersion is the peipkg build version, recorded on every transaction.
+// Release builds replace the development value with -X. Keeping this a
+// variable avoids baking a stale source-tree constant into later releases.
+var peipkgVersion = "devel"
 
 // paths locates peipkg's files beneath an operating root.
 type paths struct {

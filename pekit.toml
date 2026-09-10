@@ -1,21 +1,225 @@
-out_dir= "out"
+# Peipkg is three independently deployed tools built from one source graph:
+# the live-system consumer, the offline image composer, and the repository
+# publisher/verifier. The shared test suite and debug sources remain one
+# release family, while each executable and its symbols can be installed
+# independently.
 
-# Two binaries: the peipkg client ships to the target root; peipkg-compose
-# is a build-host image-assembly tool (dist gets it via `go install`),
-# host-only like prelude's mkirf — built here but not packaged.
-# Static + CGO-free so the client runs on a bare Peios root.
+out_dir = "out"
 
-[build.client]
-command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $PEKIT_OUT/peipkg ./cmd/peipkg"
+[source_package]
+name = "dev.peios.peipkg-source"
 
-[build.compose]
-command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $PEKIT_OUT/peipkg-compose ./cmd/peipkg-compose"
+[build.vendor]
+command = '''
+set -eu
+SRC=$(pwd -P)
+export GOCACHE="$PEKIT_OUT/gocache"
+export GOMODCACHE="$PEKIT_OUT/modcache"
+export GOWORK=off
+mkdir -p "$GOCACHE" "$GOMODCACHE" "$PEKIT_OUT/vendor"
+cd "$SRC"
+go mod verify
+go mod vendor -o "$PEKIT_OUT/vendor"
+test -s "$PEKIT_OUT/vendor/modules.txt"
+'''
 
-[install.compose]
-command = "CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install ./cmd/peipkg-compose"
+[build.vendor.dependencies.peipkg]
+"org.golang.go"               = ">= 1.26.2"
+"org.mozilla.ca-certificates" = "*"
+"dev.peios.build-essentials"  = ">= 1.0.0-9"
+
+[build.vendor.dependencies.apt]
+golang-go       = ">= 2:1.26~"
+ca-certificates = "*"
+dash            = "*"
+coreutils       = "*"
+
+[build.main]
+needs = ["vendor"]
+command = '''
+set -eu
+set -o pipefail 2>/dev/null || true
+
+SRC=$(pwd -P)
+BUILD="$PEKIT_OUT/build"
+DEBUG_PREFIX="/usr/src/debug/dev.peios.peipkg-$PEKIT_VERSION"
+DEBUG_ROOT="$PEKIT_OUT$DEBUG_PREFIX"
+LICENSE_ROOT="$PEKIT_OUT/licenses"
+
+for tool in go find grep sed sort cmp readelf objcopy strip gzip python3; do
+  command -v "$tool" >/dev/null || {
+    echo "peipkg: missing required build tool: $tool" >&2
+    exit 1
+  }
+done
+
+rm -rf "$BUILD"
+mkdir -p "$BUILD" "$PEKIT_OUT/usr/bin"
+cp -a "$SRC/." "$BUILD/"
+rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor"
+cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
+
+export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1
+export GOENV=off GOWORK=off GOPROXY=off GOSUMDB=off
+export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
+export GOCACHE="$PEKIT_OUT/gocache-a"
+mkdir -p "$GOCACHE"
+
+cd "$BUILD"
+go test -count=1 ./...
+
+build_program() {
+  name=$1
+  destination=$2
+  ldflags='-B gobuildid -bindnow'
+  if [ "$name" = peipkg ]; then
+    ldflags="$ldflags -X github.com/peios/peipkg/internal/cli.peipkgVersion=$PEKIT_VERSION-1"
+  fi
+  go build -buildmode=pie -ldflags="$ldflags" -o "$destination" "./cmd/$name"
+}
+
+for name in peipkg peipkg-compose peipkg-repo; do
+  build_program "$name" "$PEKIT_OUT/usr/bin/$name"
+  test -x "$PEKIT_OUT/usr/bin/$name"
+done
+grep -aF "$PEKIT_VERSION-1" "$PEKIT_OUT/usr/bin/peipkg" >/dev/null
+
+"$PEKIT_OUT/usr/bin/peipkg-compose" --help > "$PEKIT_OUT/compose-help"
+grep -F 'peipkg-compose build' "$PEKIT_OUT/compose-help" >/dev/null
+"$PEKIT_OUT/usr/bin/peipkg-repo" --help > "$PEKIT_OUT/repo-help"
+grep -F 'peipkg-repo publish' "$PEKIT_OUT/repo-help" >/dev/null
+set +e
+"$PEKIT_OUT/usr/bin/peipkg" > "$PEKIT_OUT/peipkg-help" 2>&1
+status=$?
+set -e
+test "$status" -eq 2
+grep -F 'usage: peipkg' "$PEKIT_OUT/peipkg-help" >/dev/null
+rm -f "$PEKIT_OUT/compose-help" "$PEKIT_OUT/repo-help" "$PEKIT_OUT/peipkg-help"
+
+# Ship one concise manual for every public executable. gzip -n omits the
+# timestamp and original path so these payloads remain reproducible.
+mkdir -p "$PEKIT_OUT/usr/share/man/man1"
+for page in peipkg peipkg-compose peipkg-repo; do
+  gzip -9n < "$SRC/man/$page.1" > "$PEKIT_OUT/usr/share/man/man1/$page.1.gz"
+  gzip -t "$PEKIT_OUT/usr/share/man/man1/$page.1.gz"
+done
+
+# Go's DWARF 5 is newer than the packaged debugedit understands. It also
+# already carries deterministic import paths under -trimpath, so collect the
+# exact files named by the compiler rather than rewriting the ELF. The same
+# pass gathers the licence text for every linked module and fails closed when
+# a module does not provide one.
+python3 "$SRC/tools/collect-go-metadata.py" \
+  --debug-root "$DEBUG_ROOT" \
+  --licence-root "$LICENSE_ROOT" \
+  ./cmd/peipkg ./cmd/peipkg-compose ./cmd/peipkg-repo
+test -n "$(find "$DEBUG_ROOT" -type f -print -quit)"
+test -n "$(find "$LICENSE_ROOT" -type f -print -quit)"
+
+# Recompile through an independent cache and require byte-identical outputs.
+REPRO="$PEKIT_OUT/repro"
+export GOCACHE="$PEKIT_OUT/gocache-b"
+mkdir -p "$GOCACHE" "$REPRO"
+for name in peipkg peipkg-compose peipkg-repo; do
+  build_program "$name" "$REPRO/$name"
+  cmp "$PEKIT_OUT/usr/bin/$name" "$REPRO/$name"
+done
+
+split_debug() {
+  elf=$1
+  component=$2
+  build_id=$(readelf -n "$elf" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
+  [ -n "$build_id" ] || {
+    echo "peipkg: $elf has no GNU build ID" >&2
+    exit 1
+  }
+  first=$(printf %s "$build_id" | cut -c1-2)
+  rest=$(printf %s "$build_id" | cut -c3-)
+  debug="$PEKIT_OUT/debug/$component/usr/lib/debug/.build-id/$first/$rest.debug"
+  mkdir -p "$(dirname "$debug")"
+  objcopy --only-keep-debug "$elf" "$debug"
+  strip --strip-unneeded "$elf"
+  objcopy --add-gnu-debuglink="$debug" "$elf"
+}
+
+split_debug "$PEKIT_OUT/usr/bin/peipkg" peipkg
+split_debug "$PEKIT_OUT/usr/bin/peipkg-compose" compose
+split_debug "$PEKIT_OUT/usr/bin/peipkg-repo" repo
+
+for name in peipkg peipkg-compose peipkg-repo; do
+  elf="$PEKIT_OUT/usr/bin/$name"
+  readelf -h "$elf" | grep -Eq 'Type:[[:space:]]+DYN'
+  readelf -lW "$elf" | grep -q 'GNU_RELRO'
+  readelf -lW "$elf" | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
+  ! readelf -lW "$elf" | grep -Eq 'GNU_STACK[[:space:]].*RWE'
+  readelf -dW "$elf" | grep -q 'BIND_NOW'
+  readelf -dW "$elf" | grep -Eq 'FLAGS_1.*PIE'
+  ! readelf -dW "$elf" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH)'
+  ! readelf -SW "$elf" | grep -q '\.debug_info'
+  ! readelf -SW "$elf" | grep -q '\.symtab'
+
+  build_id=$(readelf -n "$elf" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
+  component=$name
+  [ "$name" != peipkg-compose ] || component=compose
+  [ "$name" != peipkg-repo ] || component=repo
+  debug="$PEKIT_OUT/debug/$component/usr/lib/debug/.build-id/$(printf %s "$build_id" | cut -c1-2)/$(printf %s "$build_id" | cut -c3-).debug"
+  test -s "$debug"
+  readelf -SW "$debug" | grep -q '\.debug_info'
+  test "$(readelf -n "$debug" | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$build_id"
+  go version -m "$elf" | grep -F 'github.com/peios/peipkg'
+  for forbidden in "$SRC" "$BUILD" "$PEKIT_OUT_BASE" "$PEKIT_WORKSPACE_ROOT"; do
+    ! grep -aF "$forbidden" "$elf" "$debug" >/dev/null
+  done
+done
+
+rm -rf "$BUILD" "$REPRO" "$PEKIT_OUT/gocache-a" "$PEKIT_OUT/gocache-b"
+'''
+
+[build.main.dependencies.peipkg]
+"dev.peios.build-essentials" = ">= 1.0.0-9"
+"org.golang.go"              = ">= 1.26.2"
+"org.gnu.binutils"           = "*"
+"org.gnu.gzip"               = "*"
+"org.python.python3"         = "*"
+
+[build.main.dependencies.apt]
+golang-go = ">= 2:1.26~"
+dash      = "*"
+coreutils = "*"
+findutils = "*"
+grep      = "*"
+sed       = "*"
+binutils  = "*"
+gzip      = "*"
+python3   = "*"
 
 [test]
-command = "go test ./..."
+needs = ["vendor"]
+command = '''
+set -eu
+SRC=$(pwd -P)
+BUILD="$PEKIT_OUT/test-build"
+rm -rf "$BUILD"
+mkdir -p "$BUILD"
+cp -a "$SRC/." "$BUILD/"
+rm -rf "$BUILD/.git" "$BUILD/out" "$BUILD/vendor"
+cp -a "$PEKIT_VENDOR_OUT/vendor" "$BUILD/vendor"
+export CGO_ENABLED=0 GOENV=off GOWORK=off GOPROXY=off GOSUMDB=off
+export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
+export GOCACHE="$PEKIT_OUT/gocache"
+mkdir -p "$GOCACHE"
+(cd "$BUILD" && go test -count=1 ./...)
+rm -rf "$BUILD" "$GOCACHE"
+'''
+
+[test.dependencies.peipkg]
+"dev.peios.build-essentials" = ">= 1.0.0-9"
+"org.golang.go"              = ">= 1.26.2"
+
+[test.dependencies.apt]
+golang-go = ">= 2:1.26~"
+dash      = "*"
+coreutils = "*"
 
 [clean]
-command = "go clean"
+command = "rm -rf out"

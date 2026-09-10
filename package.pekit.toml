@@ -1,40 +1,8 @@
 format = "peipkg"
 
 [package]
-name = "peipkg"
-# -2: `peipkg repo add <name>` performs the trust ceremony for a repository
-# whose .repo file is already on the system. An image can bake in a repository's
-# configuration and its trust anchors together, but peipkg deliberately does not
-# trust a configured repository on sight — every operation skips one with no
-# recorded trust state. Without this form the only way to complete the ceremony
-# was to retype a 64-character fingerprint already sitting on disk. §6.5.2 calls
-# a baked-in anchor a configured channel; this is how an image uses one.
-# -3: repository configuration is read from <root>/lcl/conf/peipkg, the real
-# storage, rather than <root>/conf/peipkg, which is a StrataFS view over it.
-# Reading through the view works only where the view is mounted — on a booted
-# system, for --root /. Every other root silently reported "no repositories
-# configured" while the file sat one directory away: an installer's mounted
-# target, a chroot being prepared, a composed image. Those are what --root is
-# for. No migration: a .repo written at runtime already landed here, because
-# the view's create tier IS /lcl/conf.
-# -4: the depmod side effect runs /libexec/depmod. depmod is machine-facing —
-# this and `make modules_install` are its only callers — so it moved off PATH
-# into libexec. Must ship together with kmod 33-2, which is what puts it there:
-# either alone leaves the side effect pointing at a path that does not exist,
-# and a failed side effect is a warning rather than an error.
-# -7: sd_overrides are applied rather than validated and discarded (PEI-557).
-# A package may now declare a security descriptor for an entry it ships, and
-# the installer stamps it — on a regular file's staged inode before the commit
-# rename, on a directory once its children exist. §5.20 forbids the previous
-# behaviour by name: dropping the overrides and proceeding with inheritance
-# defaults. Gated per repository by a new allow_sd_overrides key defaulting to
-# false; a package carrying overrides from a repository that does not permit
-# them is refused rather than quietly installed without them.
-version      = "0.1.1-8"
-architecture = "x86_64"
-description  = "Peios package manager client (peipkg consumer; static, CGO-free)"
-license      = "MIT"
-
-# Only the client ships; peipkg-compose is a build-host tool.
-[files]
-"client:peipkg" = "usr/bin/peipkg"
+version       = "{{version}}-1"
+architecture  = "x86_64"
+license       = "MIT"
+license_class = "free"
+homepage      = "https://github.com/peios/peipkg"

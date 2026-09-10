@@ -1,0 +1,15 @@
+[package]
+name        = "dev.peios.peipkg-repo"
+description = "Peios repository publisher and verifier"
+
+[provides]
+peipkg-repo = "{{version}}-1"
+
+[dependencies]
+"org.gnu.glibc" = "*"
+
+[files]
+"@source:LICENSE"                           = "usr/share/licenses/dev.peios.peipkg-repo/LICENSE"
+":licenses/**"                             = "usr/share/licenses/dev.peios.peipkg-repo/third-party"
+":usr/bin/peipkg-repo"                     = "usr/bin/peipkg-repo"
+":usr/share/man/man1/peipkg-repo.1.gz"     = "usr/share/man/man1/peipkg-repo.1.gz"

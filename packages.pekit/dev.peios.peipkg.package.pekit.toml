@@ -1,0 +1,20 @@
+[package]
+name        = "dev.peios.peipkg"
+description = "Peios live-system package manager"
+
+[provides]
+peipkg = "{{version}}-1"
+
+[replaces]
+peipkg = "<= 0.1.1-8"
+
+[dependencies]
+# The Go internal-linker PIE has no DT_NEEDED entries, but the kernel still
+# enters it through the x86-64 ABI interpreter supplied by glibc.
+"org.gnu.glibc" = "*"
+
+[files]
+"@source:LICENSE"                        = "usr/share/licenses/dev.peios.peipkg/LICENSE"
+":licenses/**"                          = "usr/share/licenses/dev.peios.peipkg/third-party"
+":usr/bin/peipkg"                       = "usr/bin/peipkg"
+":usr/share/man/man1/peipkg.1.gz"       = "usr/share/man/man1/peipkg.1.gz"

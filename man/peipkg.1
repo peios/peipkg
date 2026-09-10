@@ -1,0 +1,48 @@
+.TH PEIPKG 1
+.SH NAME
+peipkg \- manage packages on a Peios system
+.SH SYNOPSIS
+.B peipkg
+.RB [ --root " " ROOT ]
+.I COMMAND
+.RI [ ARGUMENTS ]
+.SH DESCRIPTION
+.B peipkg
+is the live-system Peios package consumer.  It installs, upgrades, removes,
+queries, verifies, and recovers packages and manages configured repositories.
+.PP
+The default operating root is
+.BR / .
+A literal path or a registered Peios root may be selected with
+.BR --root .
+.SH COMMANDS
+.BR install ,
+.BR upgrade ,
+.BR downgrade ,
+.BR uninstall ,
+.BR remove ,
+.BR claim ,
+.BR undo ,
+.BR list ,
+.BR info ,
+.BR files ,
+.BR owns ,
+.BR search ,
+.BR verify ,
+.BR history ,
+.BR repo ,
+.BR root ,
+.BR refresh ,
+.BR clean ,
+and
+.BR recover .
+.SH FILES
+.TP
+.I /lcl/conf/peipkg
+Repository configuration in the writable backing store.
+.TP
+.I /var/state/peipkg
+Package database, transaction journal, lock, and verified repository cache.
+.SH SEE ALSO
+.BR peipkg-compose (1),
+.BR peipkg-repo (1)

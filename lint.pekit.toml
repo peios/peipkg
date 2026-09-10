@@ -1,0 +1,3 @@
+[allow]
+"elf.cet" = "Go's internal linker does not emit x86 IBT or shadow-stack properties; CGO stays disabled so the package tools retain a static dependency closure"
+"elf.relr" = "Go's internal linker emits static-PIE self-relocations as RELA and does not support DT_RELR; there are no dynamic-library dependencies"

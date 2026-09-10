@@ -1,0 +1,9 @@
+[package]
+name         = "dev.peios.peipkg-debugsource"
+architecture = "noarch"
+description  = "Debug sources for the Peios package-management tools"
+
+[files]
+"@source:LICENSE"   = "usr/share/licenses/dev.peios.peipkg-debugsource/LICENSE"
+":licenses/**"     = "usr/share/licenses/dev.peios.peipkg-debugsource/third-party"
+":usr/src/debug/**" = "usr/src/debug"

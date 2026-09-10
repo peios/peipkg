@@ -1,0 +1,38 @@
+.TH PEIPKG-COMPOSE 1
+.SH NAME
+peipkg-compose \- assemble an offline Peios package root
+.SH SYNOPSIS
+.B peipkg-compose lock
+.I MANIFEST
+.RB [ -o " " LOCK ]
+.br
+.B peipkg-compose build
+.I MANIFEST
+.BI --out " DIRECTORY"
+.RB [ --locked ]
+.RB [ --update ]
+.RB [ --record-xattrs " " FILE ]
+.SH DESCRIPTION
+.B peipkg-compose
+resolves a declarative package manifest and assembles a new filesystem root.
+It does not mutate the package database of a running system.
+.PP
+.B lock
+writes the exact package versions and hashes selected from the configured
+repositories.
+.B build
+verifies and extracts that closure into a fresh output root.
+.SH OPTIONS
+.TP
+.B --locked
+Require an existing lock and do not resolve package versions.
+.TP
+.B --update
+Resolve again and replace the existing lock.
+.TP
+.BI --record-xattrs " FILE"
+Write implied security attributes as deterministic JSON Lines instead of
+setting them on the output tree.
+.SH SEE ALSO
+.BR peipkg (1),
+.BR peipkg-repo (1)

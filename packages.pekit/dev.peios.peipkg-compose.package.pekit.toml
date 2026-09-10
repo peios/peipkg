@@ -1,0 +1,15 @@
+[package]
+name        = "dev.peios.peipkg-compose"
+description = "Offline Peios package-root composer"
+
+[provides]
+peipkg-compose = "{{version}}-1"
+
+[dependencies]
+"org.gnu.glibc" = "*"
+
+[files]
+"@source:LICENSE"                              = "usr/share/licenses/dev.peios.peipkg-compose/LICENSE"
+":licenses/**"                                = "usr/share/licenses/dev.peios.peipkg-compose/third-party"
+":usr/bin/peipkg-compose"                     = "usr/bin/peipkg-compose"
+":usr/share/man/man1/peipkg-compose.1.gz"     = "usr/share/man/man1/peipkg-compose.1.gz"

@@ -1,0 +1,10 @@
+[package]
+name        = "dev.peios.peipkg-repo-debuginfo"
+description = "Debugging symbols for the Peios repository publisher"
+
+[dependencies]
+"dev.peios.peipkg-repo" = "= {{version}}-1"
+
+[files]
+"@source:LICENSE"               = "usr/share/licenses/dev.peios.peipkg-repo-debuginfo/LICENSE"
+":debug/repo/usr/lib/debug/**" = "usr/lib/debug"

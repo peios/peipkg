@@ -1,0 +1,52 @@
+.TH PEIPKG-REPO 1
+.SH NAME
+peipkg-repo \- publish and verify a static Peios package repository
+.SH SYNOPSIS
+.B peipkg-repo init
+.I DIRECTORY
+.BI --name " NAME"
+.BI --key " KEY"
+.RI [ OPTIONS ]
+.br
+.B peipkg-repo publish
+.I DIRECTORY
+.RI [ PACKAGE | DIRECTORY " ..."]
+.BI --key " KEY"
+.RI [ OPTIONS ]
+.br
+.B peipkg-repo verify
+.I DIRECTORY
+.RB [ --quick ]
+.SH DESCRIPTION
+.B peipkg-repo
+creates and updates the signed static files served as a Peios package
+repository.  It has no database or daemon: the directory is the repository,
+and deployment is a copy of that directory.
+.PP
+.B publish
+adds the supplied packages incrementally and moves superseded versions into
+the archive index.  The
+.B --rebuild
+option is the explicit operation that discards recorded archive state and
+reconstructs it from package files on disk; with no package paths, rebuild
+scans the package files already held by the repository.
+.SH OPTIONS
+.TP
+.BI --key " FILE"
+Read an Ed25519 PKCS#8 PEM key or raw 32-byte seed.
+.TP
+.BI --timestamp " TIME"
+Use an RFC 3339 UTC generation time instead of the current time.
+.TP
+.BI --url-template " TEMPLATE"
+Set or override the package URL template.
+.TP
+.B --allow-unsigned
+Permit publication of package archives that carry no package signature.
+.TP
+.B --quick
+During verification, check package presence and size without re-hashing the
+package files.
+.SH SEE ALSO
+.BR peipkg (1),
+.BR peipkg-compose (1)
