@@ -1,3 +1,5 @@
+side_effects = ["man-db"]
+
 [package]
 name        = "dev.peios.peipkg-repo"
 description = "Peios repository publisher and verifier"

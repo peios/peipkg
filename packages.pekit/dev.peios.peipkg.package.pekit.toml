@@ -1,3 +1,5 @@
+side_effects = ["man-db"]
+
 [package]
 name        = "dev.peios.peipkg"
 description = "Peios live-system package manager"

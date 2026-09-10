@@ -1,3 +1,5 @@
+side_effects = ["man-db"]
+
 [package]
 name        = "dev.peios.peipkg-compose"
 description = "Offline Peios package-root composer"
