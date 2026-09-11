@@ -35,7 +35,7 @@ rm -rf "$GOCACHE" "$GOMODCACHE"
 [build.vendor.dependencies.peipkg]
 "org.golang.go"               = ">= 1.26.2"
 "org.mozilla.ca-certificates" = "*"
-"dev.peios.build-essentials"  = ">= 1.0.0-9"
+"dev.peios.build-essentials"  = ">= 1.0.0-1"
 
 [build.vendor.dependencies.apt]
 golang-go       = ">= 2:1.26~"
@@ -163,7 +163,7 @@ fi
 '''
 
 [build.main.dependencies.peipkg]
-"dev.peios.build-essentials" = ">= 1.0.0-9"
+"dev.peios.build-essentials" = ">= 1.0.0-1"
 "org.golang.go"              = ">= 1.26.2"
 "org.gnu.binutils"           = "*"
 "org.gnu.gzip"               = "*"
@@ -246,7 +246,7 @@ done
 '''
 
 [test.dependencies.peipkg]
-"dev.peios.build-essentials" = ">= 1.0.0-9"
+"dev.peios.build-essentials" = ">= 1.0.0-1"
 "org.golang.go"              = ">= 1.26.2"
 "org.gnu.binutils"           = "*"
 "org.gnu.gzip"               = "*"
