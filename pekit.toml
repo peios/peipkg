@@ -82,7 +82,6 @@ cd "$BUILD"
 # Applying -trimpath to their disposable test binaries turns that absolute
 # source location into an import path and makes the fixture lookup invalid.
 # Shipped executables are still compiled with -trimpath below.
-go test -count=1 ./...
 export GOFLAGS='-mod=vendor -trimpath -buildvcs=false'
 
 build_program() {
@@ -100,18 +99,6 @@ for name in peipkg peipkg-compose peipkg-repo; do
   test -x "$PEKIT_OUT/usr/bin/$name"
 done
 grep -aF "$PEKIT_VERSION-1" "$PEKIT_OUT/usr/bin/peipkg" >/dev/null
-
-"$PEKIT_OUT/usr/bin/peipkg-compose" --help > "$PEKIT_OUT/compose-help"
-grep -F 'peipkg-compose build' "$PEKIT_OUT/compose-help" >/dev/null
-"$PEKIT_OUT/usr/bin/peipkg-repo" --help > "$PEKIT_OUT/repo-help"
-grep -F 'peipkg-repo publish' "$PEKIT_OUT/repo-help" >/dev/null
-set +e
-"$PEKIT_OUT/usr/bin/peipkg" > "$PEKIT_OUT/peipkg-help" 2>&1
-status=$?
-set -e
-test "$status" -eq 2
-grep -F 'usage: peipkg' "$PEKIT_OUT/peipkg-help" >/dev/null
-rm -f "$PEKIT_OUT/compose-help" "$PEKIT_OUT/repo-help" "$PEKIT_OUT/peipkg-help"
 
 # Ship one concise manual for every public executable. gzip -n omits the
 # timestamp and original path so these payloads remain reproducible.
@@ -164,32 +151,6 @@ split_debug "$PEKIT_OUT/usr/bin/peipkg" peipkg
 split_debug "$PEKIT_OUT/usr/bin/peipkg-compose" compose
 split_debug "$PEKIT_OUT/usr/bin/peipkg-repo" repo
 
-for name in peipkg peipkg-compose peipkg-repo; do
-  elf="$PEKIT_OUT/usr/bin/$name"
-  readelf -h "$elf" 2>/dev/null | grep -Eq 'Type:[[:space:]]+DYN'
-  readelf -lW "$elf" 2>/dev/null | grep -q 'GNU_RELRO'
-  readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
-  ! readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RWE'
-  readelf -dW "$elf" 2>/dev/null | grep -q 'BIND_NOW'
-  readelf -dW "$elf" 2>/dev/null | grep -Eq 'FLAGS_1.*PIE'
-  ! readelf -dW "$elf" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH)'
-  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.debug_info'
-  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.symtab'
-
-  build_id=$(readelf -n "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
-  component=$name
-  [ "$name" != peipkg-compose ] || component=compose
-  [ "$name" != peipkg-repo ] || component=repo
-  debug="$PEKIT_OUT/debug/$component/usr/lib/debug/.build-id/$(printf %s "$build_id" | cut -c1-2)/$(printf %s "$build_id" | cut -c3-).debug"
-  test -s "$debug"
-  readelf -SW "$debug" 2>/dev/null | grep -q '\.debug_info'
-  test "$(readelf -n "$debug" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$build_id"
-  go version -m "$elf" | grep -F 'github.com/peios/peipkg'
-  for forbidden in "$SRC" "$BUILD" "$PEKIT_OUT_BASE" "$PEKIT_WORKSPACE_ROOT"; do
-    ! grep -aF "$forbidden" "$elf" "$debug" >/dev/null
-  done
-done
-
 # Compiler scratch state is never package payload. Remove it on both success
 # and the deliberate licence-gate failure so a blocked release does not retain
 # two complete build trees and two Go caches.
@@ -220,7 +181,8 @@ gzip      = "*"
 python3   = "*"
 
 [test]
-needs = ["vendor"]
+gate = true
+needs = ["main"]
 command = '''
 set -eu
 SRC=$(pwd -P)
@@ -238,15 +200,65 @@ export GOCACHE="$PEKIT_OUT/gocache"
 mkdir -p "$GOCACHE"
 (cd "$BUILD" && go test -count=1 ./...)
 rm -rf "$BUILD" "$GOCACHE"
+
+# Validate the exact staged package output produced by build.main.
+SRC=$(pwd -P)
+PEKIT_OUT="$PEKIT_MAIN_OUT"
+BUILD="$PEKIT_OUT/build"
+"$PEKIT_OUT/usr/bin/peipkg-compose" --help > "$PEKIT_OUT/compose-help"
+grep -F 'peipkg-compose build' "$PEKIT_OUT/compose-help" >/dev/null
+"$PEKIT_OUT/usr/bin/peipkg-repo" --help > "$PEKIT_OUT/repo-help"
+grep -F 'peipkg-repo publish' "$PEKIT_OUT/repo-help" >/dev/null
+set +e
+"$PEKIT_OUT/usr/bin/peipkg" > "$PEKIT_OUT/peipkg-help" 2>&1
+status=$?
+set -e
+test "$status" -eq 2
+grep -F 'usage: peipkg' "$PEKIT_OUT/peipkg-help" >/dev/null
+rm -f "$PEKIT_OUT/compose-help" "$PEKIT_OUT/repo-help" "$PEKIT_OUT/peipkg-help"
+
+for name in peipkg peipkg-compose peipkg-repo; do
+  elf="$PEKIT_OUT/usr/bin/$name"
+  readelf -h "$elf" 2>/dev/null | grep -Eq 'Type:[[:space:]]+DYN'
+  readelf -lW "$elf" 2>/dev/null | grep -q 'GNU_RELRO'
+  readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
+  ! readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RWE'
+  readelf -dW "$elf" 2>/dev/null | grep -q 'BIND_NOW'
+  readelf -dW "$elf" 2>/dev/null | grep -Eq 'FLAGS_1.*PIE'
+  ! readelf -dW "$elf" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH)'
+  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.debug_info'
+  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.symtab'
+
+  build_id=$(readelf -n "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
+  component=$name
+  [ "$name" != peipkg-compose ] || component=compose
+  [ "$name" != peipkg-repo ] || component=repo
+  debug="$PEKIT_OUT/debug/$component/usr/lib/debug/.build-id/$(printf %s "$build_id" | cut -c1-2)/$(printf %s "$build_id" | cut -c3-).debug"
+  test -s "$debug"
+  readelf -SW "$debug" 2>/dev/null | grep -q '\.debug_info'
+  test "$(readelf -n "$debug" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$build_id"
+  go version -m "$elf" | grep -F 'github.com/peios/peipkg'
+  for forbidden in "$SRC" "$BUILD" "$PEKIT_OUT_BASE" "$PEKIT_WORKSPACE_ROOT"; do
+    ! grep -aF "$forbidden" "$elf" "$debug" >/dev/null
+  done
+done
+
 '''
 
 [test.dependencies.peipkg]
 "dev.peios.build-essentials" = ">= 1.0.0-9"
 "org.golang.go"              = ">= 1.26.2"
-"org.gnu.findutils"          = "*"
+"org.gnu.binutils"           = "*"
+"org.gnu.gzip"               = "*"
+"org.python.python3"         = "*"
 
 [test.dependencies.apt]
 golang-go = ">= 2:1.26~"
 dash      = "*"
 coreutils = "*"
 findutils = "*"
+grep      = "*"
+sed       = "*"
+binutils  = "*"
+gzip      = "*"
+python3   = "*"
