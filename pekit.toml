@@ -182,7 +182,7 @@ python3   = "*"
 
 [test]
 gate = true
-needs = ["main"]
+needs = ["main", "vendor"]
 command = '''
 set -eu
 SRC=$(pwd -P)
