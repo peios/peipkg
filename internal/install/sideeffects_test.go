@@ -2,6 +2,7 @@ package install
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/peios/peipkg/internal/db"
@@ -30,7 +31,7 @@ func TestDepmodTargetsTheInstalledReleasesNotTheRunningKernel(t *testing.T) {
 		"usr/lib/modules/7.0.9-peios-X/modules.dep",
 	)}
 
-	effects, warnings := plannedSideEffects(staged)
+	effects, warnings := plannedSideEffects("/", staged)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -47,7 +48,7 @@ func TestDepmodRunsOncePerAffectedRelease(t *testing.T) {
 		"usr/lib/modules/7.0.9-peios-A/kernel/net/tls/tls.ko",
 	)}
 
-	effects, _ := plannedSideEffects(staged)
+	effects, _ := plannedSideEffects("/", staged)
 	want := []sideEffect{
 		{name: "depmod", argv: []string{depmodBinary, "-a", "7.0.9-peios-A"}},
 		{name: "depmod", argv: []string{depmodBinary, "-a", "7.0.9-peios-B"}},
@@ -68,7 +69,7 @@ func TestDepmodDedupesAReleaseCarriedByTwoPackages(t *testing.T) {
 			"usr/lib/modules/7.0.9-peios-X/kernel/drivers/virtio/virtio_blk.ko"),
 	}
 
-	effects, _ := plannedSideEffects(staged)
+	effects, _ := plannedSideEffects("/", staged)
 	if len(effects) != 1 || effects[0].argv[2] != "7.0.9-peios-X" {
 		t.Fatalf("effects = %+v", effects)
 	}
@@ -77,7 +78,7 @@ func TestDepmodDedupesAReleaseCarriedByTwoPackages(t *testing.T) {
 func TestDepmodWithoutModulesWarnsRatherThanIndexingTheRunningKernel(t *testing.T) {
 	staged := []stagedOp{modulePackage("odd", "usr/bin/odd")}
 
-	effects, warnings := plannedSideEffects(staged)
+	effects, warnings := plannedSideEffects("/", staged)
 	if len(effects) != 0 {
 		t.Fatalf("effects = %+v, want none", effects)
 	}
@@ -117,7 +118,7 @@ func TestNonDepmodEffectsAreUnchanged(t *testing.T) {
 		{pkg: &db.Package{Name: "docs"}, sideEffects: []string{"man-db"}},
 		{}, // a removal
 	}
-	effects, warnings := plannedSideEffects(staged)
+	effects, warnings := plannedSideEffects("/", staged)
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -143,7 +144,7 @@ func TestRemovalContributesItsSideEffects(t *testing.T) {
 		op:          resolver.Operation{Kind: resolver.OpRemove, Name: "docs"},
 		sideEffects: []string{"man-db"},
 	}
-	effects, warnings := plannedSideEffects([]stagedOp{removal})
+	effects, warnings := plannedSideEffects("/", []stagedOp{removal})
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
@@ -164,12 +165,65 @@ func TestDepmodReindexesAReleaseWhoseModulesWereRemoved(t *testing.T) {
 				Path: "/usr/lib/modules/7.0.9-peios-X/kernel/fs/xfs/xfs.ko"},
 		},
 	}
-	effects, warnings := plannedSideEffects([]stagedOp{removal})
+	effects, warnings := plannedSideEffects("/", []stagedOp{removal})
 	if len(warnings) != 0 {
 		t.Fatalf("unexpected warnings: %v", warnings)
 	}
 	want := []sideEffect{{name: "depmod", argv: []string{depmodBinary, "-a", "7.0.9-peios-X"}}}
 	if !reflect.DeepEqual(effects, want) {
 		t.Fatalf("effects = %+v, want %+v", effects, want)
+	}
+}
+
+// §5.24: a side-effect tool runs against the installation root the
+// transaction acted on, not the root the consumer runs from. The table
+// carried no root, so installing modules into an initramfs image or a
+// mounted target reindexed the host's /usr/lib/modules/<release> — which
+// need not exist — and never built the target's modules.dep (PEI-398).
+func TestDepmodIsPointedAtANonHostRoot(t *testing.T) {
+	staged := []stagedOp{modulePackage("kernel-modules",
+		"usr/lib/modules/7.0.9-peios-X/kernel/fs/xfs/xfs.ko")}
+
+	effects, warnings := plannedSideEffects("/mnt/target", staged)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	// -m is load-bearing: kmod's default is /lib/modules, a runtime view
+	// that exists on the running host and not in an alternate root.
+	want := []sideEffect{{name: "depmod", argv: []string{
+		depmodBinary, "-b", "/mnt/target", "-m", "/usr/lib/modules", "-a", "7.0.9-peios-X"}}}
+	if !reflect.DeepEqual(effects, want) {
+		t.Fatalf("effects = %+v, want %+v", effects, want)
+	}
+}
+
+// The host root keeps the bare form, so the running system's own
+// modules are indexed exactly as before.
+func TestDepmodOnTheHostRootTakesNoRootArgument(t *testing.T) {
+	staged := []stagedOp{modulePackage("kernel-modules",
+		"usr/lib/modules/7.0.9-peios-X/kernel/fs/xfs/xfs.ko")}
+	for _, root := range []string{"/", "", "//"} {
+		effects, _ := plannedSideEffects(root, staged)
+		want := []sideEffect{{name: "depmod", argv: []string{depmodBinary, "-a", "7.0.9-peios-X"}}}
+		if !reflect.DeepEqual(effects, want) {
+			t.Fatalf("root %q: effects = %+v, want %+v", root, effects, want)
+		}
+	}
+}
+
+// man-db cannot be pointed at another root — the index is located and
+// keyed by the reading system's own configuration — so for a non-host
+// root it is skipped, and the operator is told rather than the host's
+// index being rebuilt for nothing.
+func TestManDBIsSkippedForANonHostRootWithAWarning(t *testing.T) {
+	staged := []stagedOp{{pkg: &db.Package{Name: "docs"}, sideEffects: []string{"man-db"}}}
+
+	effects, warnings := plannedSideEffects("/mnt/target", staged)
+	if len(effects) != 0 {
+		t.Fatalf("effects = %+v, want none: the host's mandb must not run for another root", effects)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "man-db") ||
+		!strings.Contains(warnings[0], "/mnt/target") {
+		t.Fatalf("warnings = %v, want one naming man-db and the root", warnings)
 	}
 }

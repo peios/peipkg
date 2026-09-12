@@ -2,19 +2,25 @@ package install
 
 import (
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/peios/peipkg/internal/db"
 )
 
-// sideEffectCommands maps a recognised side-effect identifier (PSPU
-// §5.24) to the fixed absolute command that performs it. The path is
-// fixed — PATH is never searched — so the genuine system tool runs and a
-// package cannot shadow it.
+// hostRootCommands maps a recognised side-effect identifier (PSPU §5.24)
+// to the fixed absolute command that performs it against the host root.
+// The path is fixed — PATH is never searched — so the genuine system
+// tool runs and a package cannot shadow it.
 //
 // depmod is absent: it is not a fixed command. See [depmodCommands].
-var sideEffectCommands = map[string][]string{
+//
+// Only the host root has an entry. The man index is a cache the reading
+// system's own man-db configuration locates and keys, and the host's
+// mandb cannot be pointed at another root's configuration; see
+// [plannedSideEffects].
+var hostRootCommands = map[string][]string{
 	"man-db": {"/bin/mandb", "-q"},
 }
 
@@ -25,6 +31,12 @@ const depmodBinary = "/libexec/depmod"
 // modulesPrefix is where a package's kernel modules live, one directory
 // per kernel release.
 const modulesPrefix = "usr/lib/modules/"
+
+// isHostRoot reports whether root is the root the consumer itself runs
+// from, as opposed to an alternate installation root (§5.19).
+func isHostRoot(root string) bool {
+	return root == "" || filepath.Clean(root) == "/"
+}
 
 // sideEffect is one post-commit maintenance command, named by the
 // identifier that asked for it so a failure can be reported against the
@@ -48,7 +60,23 @@ type sideEffect struct {
 // The releases are read from the payload, which is where the answer
 // actually is: a package's modules sit under usr/lib/modules/<release>/,
 // and a package may carry more than one.
-func plannedSideEffects(staged []stagedOp) ([]sideEffect, []string) {
+//
+// root is the installation root the transaction acted on, and §5.24
+// requires each tool to run against *it*, not against the root the
+// consumer is running from. The table used to carry no root at all, so
+// installing into an initramfs image, a mounted target or a composed
+// tree ran the tools against the host — once per participating root of
+// a cross-root transaction — and never against the target: depmod
+// reindexed the host's /usr/lib/modules/<release>, which need not even
+// exist, while the target's modules.dep was never built (PEI-398).
+//
+// depmod takes the root as an argument. man-db does not: the man index
+// is a cache keyed and located by the reading system's own man-db
+// configuration, which the host's mandb cannot be pointed at, so for a
+// non-host root it is skipped and the operator is told. Man page lookup
+// degrades to a filesystem scan without the index, and the target
+// system's own next man-db side effect rebuilds it.
+func plannedSideEffects(root string, staged []stagedOp) ([]sideEffect, []string) {
 	seen := map[string]bool{}
 	var names []string
 	var warnings []string
@@ -69,16 +97,22 @@ func plannedSideEffects(staged []stagedOp) ([]sideEffect, []string) {
 	var effects []sideEffect
 	for _, name := range names {
 		if name == "depmod" {
-			commands, warning := depmodCommands(staged)
+			commands, warning := depmodCommands(root, staged)
 			if warning != "" {
 				warnings = append(warnings, warning)
 			}
 			effects = append(effects, commands...)
 			continue
 		}
-		argv, ok := sideEffectCommands[name]
+		argv, ok := hostRootCommands[name]
 		if !ok {
 			continue // an unrecognised effect is rejected at manifest decode
+		}
+		if !isHostRoot(root) {
+			warnings = append(warnings, "side effect "+name+" skipped for root "+root+
+				": the man index is rebuilt by that system's own man-db, not by the "+
+				"host's; page lookup there falls back to a filesystem scan until then")
+			continue
 		}
 		effects = append(effects, sideEffect{name: name, argv: argv})
 	}
@@ -97,7 +131,15 @@ func plannedSideEffects(staged []stagedOp) ([]sideEffect, []string) {
 // A removal's files count for the same reason (§5.24): deleting a
 // release's modules changes that release's module set as surely as
 // adding to it, and leaves modules.dep naming files that are gone.
-func depmodCommands(staged []stagedOp) ([]sideEffect, string) {
+//
+// For a non-host root, depmod is told the root (-b) and the module
+// directory beneath it (-m). The second is not optional: kmod's default
+// module directory is /lib/modules, which on a running Peios is the
+// runtime view of /usr/lib/modules, but an alternate root is storage
+// with no views mounted over it — so without -m the tool would look
+// under <root>/lib/modules and index nothing. The host root keeps the
+// bare form, where the view is in place.
+func depmodCommands(root string, staged []stagedOp) ([]sideEffect, string) {
 	seen := map[string]bool{}
 	for _, s := range staged {
 		for _, f := range append(append([]db.PackageFile(nil), s.files...), s.removedFiles...) {
@@ -121,9 +163,13 @@ func depmodCommands(staged []stagedOp) ([]sideEffect, string) {
 	sort.Strings(releases) // deterministic order, so runs are reproducible
 	effects := make([]sideEffect, 0, len(releases))
 	for _, release := range releases {
+		argv := []string{depmodBinary}
+		if !isHostRoot(root) {
+			argv = append(argv, "-b", root, "-m", "/"+strings.TrimSuffix(modulesPrefix, "/"))
+		}
 		effects = append(effects, sideEffect{
 			name: "depmod",
-			argv: []string{depmodBinary, "-a", release},
+			argv: append(argv, "-a", release),
 		})
 	}
 	return effects, ""

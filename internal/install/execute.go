@@ -521,7 +521,7 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 	result.Warnings = append(result.Warnings, p.claimWarnings...)
 	result.Warnings = append(result.Warnings, discardBackups(p.ops)...)
 	if env.RunSideEffects {
-		effects, warnings := plannedSideEffects(p.staged)
+		effects, warnings := plannedSideEffects(env.Root, p.staged)
 		result.Warnings = append(result.Warnings, warnings...)
 		result.Warnings = append(result.Warnings, runSideEffects(effects)...)
 	}

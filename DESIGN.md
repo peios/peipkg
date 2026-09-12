@@ -555,9 +555,10 @@ is caught upstream by build-farm pre-publish checks.)
 
 ## Side effects
 
-The closed set of three (§4.3.4): `ldconfig`, `depmod`, `man-db`. peipkg
-invokes each by a **fixed, hardcoded absolute path** — the set is closed
-so there is nothing to configure, and §4.3's allowlist-under-a-
+The closed set of two (PSPU §5.24): `depmod`, `man-db` — no `ldconfig`,
+because Peios has one shared-library directory and no loader cache.
+peipkg invokes each by a **fixed, hardcoded absolute path** — the set is
+closed so there is nothing to configure, and §4.3's allowlist-under-a-
 recovery-class-SD apparatus was sized for the privileged-PM threat that
 model C removes. `PATH` is never searched (correctness — run the real
 tool; and a package must not get code run during a future install). They
@@ -566,6 +567,21 @@ deduplicated, once per transaction, **post-commit**. A side-effect
 failure is a **reported warning, not a rollback** — they are idempotent
 (§4.3.2, self-healing on the next run) and the transaction is already
 past the durability boundary.
+
+**The root.** §5.24 requires each tool to act on the root the
+transaction acted on, so the side-effect table is parameterised by
+`Env.Root` and each root of a cross-root transaction schedules its own.
+The binaries are always the host's; what differs is where they are
+pointed. `depmod` gets `-b <root> -m /usr/lib/modules` for a non-host
+root (`-m` because kmod's default `/lib/modules` is a runtime view that
+exists on the host and not in bare storage). `man-db` cannot be pointed
+at another root — the index is located and keyed by the reading
+system's own `man_db.conf`, and the host's `mandb` reads the host's —
+so for a non-host root it is *skipped* with one warning on the report;
+lookup there degrades to a filesystem scan until that system's own next
+`man-db` effect rebuilds the index. `peipkg-compose` runs no side
+effects at all, by the same reasoning: a composed tree is not the
+system that will read its caches.
 
 ---
 
