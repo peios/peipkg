@@ -19,7 +19,6 @@ const (
 	maxSDOverrides  = 100_000
 	maxSDOverride   = 64 * 1024 // decoded length of one sd_overrides entry
 	maxClaimSlots   = 64        // slots per claims field (§3.2 resource limits)
-	maxClaimPath    = 4096      // a claim target or path, in UTF-8 bytes (§3.2)
 )
 
 // The wire* types mirror the manifest's JSON shape for decoding. A

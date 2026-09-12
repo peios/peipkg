@@ -9,33 +9,22 @@ import (
 	"strings"
 
 	"github.com/peios/peipkg/internal/archive"
+	"github.com/peios/peipkg/internal/layout"
 	"github.com/peios/peipkg/internal/pipsig"
 )
 
-// permittedTopLevels enumerates the top-level install destinations PSD-009
-// §3.4.1 permits. A payload path is acceptable if some entry in this list is
-// a prefix of the path (with the trailing slash treated as a directory
+// permittedTopLevels enumerates the top-level install destinations §5.14
+// permits. A payload path is acceptable if some entry in this list is a
+// prefix of the path (with the trailing slash treated as a directory
 // separator, so "etc/foo" matches "etc/" but "etcetera" does not).
 //
-// usr/lib/ admits any first-segment-after-lib name to allow the per-triplet
-// dispatch (validateLibPath narrows it to "<arch>-linux-peios/", the "debug/"
-// separated-debug-info tree, "modules/" or "firmware/", or rejects).
-var permittedTopLevels = []string{
-	"usr/bin/",
-	"usr/sbin/", // system binaries (daemons, init/boot, service executables)
-	"usr/lib/",
-	"usr/libexec/", // arch-independent helper executables run by other programs, not on user PATH (e.g. feature lifecycle scripts); no triplet rule (that is scoped to usr/lib/)
-	"usr/share/",
-	"usr/include/",
-	"usr/etc/",       // vendor config defaults for legacy applications — the bottom layer of the /etc merge. Packages never write /etc directly; the merged view resolves usr/etc < system/retc < lcl/etc
-	"usr/conf/",      // vendor defaults for native-application supplementary config — the bottom layer of the /conf merge
-	"usr/src/debug/", // separated debug info's source subtree of usr/src
-	"usr/src/dist/",  // corresponding-source packages (§3.4.1); the rest of usr/src stays admin territory
-	"var/",
-	"boot/",
-	"hooks/", // initramfs boot hooks — mkirf scans /hooks/ when packing the cpio
-	"++/",    // initramfs early-cpio segments — mkirf prepends /++/ uncompressed ahead of the main archive (CPU microcode, ACPI table overrides)
-}
+// The list is layout's, so that the manifest decoder holds a claim path
+// (§5.23) to the same destinations without importing this package.
+// usr/lib/ admits any first-segment-after-lib name to allow the
+// per-triplet dispatch (validateLibPath narrows it to
+// "<arch>-linux-peios/", the "debug/" separated-debug-info tree,
+// "modules/" or "firmware/", or rejects).
+var permittedTopLevels = layout.PermittedTopLevels
 
 // ValidatePayload runs the PSD-009 §3.4 layout checks over the staged tree
 // at stagedRoot: permitted top-level destinations (§3.4.1), triplet

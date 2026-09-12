@@ -5,16 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
-	"golang.org/x/text/unicode/norm"
-)
-
-// Payload-path resource limits (§3.2.6, §3.2.7).
-const (
-	maxPathComponent = 255  // bytes, UTF-8
-	maxPathLength    = 4096 // bytes, UTF-8
-	maxPathDepth     = 256  // number of components
+	"github.com/peios/peipkg/internal/layout"
 )
 
 // metadataPrefix is the reserved archive prefix for package metadata
@@ -23,45 +15,9 @@ const metadataPrefix = ".peipkg/"
 
 // checkPathBytes enforces the path-validity constraints that §5.13 sets
 // for a payload path and §5.17 then applies unchanged to a symlink
-// target: valid UTF-8, no NUL bytes, no ASCII control characters, no
-// backslashes, NFC normalisation, and the length limits.
-//
-// kind names the subject in any error, so the two callers report their
-// own vocabulary.
-func checkPathBytes(kind, p string) error {
-	if len(p) > maxPathLength {
-		return fmt.Errorf("%s is %d bytes, the limit is %d", kind, len(p), maxPathLength)
-	}
-	if !utf8.ValidString(p) {
-		return fmt.Errorf("%s is not valid UTF-8", kind)
-	}
-	if !norm.NFC.IsNormalString(p) {
-		return fmt.Errorf("%s %q is not in Unicode NFC", kind, p)
-	}
-	for i := 0; i < len(p); i++ {
-		switch c := p[i]; {
-		case c == 0x00:
-			return fmt.Errorf("%s contains a NUL byte", kind)
-		case c < 0x20 || c == 0x7F:
-			return fmt.Errorf("%s contains the control byte %#x", kind, c)
-		case c == '\\':
-			return fmt.Errorf("%s %q contains a backslash", kind, p)
-		}
-	}
-
-	components := strings.Split(p, "/")
-	if len(components) > maxPathDepth {
-		return fmt.Errorf("%s has %d components, the limit is %d",
-			kind, len(components), maxPathDepth)
-	}
-	for _, c := range components {
-		if len(c) > maxPathComponent {
-			return fmt.Errorf("%s component %q is %d bytes, the limit is %d",
-				kind, c, len(c), maxPathComponent)
-		}
-	}
-	return nil
-}
+// target. The rules live in layout so that a claim path (§5.23), which
+// the manifest decoder validates, is held to the same single copy.
+func checkPathBytes(kind, p string) error { return layout.CheckPathBytes(kind, p) }
 
 // validatePayloadPath checks a payload tar entry's path against every
 // §5.13 constraint. A non-conforming path means the package is
@@ -79,15 +35,7 @@ func validatePayloadPath(p string) error {
 	if err := checkPathBytes("payload path", p); err != nil {
 		return err
 	}
-	for _, c := range strings.Split(p, "/") {
-		if c == "" {
-			return fmt.Errorf("payload path %q has an empty component", p)
-		}
-		if c == "." || c == ".." {
-			return fmt.Errorf("payload path %q contains a %q component", p, c)
-		}
-	}
-	return nil
+	return layout.CheckPathComponents("payload path", p)
 }
 
 // ValidateSymlinkTarget checks a symlink's target against §5.17's

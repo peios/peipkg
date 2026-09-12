@@ -1,6 +1,9 @@
 package manifest_test
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // withProvides returns a base manifest whose provides array is set to
 // the given entries.
@@ -91,16 +94,90 @@ func TestClaimsConsumerRunPathAllowed(t *testing.T) {
 	))
 }
 
-func TestClaimsBypassInstallPathRules(t *testing.T) {
-	// Claims deliberately escape the §3.4 install-path subdirectory rules.
-	// The kernel-mandated initramfs entry point /init lives at the root, and
-	// a provider target may sit anywhere a payload file does (incl. /run).
-	mustDecode(t, withProvides(map[string]any{
-		"name": "init",
-		"claims": map[string]any{
-			"bin": map[string]any{"target": "/usr/sbin/prelude", "path": "/init"},
-		},
-	}))
+func TestClaimsDestinationSet(t *testing.T) {
+	// §5.23: a claim path lies in a §5.14 permitted destination, under
+	// /run/, or at the well-known root-level name /init — and nowhere
+	// else. The kernel-mandated initramfs entry point is the one
+	// root-level name admitted; a provider target names a payload path,
+	// so it gets the §5.14 set alone.
+	consumer := func(p string) map[string]any {
+		return withDeps(map[string]any{
+			"name":   "registryd",
+			"claims": map[string]any{"binary": map[string]any{"path": p}},
+		})
+	}
+	provider := func(target, p string) map[string]any {
+		slot := map[string]any{"target": target}
+		if p != "" {
+			slot["path"] = p
+		}
+		return withProvides(map[string]any{
+			"name": "init", "claims": map[string]any{"bin": slot}})
+	}
+
+	t.Run("init is admitted", func(t *testing.T) {
+		mustDecode(t, provider("/usr/sbin/prelude", "/init"))
+	})
+	for _, p := range []string{
+		"/usr/sbin/registryd", "/usr/bin/x", "/usr/libexec/x", "/usr/lib/x86_64-linux-peios/x",
+		"/usr/share/x", "/usr/etc/x", "/var/run/x", "/boot/x", "/hooks/x", "/++/x",
+		"/run/logsink.sock", "/run/deep/er/x",
+	} {
+		t.Run("consumer path "+p, func(t *testing.T) { mustDecode(t, consumer(p)) })
+	}
+
+	// Before PEI-381 every one of these validated: the only location
+	// rule was /lcl/policy, so a consumer manifest could materialise a
+	// link at /etc/passwd.
+	outside := []string{
+		"/etc/passwd", "/opt/x", "/lcl/conf/x", "/system/x", "/home/x", "/tmp/x",
+		"/dev/null", "/usr/local/bin/x", "/usr/src/x", "/usr/x", "/usr",
+		"/init/x", "/initrd", "/run", "/runner/x", "/var", "/boot",
+	}
+	for _, p := range outside {
+		t.Run("consumer path "+p, func(t *testing.T) { wantReject(t, consumer(p)) })
+		t.Run("provider path "+p, func(t *testing.T) {
+			wantReject(t, provider("/usr/sbin/prelude", p))
+		})
+	}
+	// A target is a payload path: the claim-only locations are not for it.
+	for _, target := range []string{"/run/x", "/init", "/etc/x"} {
+		t.Run("provider target "+target, func(t *testing.T) {
+			wantReject(t, provider(target, ""))
+		})
+	}
+}
+
+func TestClaimsPathSyntax(t *testing.T) {
+	// §5.23 holds a claim path to the §5.13 syntax and safety rules —
+	// the same copy the payload-path validator applies. None of these
+	// were checked on a claim path before PEI-381.
+	consumer := func(p string) map[string]any {
+		return withDeps(map[string]any{
+			"name":   "registryd",
+			"claims": map[string]any{"binary": map[string]any{"path": p}},
+		})
+	}
+	bad := map[string]string{
+		"backslash":         "/usr/bin/a\\b",
+		"control byte":      "/usr/bin/a\x01b",
+		"DEL":               "/usr/bin/a\x7fb",
+		"NUL":               "/usr/bin/a\x00b",
+		"not NFC":           "/usr/bin/é",
+		"trailing slash":    "/usr/bin/x/",
+		"doubled slash":     "/usr/bin//x",
+		"dot component":     "/usr/bin/./x",
+		"dot-dot component": "/usr/bin/../bin/x",
+		"long component":    "/usr/bin/" + strings.Repeat("a", 256),
+		"too long":          "/usr/bin/" + strings.Repeat("a/", 2100),
+		"too deep":          "/usr/bin/" + strings.Repeat("a/", 255) + "x",
+	}
+	for name, p := range bad {
+		t.Run(name, func(t *testing.T) { wantReject(t, consumer(p)) })
+	}
+	// The NFC form of the same name, and a component at the limit, pass.
+	mustDecode(t, consumer("/usr/bin/é"))
+	mustDecode(t, consumer("/usr/bin/"+strings.Repeat("a", 255)))
 }
 
 func TestClaimsRejected(t *testing.T) {

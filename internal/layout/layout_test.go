@@ -54,3 +54,54 @@ func TestForbidden(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckClaimPath(t *testing.T) {
+	// §5.23: §5.14's destinations, /run/, and the root-level /init.
+	for _, p := range []string{
+		"/usr/sbin/registryd", "/usr/lib/debug/x", "/var/x", "/run/x.sock", "/init",
+	} {
+		if err := layout.CheckClaimPath(p); err != nil {
+			t.Errorf("CheckClaimPath(%q) = %v, want it allowed", p, err)
+		}
+	}
+	rejected := map[string]string{
+		"/etc/passwd":             "outside every permitted",
+		"/run":                    "outside every permitted",
+		"/init/x":                 "outside every permitted",
+		"/usr/x":                  "outside every permitted",
+		"/lcl/policy/autorun.d/x": "/lcl/policy",
+		"usr/bin/x":               "absolute",
+		"/":                       "no path component",
+		"/usr/bin/x/":             "empty component",
+		"/usr/bin/../etc/x":       `".." component`,
+		"/usr/bin/a\\b":           "backslash",
+		"/usr/bin/a\x1fb":         "control byte",
+		"/usr/bin/é":             "NFC",
+		"/usr/bin/" + long(256):   "component",
+		"/usr/bin/" + deep(4096):  "limit is 4096",
+		"/usr/bin/" + nested(256): "components, the limit is 256",
+	}
+	for p, want := range rejected {
+		err := layout.CheckClaimPath(p)
+		if err == nil {
+			t.Errorf("CheckClaimPath(%q) allowed, want rejection mentioning %q", p, want)
+		} else if !strings.Contains(err.Error(), want) {
+			t.Errorf("CheckClaimPath(%q) = %v, want it to mention %q", p, err, want)
+		}
+	}
+
+	// A target is a payload path of the declaring package: the two
+	// claim-only locations are not destinations it can ship to.
+	for _, p := range []string{"/run/x", "/init", "/etc/x", "/lcl/policy/x"} {
+		if err := layout.CheckClaimTarget(p); err == nil {
+			t.Errorf("CheckClaimTarget(%q) allowed, want rejection", p)
+		}
+	}
+	if err := layout.CheckClaimTarget("/usr/sbin/loregd"); err != nil {
+		t.Errorf("CheckClaimTarget(/usr/sbin/loregd) = %v, want it allowed", err)
+	}
+}
+
+func long(n int) string   { return strings.Repeat("a", n) }
+func deep(n int) string   { return strings.Repeat("a/", n/2) + "x" }
+func nested(n int) string { return strings.Repeat("a/", n) + "x" }

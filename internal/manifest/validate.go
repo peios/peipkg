@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 	"unicode"
@@ -414,7 +413,7 @@ func validateClaims(label string, wires map[string]wireClaimSlot, side claimSide
 				return nil, fmt.Errorf(
 					"peipkg/manifest: %s: claims slot %q is missing target", label, slot)
 			}
-			if err := validateClaimPath(w.Target); err != nil {
+			if err := validateClaimTarget(w.Target); err != nil {
 				return nil, fmt.Errorf(
 					"peipkg/manifest: %s: claims slot %q: target: %w", label, slot, err)
 			}
@@ -433,32 +432,24 @@ func validateClaims(label string, wires map[string]wireClaimSlot, side claimSide
 	return claims, nil
 }
 
-// validateClaimPath checks a claim target or path is a clean absolute
-// path. Claims deliberately bypass the install-path subdirectory rules
-// (§3.4): materialising a link or naming a payload file outside the
-// normal layout — e.g. the kernel-mandated /init at the root of an
-// initramfs — is a core reason claims exist. So only the structural
-// invariants are enforced here: absolute, bounded, clean, non-empty.
-func validateClaimPath(p string) error {
-	if !strings.HasPrefix(p, "/") {
-		return fmt.Errorf("%q must be an absolute path", p)
-	}
-	if len(p) > maxClaimPath {
-		return fmt.Errorf("%q is %d bytes, the limit is %d", p, len(p), maxClaimPath)
-	}
-	if path.Clean(p) != p {
-		return fmt.Errorf("%q is not a clean path", p)
-	}
-	top, _, _ := strings.Cut(strings.TrimPrefix(p, "/"), "/")
-	if top == "" {
-		return fmt.Errorf("%q has no path component", p)
-	}
-	// §5.23: a claim path is deliberately exempt from the §3.4
-	// subdirectory rules, but not from §5.14's absolute one. This route
-	// needs no flag and no operator opt-in, so it is the cheaper of the
-	// two ways to reach /lcl/policy.
-	return layout.Check(p)
-}
+// validateClaimPath checks a claim path against §5.23: the §5.13
+// path-syntax and safety rules, and the destination set — §5.14's
+// permitted install destinations, /run/, or the root-level /init.
+//
+// Both halves live in layout, shared with the payload-path validator,
+// so §5.13 is enforced in one place. A claim path used to be held only
+// to "absolute, bounded, clean, non-empty" plus the /lcl/policy rule,
+// which let a consumer manifest materialise a link at /etc/passwd or
+// anywhere else outside the managed tree; and none of §5.13's
+// normalisation, control-byte, backslash or component-length rules
+// applied to it (PEI-381).
+func validateClaimPath(p string) error { return layout.CheckClaimPath(p) }
+
+// validateClaimTarget checks a provider's target against the part of
+// §5.23 a manifest can answer alone: §5.13's syntax and a §5.14
+// destination. Whether the declaring package ships the path is
+// checked at install time against the payload received.
+func validateClaimTarget(p string) error { return layout.CheckClaimTarget(p) }
 
 // validateProvides validates the provides array (§4.1.4).
 func validateProvides(wires []wireProvides) ([]Provides, error) {
