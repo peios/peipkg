@@ -406,6 +406,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		BypassPathRestrictions: app.bypassPathRestrictions,
 		OverwriteUnowned:       app.overwriteUnowned,
 		SDOverridePolicy:       app.sdOverridePolicy(),
+		DecideModified:         app.decideModified,
 	}
 	result, err := install.Execute(ctx, plan, env)
 	if err != nil {
@@ -586,6 +587,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 			BypassPathRestrictions: app.bypassPathRestrictions,
 			OverwriteUnowned:       app.overwriteUnowned,
 			SDOverridePolicy:       app.sdOverridePolicy(),
+			DecideModified:         app.decideModified,
 		}
 	}
 

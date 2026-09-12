@@ -58,6 +58,12 @@ type stagedOp struct {
 	// *absence* affects its target, so a kernel release whose modules
 	// this transaction deletes still needs reindexing.
 	removedFiles []db.PackageFile
+	// removedDirs are the logical paths of directories this operation
+	// releases ownership of — every directory row of a removed package,
+	// and the rows an upgrade's previous version owned that the new
+	// payload does not. After commit, any of them left unowned and empty
+	// is reclaimed (§7.3.3); see reclaimDirectories.
+	removedDirs []string
 	// untouched are the payload logical paths §7.2.2 classifies as
 	// unchanged across an upgrade: present in both versions with the
 	// same content hash, and present on disk. They get a package_file
@@ -358,9 +364,15 @@ func preparePackage(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 	}
 
 	// A file the previous version owned that the new payload does not
-	// is removed. Directories are left in place — they may be shared.
+	// is removed. A directory the new payload does not carry is released
+	// rather than removed here: it may be shared, and whether it is
+	// still owned or still populated is decided after commit (§7.2.4).
 	for _, f := range existing {
-		if f.Type == db.FileTypeDir || newPaths[f.Path] {
+		if newPaths[f.Path] {
+			continue
+		}
+		if f.Type == db.FileTypeDir {
+			s.removedDirs = append(s.removedDirs, f.Path)
 			continue
 		}
 		physical := filepath.Join(env.Root, f.Path)
@@ -542,7 +554,29 @@ func stageRemoval(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 	s.removedFiles = files
 	for _, f := range files {
 		if f.Type == db.FileTypeDir {
-			continue // directories are shared; left in place
+			// Directories are shared, so the removal releases the
+			// package's ownership and leaves the reclaim decision to
+			// after commit, when it can be judged against the committed
+			// ownership rows (§7.3.3).
+			s.removedDirs = append(s.removedDirs, f.Path)
+			continue
+		}
+		// §7.3.4: two packages owning one non-directory path is a state
+		// the schema prevents, so meeting one means the database has
+		// been damaged or hand-edited. The path is not this package's
+		// to remove — the other owner still needs it — and the operator
+		// is told the database needs attention. Silently removing it
+		// was the worse of the two ways to be wrong.
+		owners, err := env.DB.FileOwners(ctx, f.Path)
+		if err != nil {
+			return s, err
+		}
+		if others := otherOwners(owners, op.Name); len(others) > 0 {
+			s.warnings = append(s.warnings, fmt.Sprintf(
+				"database integrity: %s is recorded as owned by %s and also by %s; "+
+					"left in place, and its ownership should be inspected with `peipkg owns`",
+				f.Path, op.Name, strings.Join(others, ", ")))
+			continue
 		}
 		physical := filepath.Join(env.Root, f.Path)
 		// A removal's parent is pinned like any other operation's: the
@@ -552,11 +586,61 @@ func stageRemoval(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 		if err != nil {
 			return s, err
 		}
-		s.fileOps = append(s.fileOps, fileOp{
+		fo := fileOp{
 			finalPath: physical, action: actionRemove, dir: dir,
-			backupPath: tempPath(physical, backupMarker, txnID)})
+			backupPath: tempPath(physical, backupMarker, txnID)}
+		// §7.3.2: a configuration file whose content no longer matches
+		// the hash recorded at install is a customisation the removal
+		// would destroy, or an unauthorised change; either way the
+		// operator decides. The scope is the one the upgrade's
+		// modified-detection uses, so binaries and libraries are not
+		// hashed at uninstall. Before this every owned path was renamed
+		// aside and its backup discarded at commit, without a word.
+		if f.Type == db.FileTypeFile && isEtcPath(f.Path) && dir != nil &&
+			dir.Exists(filepath.Base(physical)) {
+			modified, err := fileModified(dir, filepath.Base(physical), f.Hash)
+			if err != nil {
+				return s, err
+			}
+			if modified {
+				decision := ModifiedAbort
+				if env.DecideModified != nil {
+					decision = env.DecideModified(op.Name, f.Path)
+				}
+				switch decision {
+				case ModifiedKeep:
+					s.warnings = append(s.warnings, fmt.Sprintf(
+						"%s has been modified since install — kept; it now belongs to no package",
+						f.Path))
+					continue
+				case ModifiedRemove:
+					fo.keepBackup = true
+					s.warnings = append(s.warnings, fmt.Sprintf(
+						"%s had been modified since install — removed as authorised; the "+
+							"previous content is kept at %s", f.Path,
+						filepath.Base(tempPath(physical, backupMarker, 0))))
+				default:
+					return s, fmt.Errorf(
+						"peipkg/install: %s has been modified since %s was installed, and "+
+							"removing the package would delete it; run the uninstall "+
+							"interactively to remove it, keep it, or abort", f.Path, op.Name)
+				}
+			}
+		}
+		s.fileOps = append(s.fileOps, fo)
 	}
 	return s, nil
+}
+
+// otherOwners names the packages in owners other than pkg.
+func otherOwners(owners []db.PackageFile, pkg string) []string {
+	var others []string
+	for _, o := range owners {
+		if o.PackageName != pkg {
+			others = append(others, o.PackageName)
+		}
+	}
+	return others
 }
 
 // writeStagedFile writes a payload file's content to its staged sibling.

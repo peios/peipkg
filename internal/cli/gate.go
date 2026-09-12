@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/peios/peipkg/internal/audit"
+	"github.com/peios/peipkg/internal/install"
 	"github.com/peios/peipkg/internal/resolver"
 )
 
@@ -95,6 +96,31 @@ func (app *App) authorize(auths []resolver.Authorization) bool {
 			Outcome: audit.OutcomeSuccess, Detail: a.Detail})
 	}
 	return true
+}
+
+// decideModified asks the operator what to do with a configuration file
+// an uninstall would delete whose content has changed since it was
+// installed (§7.3.2): remove it, keep it as an unowned file, or abort
+// the transaction. Like authorize, it is a deliberate per-file act —
+// the routine proceed prompt and --yes never answer it — and anything
+// but an explicit remove or keep, end-of-input included, aborts. An
+// authorised removal is recorded in the audit stream as the
+// authorisation it is.
+func (app *App) decideModified(pkg, path string) install.ModifiedDecision {
+	app.printf("\n%s has been modified since %s was installed, and removing the "+
+		"package would delete it.\n", path, pkg)
+	app.printf("remove it (the previous content is kept beside it), keep it (it will " +
+		"belong to no package), or abort? [r/k/A] ")
+	line, _ := app.reader.ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "r", "remove":
+		app.emit(audit.Event{Type: audit.TypeAuthorisation, Outcome: audit.OutcomeSuccess,
+			Detail: fmt.Sprintf("remove %s, modified since install, with %s", path, pkg)})
+		return install.ModifiedRemove
+	case "k", "keep":
+		return install.ModifiedKeep
+	}
+	return install.ModifiedAbort
 }
 
 // confirm asks the operator to approve the plan, returning true when the

@@ -83,7 +83,37 @@ type Env struct {
 	// question must not thereby grant packages the run of the system's
 	// access control.
 	SDOverridePolicy func(repo string) bool
+	// DecideModified is asked, for each configuration file a removal
+	// would delete whose content no longer matches the hash recorded at
+	// install (§7.3.2), whether to remove it, keep it, or abort the
+	// transaction. It is called during staging, before any file is
+	// touched, with the package name and the file's logical path.
+	//
+	// A nil decider aborts: a modified file is either a customisation
+	// the removal would destroy or an unauthorised change to a system
+	// file, and a caller that has not arranged to ask the operator must
+	// not decide either way on their behalf. The check is scoped to the
+	// same paths the upgrade's modified-detection covers (isEtcPath), so
+	// binaries and libraries are not hashed at uninstall.
+	DecideModified func(pkg, path string) ModifiedDecision
 }
+
+// ModifiedDecision is the operator's answer for a modified file that a
+// removal would delete (§7.3.2).
+type ModifiedDecision uint8
+
+const (
+	// ModifiedAbort refuses the transaction. It is the zero value, and
+	// the answer when no decider is set.
+	ModifiedAbort ModifiedDecision = iota
+	// ModifiedRemove authorises the removal. The displaced content is
+	// kept at the backup path rather than discarded at commit, on the
+	// same reasoning as an authorised unowned overwrite (§7.1.5).
+	ModifiedRemove
+	// ModifiedKeep leaves the file where it is. The package's ownership
+	// row goes with the package, so the file becomes unowned.
+	ModifiedKeep
+)
 
 // Result reports the outcome of an execution.
 type Result struct {
@@ -520,6 +550,10 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 	}
 	result.Warnings = append(result.Warnings, p.claimWarnings...)
 	result.Warnings = append(result.Warnings, discardBackups(p.ops)...)
+	// §7.3.3: directories the transaction released, now unowned and
+	// empty, are reclaimed deepest-first. After the commit, because the
+	// ownership rows that decide "unowned" are the committed ones.
+	result.Warnings = append(result.Warnings, reclaimDirectories(ctx, env, p.pins, p.staged)...)
 	if env.RunSideEffects {
 		effects, warnings := plannedSideEffects(env.Root, p.staged)
 		result.Warnings = append(result.Warnings, warnings...)

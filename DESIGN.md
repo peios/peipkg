@@ -526,6 +526,21 @@ converges to §7's model: when reconcilers arrive they *claim* `/etc`
 paths and peipkg defers those, applying modified-detection only to
 unclaimed files — an additive change.
 
+**Uninstall** runs the same modified-detection over the same scope
+(`/usr/etc/`, legacy `/etc/`) and no wider — hashing a whole package
+at removal is the cost the spec's "narrow to policy paths" note exists
+to avoid. A modified file is put to the operator per file through
+`Env.DecideModified` (remove / keep / abort; the CLI prompts, `--yes`
+does not answer, nil decider aborts). An authorised removal keeps the
+backup past commit, exactly as an authorised unowned overwrite does. A
+kept file becomes unowned. Two further removal-time rules live beside
+it: a non-directory path another package also owns (a state only a
+damaged database can produce) is left in place with a
+database-integrity warning, and directories the package released that
+are unowned and empty after commit are reclaimed deepest-first —
+judged post-commit because "unowned" is a question about committed
+rows, and never forced: still-owned or populated means keep.
+
 ---
 
 ## Self-upgrade

@@ -13,6 +13,7 @@ import (
 
 	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/db"
+	"github.com/peios/peipkg/internal/install"
 	"github.com/peios/peipkg/internal/resolver"
 )
 
@@ -351,5 +352,30 @@ func TestRecoverNothingPending(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no interrupted transaction") {
 		t.Errorf("recover output: %q", out.String())
+	}
+}
+
+// §7.3.2: the modified-file decision at uninstall is a deliberate
+// per-file act. Only an explicit remove or keep answers it; end-of-input
+// — which is what --yes leaves on stdin — aborts (PEI-402).
+func TestDecideModifiedRequiresAnExplicitAnswer(t *testing.T) {
+	cases := map[string]install.ModifiedDecision{
+		"":         install.ModifiedAbort,
+		"y\n":      install.ModifiedAbort,
+		"a\n":      install.ModifiedAbort,
+		"r\n":      install.ModifiedRemove,
+		"remove\n": install.ModifiedRemove,
+		"k\n":      install.ModifiedKeep,
+		"KEEP\n":   install.ModifiedKeep,
+	}
+	for input, want := range cases {
+		out := &bytes.Buffer{}
+		app := newApp(t.TempDir(), strings.NewReader(input), out, &bytes.Buffer{})
+		if got := app.decideModified("app", "/usr/etc/app.conf"); got != want {
+			t.Errorf("decideModified with input %q = %v, want %v", input, got, want)
+		}
+		if !strings.Contains(out.String(), "/usr/etc/app.conf") {
+			t.Errorf("the prompt does not name the file:\n%s", out.String())
+		}
 	}
 }
