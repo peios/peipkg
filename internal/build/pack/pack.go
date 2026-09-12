@@ -121,6 +121,10 @@ func Pack(in Input) error {
 		}
 	}
 
+	if err := checkRepresentable(leaves); err != nil {
+		return fmt.Errorf("pack: %w", err)
+	}
+
 	integrity, totalSize, err := buildIntegrityManifest(leaves)
 	if err != nil {
 		return fmt.Errorf("pack: hash payload files: %w", err)
