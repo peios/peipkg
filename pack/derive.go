@@ -2,6 +2,7 @@ package pack
 
 import (
 	"debug/elf"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -26,7 +27,8 @@ func ValidateCapabilityName(name string) error { return capability.ValidateName(
 // the same scale as its package version, so a consumer referencing
 // GLIBC_2.34 may be turned into a `>= 2.34` dependency. A soname absent from
 // the policy is derived at soname granularity only (exact-name match, no
-// version), which is always safe.
+// version). Libraries whose symbol versions use a different numbering
+// scheme can instead use exact capabilities via DeriveELFDeps.
 type SymbolVersionPolicy map[string]string
 
 // DerivedDeps is the result of [DeriveELFDeps]: the provides and
@@ -37,6 +39,8 @@ type DerivedDeps struct {
 	Provides     []Provides
 	Dependencies []Dependency
 	Warnings     []string
+	// Err prevents publication when exact ABI requirements cannot be derived safely.
+	Err error
 }
 
 // sharedLibName matches a shared-library payload destination by the
@@ -64,16 +68,28 @@ var sharedLibName = regexp.MustCompile(`(^|/)lib[^/]+\.so(\.\d+)*$`)
 // provider side the soname's provide is stamped with selfVersion (the
 // building package's own version), giving consumers something to match.
 //
+// Each soname in symbolCapabilities additionally emits exact elfver(soname:token)
+// capabilities from GNU version definitions and requirements, independent of the
+// package version. All strong required tokens must be present; no numeric floor
+// or presumed inheritance substitutes for an actual definition. Err is fatal
+// when this contract cannot be represented, parsed, or satisfied internally.
+//
 // files maps payload destination -> on-disk source path. selfVersion is the
 // version of the package being built. DeriveELFDeps does not read
 // configuration or mutate anything; warnings are returned, not logged.
-func DeriveELFDeps(files map[string]string, selfVersion string, policy SymbolVersionPolicy) DerivedDeps {
+func DeriveELFDeps(files map[string]string, selfVersion string, policy SymbolVersionPolicy, symbolCapabilities ...string) DerivedDeps {
+	exact := newELFCapabilities(symbolCapabilities)
 	provided := map[string]bool{}
 	needed := map[string]bool{}
 	symFloor := map[string]string{} // soname -> highest required symbol version
 	var warnings []string
 
 	for _, dest := range sortedKeys(files) {
+		// Source/debug-source trees retain reconstruction inputs, including
+		// binary fixtures. They do not install usable library providers.
+		if strings.HasPrefix(dest, "usr/src/") {
+			continue
+		}
 		// Skip symlinks: a symlink (e.g. a -devel package's `libfoo.so` ->
 		// `libfoo.so.3` dev symlink) merely aliases a real object that is
 		// itself a payload entry — usually the versioned `.so.N` in the
@@ -115,6 +131,7 @@ func DeriveELFDeps(files map[string]string, selfVersion string, policy SymbolVer
 				}
 			}
 		}
+		exact.scan(ef, dest)
 		ef.Close()
 	}
 
@@ -144,6 +161,21 @@ func DeriveELFDeps(files map[string]string, selfVersion string, policy SymbolVer
 		}
 		out.Dependencies = append(out.Dependencies, d)
 	}
+
+	for name := range exact.provided {
+		out.Provides = append(out.Provides, Provides{Name: name})
+	}
+	for name, soname := range exact.needed {
+		if exact.provided[name] {
+			continue
+		}
+		if provided[soname] {
+			exact.errs = append(exact.errs, fmt.Errorf("package provides %s but its own payload requires missing capability %s", soname, name))
+			continue
+		}
+		out.Dependencies = append(out.Dependencies, Dependency{Name: name})
+	}
+	out.Err = errors.Join(exact.errs...)
 	sort.Slice(out.Provides, func(i, j int) bool { return out.Provides[i].Name < out.Provides[j].Name })
 	sort.Slice(out.Dependencies, func(i, j int) bool { return out.Dependencies[i].Name < out.Dependencies[j].Name })
 	return out

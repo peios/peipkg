@@ -30,6 +30,11 @@ func DerivePkgConfigDeps(files map[string]string) DerivedDeps {
 	var warnings []string
 
 	for _, dest := range sortedKeys(files) {
+		// A source tree's .pc files are inputs or fixtures, not installed
+		// pkg-config interfaces or requirements of the source package.
+		if strings.HasPrefix(dest, "usr/src/") {
+			continue
+		}
 		if filepath.Ext(dest) != ".pc" {
 			continue
 		}

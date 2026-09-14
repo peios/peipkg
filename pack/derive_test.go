@@ -88,6 +88,19 @@ func TestDeriveELFDeps(t *testing.T) {
 	}
 }
 
+func TestDeriveELFDepsIgnoresSourceInputs(t *testing.T) {
+	dir := buildFixtures(t)
+	for _, root := range []string{"usr/src/dist/app/", "usr/src/debug/app/"} {
+		got := DeriveELFDeps(map[string]string{
+			root + "fixtures/libfoo.so": filepath.Join(dir, "libfoo.so"),
+			root + "fixtures/app":       filepath.Join(dir, "app"),
+		}, "1.0", nil)
+		if len(got.Provides)+len(got.Dependencies)+len(got.Warnings) != 0 {
+			t.Fatalf("source inputs became runtime dependencies/providers: %+v", got)
+		}
+	}
+}
+
 // TestDeriveELFDepsSkipsSymlinks guards the -devel-package soname leak: a dev
 // `.so` symlink aliases the runtime package's real `.so.N`. elf.Open would
 // follow it and read the target's DT_SONAME, so a -devel package shipping only

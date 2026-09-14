@@ -380,8 +380,8 @@ var archDependentExemptions = []string{
 }
 
 // validateArchDependentKind rejects a shared library, static library or
-// loadable module outside /usr/lib/<triplet>/ — and rejects one anywhere at
-// all for a noarch package.
+// loadable module outside /usr/lib/<triplet>/ — including in a noarch package.
+// Corresponding-source trees are source data, not installed library providers.
 //
 // Suffix matching rather than an ELF sniff. An ELF sniff would be stronger,
 // and peipkg/pack/derive.go already reads ELF headers for capability
@@ -390,6 +390,15 @@ var archDependentExemptions = []string{
 // begin with the magic. A producer determined to evade the rule can, and the
 // rule is a layout convention rather than a security boundary.
 func validateArchDependentKind(architecture, path string) error {
+	// Captured upstream/vendor trees can contain import libraries for other
+	// targets (e.g. Cargo's Windows crates), library fixtures, or filenames
+	// ending in .so. Preserve those bytes as source material. This exception
+	// applies only inside the reserved corresponding-source subtree; runtime
+	// libraries elsewhere still require the architecture triplet. Symlink and
+	// top-level validation remain in force.
+	if strings.HasPrefix(path, "usr/src/dist/") {
+		return nil
+	}
 	if !isArchDependentLeaf(path) {
 		return nil
 	}

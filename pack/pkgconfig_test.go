@@ -75,6 +75,16 @@ Requires: glib-2.0
 	}
 }
 
+func TestDerivePkgConfigDepsIgnoresSourceInputs(t *testing.T) {
+	pc := writePC(t, t.TempDir(), "fixture.pc", "Name: Fixture\nVersion: 1.0\nRequires: missing-build-only-library\n")
+	for _, root := range []string{"usr/src/dist/app/", "usr/src/debug/app/"} {
+		got := DerivePkgConfigDeps(map[string]string{root + "fixture.pc": pc})
+		if len(got.Provides)+len(got.Dependencies)+len(got.Warnings) != 0 {
+			t.Fatalf("source fixture became an installed interface: %+v", got)
+		}
+	}
+}
+
 func TestDerivePkgConfigRealFiles(t *testing.T) {
 	// libthermal.pc: Requires libnl-3.0 libnl-genl-3.0 (space-separated, no constraints).
 	matches, _ := filepath.Glob("/home/jack/projects/peios/pkgs/kernel/out/*/build/tools/usr/lib/x86_64-linux-peios/pkgconfig/libthermal.pc")

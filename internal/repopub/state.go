@@ -76,8 +76,9 @@ const configSchemaVersion = 1
 
 // Config is the publisher-side state in configFile.
 type Config struct {
-	SchemaVersion int    `json:"schema_version"`
-	URLTemplate   string `json:"url_template"`
+	RequireQualification bool   `json:"require_qualification,omitempty"`
+	SchemaVersion        int    `json:"schema_version"`
+	URLTemplate          string `json:"url_template"`
 }
 
 // State is an opened repository state: the parsed contents of a state
@@ -113,7 +114,7 @@ func Open(dir string) (*State, error) {
 	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
 		return nil, fmt.Errorf("peipkg/repopub: reading %s: %w", configFile, err)
 	}
-	if cfg.SchemaVersion != configSchemaVersion {
+	if (cfg.SchemaVersion != configSchemaVersion && cfg.SchemaVersion != 2) || (cfg.SchemaVersion == 2) != cfg.RequireQualification {
 		return nil, fmt.Errorf(
 			"peipkg/repopub: %s has schema_version %d, want %d",
 			configFile, cfg.SchemaVersion, configSchemaVersion)
@@ -164,8 +165,9 @@ func (s *State) readIndex(rel string, want repository.IndexKind) (repository.Ind
 
 // InitOptions configures [Init].
 type InitOptions struct {
-	Name        string
-	Description string
+	RequireQualification bool
+	Name                 string
+	Description          string
 	// Key signs the initial descriptor and the two empty indexes, and its
 	// public half becomes the repository's first trust anchor.
 	Key ed25519.PrivateKey
@@ -288,7 +290,7 @@ func Init(dir string, opts InitOptions) error {
 	}
 
 	cfg, err := json.MarshalIndent(
-		Config{SchemaVersion: configSchemaVersion, URLTemplate: template}, "", "  ")
+		Config{SchemaVersion: publicationSchema(opts.RequireQualification), URLTemplate: template, RequireQualification: opts.RequireQualification}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -398,7 +400,8 @@ type stagedFile struct {
 	rel  string
 	data []byte
 	// src, when set, names a file to copy instead of writing data.
-	src string
+	src          string
+	expectedHash string
 }
 
 func newWriteSet(dir string) *writeSet { return &writeSet{dir: dir} }
@@ -407,8 +410,8 @@ func (w *writeSet) add(rel string, data []byte) {
 	w.files = append(w.files, stagedFile{rel: rel, data: data})
 }
 
-func (w *writeSet) addFileCopy(rel, src string) {
-	w.files = append(w.files, stagedFile{rel: rel, src: src})
+func (w *writeSet) addFileCopy(rel, src, hash string) {
+	w.files = append(w.files, stagedFile{rel: rel, src: src, expectedHash: hash})
 }
 
 // addSigned stages a document and its detached signature together.
@@ -505,9 +508,14 @@ func (w *writeSet) stage(dest string, f stagedFile) (string, error) {
 			return "", err
 		}
 		defer src.Close()
-		if _, err := io.Copy(tmp, src); err != nil {
+		h := sha256.New()
+		if _, err := io.Copy(io.MultiWriter(tmp, h), src); err != nil {
 			os.Remove(tmp.Name())
 			return "", err
+		}
+		if f.expectedHash != "" && fmt.Sprintf("%x", h.Sum(nil)) != f.expectedHash {
+			os.Remove(tmp.Name())
+			return "", fmt.Errorf("package changed during publication: %s", f.src)
 		}
 	} else if _, err := tmp.Write(f.data); err != nil {
 		os.Remove(tmp.Name())
@@ -551,4 +559,11 @@ func hashFile(path string) (string, int64, error) {
 		return "", 0, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+func publicationSchema(protected bool) int {
+	if protected {
+		return 2
+	}
+	return configSchemaVersion
 }

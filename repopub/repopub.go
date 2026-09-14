@@ -15,6 +15,8 @@ import (
 
 // InitOptions configures [Init].
 type InitOptions struct {
+	// RequireQualification creates publisher schema 2: older tools refuse it.
+	RequireQualification bool
 	// Name is the repository's name; a consumer's .repo file and the
 	// descriptor must agree on it.
 	Name        string
@@ -36,12 +38,13 @@ type InitOptions struct {
 // empty or absent.
 func Init(dir string, opts InitOptions) error {
 	return internalrepopub.Init(dir, internalrepopub.InitOptions{
-		Name:        opts.Name,
-		Description: opts.Description,
-		Key:         opts.Key,
-		URLTemplate: opts.URLTemplate,
-		GeneratedAt: opts.GeneratedAt,
-		TrustedKeys: opts.TrustedKeys,
+		RequireQualification: opts.RequireQualification,
+		Name:                 opts.Name,
+		Description:          opts.Description,
+		Key:                  opts.Key,
+		URLTemplate:          opts.URLTemplate,
+		GeneratedAt:          opts.GeneratedAt,
+		TrustedKeys:          opts.TrustedKeys,
 	})
 }
 
@@ -57,6 +60,8 @@ type PublishOptions struct {
 	URLTemplate string
 	// AllowUnsigned permits a package with no inline signature.
 	AllowUnsigned bool
+	// Qualification binds the checked artifacts and base repository state.
+	Qualification *Qualification
 }
 
 // PublishResult reports what a publish did.
@@ -77,6 +82,7 @@ func Publish(dir string, opts PublishOptions) (PublishResult, error) {
 		GeneratedAt:   opts.GeneratedAt,
 		URLTemplate:   opts.URLTemplate,
 		AllowUnsigned: opts.AllowUnsigned,
+		Qualification: opts.Qualification,
 	})
 	if err != nil {
 		return PublishResult{}, err

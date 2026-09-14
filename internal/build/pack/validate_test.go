@@ -363,6 +363,8 @@ func TestValidateAcceptsDistSourceTree(t *testing.T) {
 	leaves := []entry{
 		{path: "usr/src/dist/dash-0.5.12-2/upstream/dash-0.5.12.tar.gz", kind: kindFile},
 		{path: "usr/src/dist/dash-0.5.12-2/recipe/pekit.toml", kind: kindFile},
+		{path: "usr/src/dist/bindgen-0.65.1-1/acquisition/vendor/windows/lib/libwindows.a", kind: kindFile},
+		{path: "usr/src/dist/example-1.0/upstream/tests/fixture.so", kind: kindFile},
 	}
 	if err := validateEntries("noarch", leaves); err != nil {
 		t.Errorf("expected accept of /usr/src/dist/ tree, got: %v", err)
@@ -395,6 +397,7 @@ func TestValidateRejectsALibraryOutsideTheTripletDirectory(t *testing.T) {
 		"usr/bin/libbaz.a",
 		"usr/share/mypkg/libfoo.so.1",
 		"usr/share/mypkg/libfoo.so.1.2.3",
+		"usr/src/dist-other/libfoo.a",
 	} {
 		err := validateEntries("x86_64", []entry{{path: path, kind: kindFile}})
 		if err == nil {
@@ -410,6 +413,8 @@ func TestValidateRejectsALibraryInANoarchPackage(t *testing.T) {
 		"usr/share/py/_native.so",
 		"usr/lib/debug/usr/bin/foo.so",
 		"usr/lib/firmware/thing.so",
+		"usr/src/debug/example/libwindows.a",
+		"usr/src/dist-other/libwindows.a",
 	} {
 		err := validateEntries("noarch", []entry{{path: path, kind: kindFile}})
 		if err == nil {

@@ -2,6 +2,7 @@ package repopub
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,8 @@ type PublishOptions struct {
 	// AllowUnsigned permits ingesting a package with no inline
 	// signature.
 	AllowUnsigned bool
+	// Qualification validates the complete next repository before any writes.
+	Qualification *Qualification
 	// Rebuild discards the existing archive and reconstructs it from
 	// package files on disk.
 	Rebuild bool
@@ -53,9 +56,17 @@ type Result struct {
 // leaves the repository exactly as it was rather than advertising the
 // packages it happened to reach first.
 func Publish(dir string, opts PublishOptions) (Result, error) {
+	unlock, err := lockPublication(dir)
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
 	st, err := Open(dir)
 	if err != nil {
 		return Result{}, err
+	}
+	if st.Config.RequireQualification && opts.Qualification == nil {
+		return Result{}, fmt.Errorf("qualification_required: protected repository needs signed release evidence")
 	}
 	if opts.GeneratedAt.IsZero() {
 		return Result{}, fmt.Errorf("peipkg/repopub: a generation timestamp is required")
@@ -64,6 +75,16 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 		return Result{}, err
 	}
 
+	if opts.Qualification != nil {
+		if err := checkQualificationBase(dir, *opts.Qualification); err != nil {
+			return Result{}, err
+		}
+	}
+	if st.Config.RequireQualification {
+		if err := checkReleaseEvidence(st, *opts.Qualification, opts.Key); err != nil {
+			return Result{}, err
+		}
+	}
 	template := opts.URLTemplate
 	if template == "" {
 		template = st.Config.URLTemplate
@@ -120,6 +141,9 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 		if err != nil {
 			return Result{}, fmt.Errorf("peipkg/repopub: %s: %w", filepath.Base(p), err)
 		}
+		if opts.Qualification != nil && opts.Qualification.Artifacts[p] != pkg.entry.Hash {
+			return Result{}, fmt.Errorf("qualification: artifact is missing or changed: %s", p)
+		}
 		id := identityOf(pkg.entry)
 		// §6.3.1 mandates retention: a published version must stay
 		// fetchable forever. Silently overwriting an entry would break
@@ -143,6 +167,14 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 		return Result{}, err
 	}
 
+	if opts.Qualification != nil {
+		if len(opts.Qualification.Artifacts) != len(paths) {
+			return Result{}, fmt.Errorf("qualification: artifact set changed")
+		}
+		if err := qualifyClosures(st, activeEntries, added, staged, keys); err != nil {
+			return Result{}, err
+		}
+	}
 	index := func(kind repository.IndexKind, entries []repository.IndexEntry) repository.Index {
 		return repository.Index{
 			RepoName:     st.Descriptor.RepoName,
@@ -157,10 +189,29 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 	// Package files first: an index that advertises a URL nothing serves
 	// is a repository that fails at fetch time, which is later and more
 	// confusing than failing at publish time.
-	for _, s := range staged {
+	for i, s := range staged {
 		if s.destRel != "" {
-			w.addFileCopy(s.destRel, s.srcPath)
+			w.addFileCopy(s.destRel, s.srcPath, added[i].Hash)
 		}
+	}
+	if st.Config.RequireQualification {
+		if err := checkReleaseEvidence(st, *opts.Qualification, opts.Key); err != nil {
+			return Result{}, err
+		}
+		evidence, err := os.ReadFile(opts.Qualification.EvidencePath)
+		if err != nil {
+			return Result{}, err
+		}
+		sig, err := os.ReadFile(opts.Qualification.EvidencePath + ".sig")
+		if err != nil {
+			return Result{}, err
+		}
+		if !ed25519.Verify(opts.Key.Public().(ed25519.PublicKey), evidence, sig) {
+			return Result{}, fmt.Errorf("qualification: evidence changed before commit")
+		}
+		name := fmt.Sprintf("releases/%x.json", sha256.Sum256(evidence))
+		w.add(name, evidence)
+		w.add(name+".sig", sig)
 	}
 	if err := w.addSignedIndex(archiveIndexFile, index(repository.IndexArchive, archiveEntries), opts.Key); err != nil {
 		return Result{}, err
