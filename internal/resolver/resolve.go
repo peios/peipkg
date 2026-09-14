@@ -167,7 +167,7 @@ func resolveCore(reqs []Request, installedByRoot map[string][]Installed, availab
 		return Plan{}, err
 	}
 	applyReplaces(world, &auths)
-	if err := checkConsistency(world, opts, downgradeAllowed); err != nil {
+	if err := checkConsistency(world, refToPath, opts, downgradeAllowed); err != nil {
 		return Plan{}, err
 	}
 	plan, err := buildPlan(world, installedByRoot, refToPath, opts.PrimaryArch)
@@ -343,7 +343,22 @@ func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []stri
 			continue
 		}
 		deps := append([]manifest.Dependency(nil), pkg.dependencies...)
-		sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
+		// Resolve dependencies which name an available package before
+		// capability-only dependencies. A package can depend explicitly on
+		// its intended implementation and also carry an automatically-derived
+		// SONAME dependency that implementation provides. Resolving the SONAME
+		// first could select a different provider and then install both.
+		//
+		// Availability is the only unambiguous distinction in the manifest:
+		// package names and provided capabilities share one dependency syntax.
+		sort.Slice(deps, func(i, j int) bool {
+			iNamed := len(idx.byName[deps[i].Name]) > 0
+			jNamed := len(idx.byName[deps[j].Name]) > 0
+			if iNamed != jNamed {
+				return iNamed
+			}
+			return deps[i].Name < deps[j].Name
+		})
 		for _, dep := range deps {
 			targetRoot, ok := routeRoot(dep, pkg.root, refToPath)
 			if !ok {

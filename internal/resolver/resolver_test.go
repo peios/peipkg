@@ -238,6 +238,64 @@ func TestInstallViaProvides(t *testing.T) {
 	}
 }
 
+func TestConcreteDependencyPrecedesCapabilityProviderSelection(t *testing.T) {
+	legacy := cand(t, "libwidget", "1.0-2")
+	legacy.Provides = []manifest.Provides{{Name: "libwidget.so.0"}}
+	qualified := cand(t, "org.example.libwidget", "1.0-4")
+	qualified.Provides = []manifest.Provides{{Name: "libwidget.so.0"}}
+
+	for _, dependencies := range [][]manifest.Dependency{
+		{
+			dep(t, "libwidget.so.0", ""),
+			dep(t, "org.example.libwidget", ""),
+		},
+		{
+			dep(t, "org.example.libwidget", ""),
+			dep(t, "libwidget.so.0", ""),
+		},
+	} {
+		app := cand(t, "app", "1.0-1", dependencies...)
+		plan, err := resolver.Resolve(
+			[]resolver.Request{{Kind: resolver.Install, Name: "app"}},
+			nil,
+			[]resolver.Candidate{app, legacy, qualified},
+			defaultOptions())
+		if err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		if got := summary(plan); !slices.Equal(got,
+			[]string{"install org.example.libwidget", "install app"}) {
+			t.Errorf("plan: got %v, want only the explicitly named provider and app", got)
+		}
+	}
+}
+
+func TestRejectsDependencyInvalidatedByLaterProvider(t *testing.T) {
+	legacy := cand(t, "libstdcxx", "16.2.0-2")
+	legacyVersion := ver(t, "16.2.0-2")
+	legacy.Provides = []manifest.Provides{{Name: "libstdc++", Version: &legacyVersion}}
+	current := cand(t, "libstdcxx", "16.2.0-3")
+
+	compiler := cand(t, "compiler", "16.2.0-3",
+		dep(t, "libstdcxx", "= 16.2.0-3"))
+	oldLLVM := cand(t, "llvm", "18.1.8-2",
+		dep(t, "libstdc++", ">= 16"))
+
+	// compiler first installs the current concrete package. The later
+	// compatibility dependency can only select the legacy version of that
+	// same package, invalidating compiler's exact edge. A greedy resolver may
+	// reject this impossible set, but it must never emit a mixed closure.
+	_, err := resolver.Resolve(
+		[]resolver.Request{
+			{Kind: resolver.Install, Name: "compiler"},
+			{Kind: resolver.Install, Name: "llvm"},
+		},
+		nil,
+		[]resolver.Candidate{compiler, oldLLVM, legacy, current},
+		defaultOptions())
+	assertRejection(t, err, resolver.ReasonUnsatisfiable)
+}
+
 func TestInstallConflict(t *testing.T) {
 	apache := cand(t, "apache", "2.4-1")
 	apache.Conflicts = []manifest.Dependency{dep(t, "nginx", "")}

@@ -13,7 +13,8 @@ import (
 // Conflicts and version checks are per-root: the same name in two roots
 // is two independent packages (DESIGN-named-roots.md → "Identity"), so it
 // is neither a conflict with itself nor a regression across roots.
-func checkConsistency(world map[string]*worldPkg, opts Options, downgradeAllowed map[string]bool) error {
+func checkConsistency(world map[string]*worldPkg, refToPath map[string]string, opts Options,
+	downgradeAllowed map[string]bool) error {
 	keys := sortedKeys(world)
 
 	// §4.2.5(3): every planned package must be installable here.
@@ -46,6 +47,24 @@ func checkConsistency(world map[string]*worldPkg, opts Options, downgradeAllowed
 						Detail: fmt.Sprintf("packages %q and %q cannot be installed together",
 							a.name, b.name)}
 				}
+			}
+		}
+	}
+
+	// §4.2.5(1): every dependency in the final world must still be
+	// satisfied. The forward pass is greedy and may replace a package that
+	// satisfied an earlier edge when a later, tighter edge selects another
+	// version of the same package. Checking only while walking forward then
+	// allowed an internally inconsistent closure to escape as a valid plan.
+	for _, key := range keys {
+		p := world[key]
+		for _, dep := range p.dependencies {
+			targetRoot, ok := routeRoot(dep, p.root, refToPath)
+			if !ok || !worldSatisfiesInRoot(world, dep, p.architecture,
+				opts.PrimaryArch, targetRoot) {
+				return &Rejection{Reason: ReasonUnsatisfiable,
+					Detail: fmt.Sprintf("package %q depends on %q, which the resolved "+
+						"package set does not satisfy", p.name, dep.Name)}
 			}
 		}
 	}
