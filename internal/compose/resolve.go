@@ -32,8 +32,8 @@ type SourceScan struct {
 	// manifest must match it.
 	digest string
 	// archive records whether the repositories' archive indexes were
-	// fetched — they are, when the scanning manifest's constraints may
-	// need historical versions.
+	// fetched — they are, when manifest or candidate dependency constraints
+	// may need historical versions.
 	archive    bool
 	candidates []resolver.Candidate
 	// sources is the trust state established for each declared
@@ -75,13 +75,22 @@ func ScanSources(ctx context.Context, m Manifest, fetcher repository.Fetcher,
 
 	needArchive := manifestNeedsArchive(m.Packages)
 	candidates, sources, err := repositoryCandidates(
-		ctx, client, store, m.Repositories, needArchive, warnings)
+		ctx, client, store, m.Repositories, warnings)
 	if err != nil {
 		return nil, err
 	}
 	locals, err := localCandidates(m.LocalPackages, localPackageBaseDir(m))
 	if err != nil {
 		return nil, err
+	}
+	// Shared scans cover the whole declared candidate universe, not only the
+	// first manifest's closure. A different lock may select any active or local
+	// candidate, including one with a pinned transitive dependency. Inspect all
+	// of those constraints before freezing the scan; never refresh its indexes
+	// during a subsequent ResolveWithSources call.
+	needArchive = needArchive || candidatesNeedArchive(candidates) || candidatesNeedArchive(locals)
+	if needArchive {
+		candidates = append(candidates, archiveCandidates(ctx, client, m.Repositories, warnings)...)
 	}
 	return &SourceScan{
 		digest:     sourcesDigest(m),
@@ -296,12 +305,11 @@ func candidateDefaultRoot(name string, candidates []resolver.Candidate) string {
 }
 
 // repositoryCandidates adds each manifest repository through the trust
-// ceremony and returns the resolver candidates of its active and
-// archive indexes. A repository that cannot be added is fatal — a build
-// must resolve against every source it declares — but a repository that
-// serves no archive index is not.
+// ceremony and returns the resolver candidates of its active indexes.
+// A repository that cannot be added is fatal: a build must resolve against
+// every source it declares. Optional archive discovery happens afterwards.
 func repositoryCandidates(ctx context.Context, client *repository.Client, store *db.DB,
-	repos []config.RepoConfig, needArchive bool, warnings io.Writer) (
+	repos []config.RepoConfig, warnings io.Writer) (
 	[]resolver.Candidate, map[string]LockedSource, error) {
 
 	var candidates []resolver.Candidate
@@ -332,13 +340,17 @@ func repositoryCandidates(ctx context.Context, client *repository.Client, store 
 			return nil, nil, fmt.Errorf("peipkg/compose: repository %q: %w", cfg.Name, err)
 		}
 		candidates = append(candidates, indexCandidates(cfg, active, warnings)...)
+	}
+	return candidates, sources, nil
+}
 
-		if !needArchive {
-			continue
-		}
-		// The archive index carries historical versions. It is fetched
-		// only when a manifest constraint can need non-current metadata.
-		// A repository need not serve it.
+// archiveCandidates uses the trust state established while scanning the
+// active indexes. Archives are optional, but unverified entries never enter
+// the universe and an unsatisfied historical dependency still fails resolution.
+func archiveCandidates(ctx context.Context, client *repository.Client,
+	repos []config.RepoConfig, warnings io.Writer) []resolver.Candidate {
+	var candidates []resolver.Candidate
+	for _, cfg := range repos {
 		archived, err := client.ArchiveIndex(ctx, cfg)
 		if err != nil {
 			fmt.Fprintf(warnings, "peipkg-compose: warning: archive index of %q unavailable: %v\n",
@@ -347,7 +359,18 @@ func repositoryCandidates(ctx context.Context, client *repository.Client, store 
 		}
 		candidates = append(candidates, indexCandidates(cfg, archived, warnings)...)
 	}
-	return candidates, sources, nil
+	return candidates
+}
+
+func candidatesNeedArchive(candidates []resolver.Candidate) bool {
+	for _, candidate := range candidates {
+		for _, dependency := range candidate.Dependencies {
+			if dependency.Constraint.MayNeedHistoricalVersions() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func manifestNeedsArchive(reqs []PackageRequest) bool {
