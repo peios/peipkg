@@ -42,6 +42,11 @@ func buildPeipkg(t *testing.T, manifestJSON []byte, entries []testEntry) []byte 
 func buildPeipkgSigned(t *testing.T, manifestJSON []byte, entries []testEntry,
 	priv ed25519.PrivateKey) []byte {
 	t.Helper()
+	return buildPeipkgSignedAt(t, manifestJSON, entries, priv, time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+}
+
+func buildPeipkgSignedAt(t *testing.T, manifestJSON []byte, entries []testEntry, priv ed25519.PrivateKey, buildTS time.Time) []byte {
+	t.Helper()
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 
@@ -77,7 +82,6 @@ func buildPeipkgSigned(t *testing.T, manifestJSON []byte, entries []testEntry,
 
 	// §5.11 pins mode, ownership, format and mtime; §5.16 makes the mode
 	// rule an explicit rejection condition.
-	buildTS := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	writeReg := func(name string, data []byte) {
 		if err := tw.WriteHeader(&tar.Header{
 			Name: name, Mode: 0o777, Size: int64(len(data)), Typeflag: tar.TypeReg,

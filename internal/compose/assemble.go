@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/peios/peipkg/internal/archive"
 	packvalidate "github.com/peios/peipkg/internal/build/pack"
@@ -103,7 +106,10 @@ func assemble(ctx context.Context, out string, m Manifest, fetched []fetchedPack
 	// Repositories are anchor-level (the consumer's anchor-fetch model):
 	// a composed sub-root receives its packages through the build, not its
 	// own repositories.
-	return writeRepositoryConfig(out, m.Repositories)
+	if err := writeRepositoryConfig(out, m.Repositories); err != nil {
+		return err
+	}
+	return restorePayloadDirectoryTimes(out, fetched)
 }
 
 // assembleRoot installs one root's packages into rootDir: it resolves the
@@ -266,12 +272,15 @@ func extractPayload(root string, fp fetchedPackage,
 					return err
 				}
 				written[entry.Path] = physical
-				return nil
+				return setPayloadTime(physical, fp.Pkg.Manifest.Build.Timestamp)
 			case archive.EntrySymlink:
 				if err := os.MkdirAll(filepath.Dir(physical), 0o755); err != nil {
 					return err
 				}
-				return os.Symlink(entry.LinkTarget, physical)
+				if err := os.Symlink(entry.LinkTarget, physical); err != nil {
+					return err
+				}
+				return setPayloadTime(physical, fp.Pkg.Manifest.Build.Timestamp)
 			}
 			return nil
 		})
@@ -401,4 +410,64 @@ func checkComposeLayout(fp fetchedPackage, bypassPaths bool) error {
 			"compose did not enable bypass_path_restrictions: %w", fp.Locked.Name, err)
 	}
 	return fmt.Errorf("peipkg/compose: %s: %w", fp.Locked.Name, err)
+}
+
+// Verify enforces one canonical mtime for every archive member: build.timestamp.
+// Preserve it when composing instead of giving unchanged headers and build tools
+// a fresh extraction time in each disposable dependency root. Never follow the
+// final symlink while setting metadata (absolute links belong to the image).
+func setPayloadTime(path string, timestamp time.Time) error {
+	stamp := unix.Timespec{Sec: timestamp.Unix(), Nsec: int64(timestamp.Nanosecond())}
+	times := []unix.Timespec{stamp, stamp}
+	if err := unix.UtimesNanoAt(unix.AT_FDCWD, path, times, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("peipkg/compose: preserving payload time for %s: %w", path, err)
+	}
+	// Some filesystems silently clamp timestamps outside their range.
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.ModTime().Equal(timestamp) {
+		return fmt.Errorf("peipkg/compose: filesystem cannot preserve payload timestamp %s for %s (stored %s)", timestamp, path, info.ModTime())
+	}
+	return nil
+}
+
+// Children, claim links and generated image metadata all change parent mtimes.
+// Restore declared directories after every writer, deepest first. A directory
+// shared by packages has no single archive timestamp: use the newest owner's
+// authenticated time, independent of package order or parallel extraction.
+func restorePayloadDirectoryTimes(out string, fetched []fetchedPackage) error {
+	times := map[string]time.Time{}
+	for _, fp := range fetched {
+		for _, entry := range fp.Pkg.Payload {
+			if entry.Type != archive.EntryDir {
+				continue
+			}
+			path := filepath.Join(out, fp.Locked.Root, entry.Path)
+			if old, ok := times[path]; !ok || old.Before(fp.Pkg.Manifest.Build.Timestamp) {
+				times[path] = fp.Pkg.Manifest.Build.Timestamp
+			}
+		}
+	}
+	paths := make([]string, 0, len(times))
+	for path := range times {
+		paths = append(paths, path)
+	}
+	sort.Slice(paths, func(i, j int) bool {
+		return len(paths[i]) > len(paths[j]) || len(paths[i]) == len(paths[j]) && paths[i] < paths[j]
+	})
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("peipkg/compose: payload directory replaced: %s", path)
+		}
+		if err = setPayloadTime(path, times[path]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
