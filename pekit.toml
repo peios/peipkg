@@ -39,12 +39,6 @@ rm -rf "$GOCACHE" "$GOMODCACHE"
 "org.mozilla.ca-certificates" = "*"
 "dev.peios.build-essentials"  = ">= 1.0.0-1"
 
-[build.vendor.dependencies.apt]
-golang-go       = ">= 2:1.26~"
-ca-certificates = "*"
-dash            = "*"
-coreutils       = "*"
-
 [build.main]
 needs = ["vendor"]
 command = '''
@@ -171,17 +165,6 @@ fi
 "org.gnu.gzip"               = "*"
 "org.python.python3"         = "*"
 
-[build.main.dependencies.apt]
-golang-go = ">= 2:1.26~"
-dash      = "*"
-coreutils = "*"
-findutils = "*"
-grep      = "*"
-sed       = "*"
-binutils  = "*"
-gzip      = "*"
-python3   = "*"
-
 [test]
 gate = true
 needs = ["main", "vendor"]
@@ -253,14 +236,3 @@ done
 "org.gnu.binutils"           = "*"
 "org.gnu.gzip"               = "*"
 "org.python.python3"         = "*"
-
-[test.dependencies.apt]
-golang-go = ">= 2:1.26~"
-dash      = "*"
-coreutils = "*"
-findutils = "*"
-grep      = "*"
-sed       = "*"
-binutils  = "*"
-gzip      = "*"
-python3   = "*"
