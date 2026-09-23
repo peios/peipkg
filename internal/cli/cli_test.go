@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,6 +142,35 @@ func TestInfoAndFilesAndOwns(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "nginx") {
 		t.Errorf("owns output missing the owner:\n%s", out.String())
+	}
+}
+
+func TestInfoJSON(t *testing.T) {
+	app, out := testApp(t)
+	withDB(t, app, func(store *db.DB) {
+		if err := store.InsertPackage(context.Background(), db.Package{
+			Name: "nginx", Version: "1.26.2-3", Architecture: "x86_64",
+			OriginRepo: "official", InstalledAt: time.Unix(1_700_000_000, 0), Manifest: "{}",
+		}); err != nil {
+			t.Fatalf("InsertPackage: %v", err)
+		}
+	})
+	if err := cmdInfo(app, []string{"--json", "nginx"}); err != nil {
+		t.Fatalf("cmdInfo --json: %v", err)
+	}
+	var got struct {
+		Name, Version, Origin string
+		Orphaned              bool   `json:"orphaned"`
+		InstalledAt           string `json:"installed_at"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("--json output does not decode: %v\n%s", err, out.String())
+	}
+	// "official" is not a configured repository in the test app, so the
+	// package reads as orphaned — the same judgement list --json makes.
+	if got.Name != "nginx" || got.Version != "1.26.2-3" || got.Origin != "official" ||
+		!got.Orphaned || got.InstalledAt == "" {
+		t.Errorf("unexpected info --json: %+v", got)
 	}
 }
 

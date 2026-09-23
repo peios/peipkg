@@ -135,6 +135,7 @@ func (app *App) orphanedPackages(ctx context.Context) (map[string]bool, error) {
 // cmdInfo prints the details of one installed package.
 func cmdInfo(app *App, args []string) error {
 	fs := flags("info")
+	asJSON := fs.Bool("json", false, "emit JSON")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -157,6 +158,39 @@ func cmdInfo(app *App, args []string) error {
 	}
 	if !found {
 		return fmt.Errorf("info: %q is not installed", name)
+	}
+	if *asJSON {
+		orphaned, err := app.orphanedPackages(ctx)
+		if err != nil {
+			return err
+		}
+		// Same field naming as list --json, so a consumer reads one shape.
+		view := struct {
+			Name, Version, Architecture, Origin string
+			Orphaned                            bool   `json:"orphaned"`
+			InstalledAt                         string `json:"installed_at"`
+			Description                         string `json:"description,omitempty"`
+			License                             string `json:"license,omitempty"`
+			LicenseClass                        string `json:"license_class,omitempty"`
+			Homepage                            string `json:"homepage,omitempty"`
+			AlternateUpgrade                    string `json:"alternate_upgrade,omitempty"`
+		}{
+			Name: pkg.Name, Version: pkg.Version, Architecture: pkg.Architecture,
+			Origin: pkg.OriginRepo, Orphaned: orphaned[pkg.Name],
+			InstalledAt: pkg.InstalledAt.Format(time.RFC3339),
+		}
+		if m, err := manifest.Decode([]byte(pkg.Manifest)); err == nil {
+			view.Description = m.Description
+			view.License = m.License
+			if m.LicenseClass != manifest.LicenseClassUnknown {
+				view.LicenseClass = string(m.LicenseClass)
+			}
+			view.Homepage = m.Homepage
+			if m.AlternateUpgrade != nil {
+				view.AlternateUpgrade = m.AlternateUpgrade.Message
+			}
+		}
+		return app.emitJSON(view)
 	}
 	app.printf("name:         %s\n", pkg.Name)
 	app.printf("version:      %s\n", pkg.Version)
