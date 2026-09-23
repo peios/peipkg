@@ -36,12 +36,20 @@ type PublishOptions struct {
 	// Rebuild discards the existing archive and reconstructs it from
 	// package files on disk.
 	Rebuild bool
+	// Replace lets a package overwrite an archived entry of the same
+	// name, version and architecture instead of being refused. It breaks
+	// the §6.3.1 retention promise for that version, so it is only for
+	// repositories nobody consumes yet: a distribution bootstrap that
+	// rebuilds its Debian-built seed natively at the same versions.
+	Replace bool
 }
 
 // Result reports what a publish did.
 type Result struct {
 	IndexVersion int64
 	Added        []repository.IndexEntry
+	// Replaced holds the archived entries that Replace overwrote.
+	Replaced     []repository.IndexEntry
 	ActiveCount  int
 	ArchiveCount int
 }
@@ -132,9 +140,12 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 	added := make([]repository.IndexEntry, 0, len(paths))
 	staged := make([]stagedPackage, 0, len(paths))
 	seen := make(map[string]string, len(existing)+len(paths))
+	archived := make(map[string]repository.IndexEntry, len(existing))
 	for _, entry := range existing {
 		seen[identityOf(entry)] = "the archive index"
+		archived[identityOf(entry)] = entry
 	}
+	var replaced []repository.IndexEntry
 
 	for _, p := range paths {
 		pkg, err := ingest(p, template, keys, opts.AllowUnsigned)
@@ -150,6 +161,13 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 		// that promise invisibly — the index would still list the
 		// version while the bytes behind it had changed — so a repeat
 		// is refused rather than resolved.
+		if old, ok := archived[id]; ok && opts.Replace && seen[id] == "the archive index" {
+			// An explicit replacement: the archived entry gives way to this
+			// package. A second package with the same identity in the same
+			// publish is still a duplicate below.
+			replaced = append(replaced, old)
+			delete(seen, id)
+		}
 		if where, dup := seen[id]; dup {
 			return Result{}, fmt.Errorf(
 				"peipkg/repopub: %s is already published (in %s); "+
@@ -161,6 +179,19 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 		staged = append(staged, pkg.staged)
 	}
 
+	if len(replaced) > 0 {
+		gone := make(map[string]bool, len(replaced))
+		for _, e := range replaced {
+			gone[identityOf(e)] = true
+		}
+		kept := make([]repository.IndexEntry, 0, len(existing))
+		for _, e := range existing {
+			if !gone[identityOf(e)] {
+				kept = append(kept, e)
+			}
+		}
+		existing = kept
+	}
 	archiveEntries := append(append([]repository.IndexEntry{}, existing...), added...)
 	activeEntries, err := deriveActive(archiveEntries)
 	if err != nil {
@@ -226,6 +257,7 @@ func Publish(dir string, opts PublishOptions) (Result, error) {
 	return Result{
 		IndexVersion: next,
 		Added:        added,
+		Replaced:     replaced,
 		ActiveCount:  len(activeEntries),
 		ArchiveCount: len(archiveEntries),
 	}, nil

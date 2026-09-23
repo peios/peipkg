@@ -242,6 +242,41 @@ func TestPublishRefusesARepublish(t *testing.T) {
 	}
 }
 
+// TestPublishReplaceOverwritesAnArchivedVersion covers the explicit
+// bootstrap hatch: with Replace, a rebuilt package takes the place of the
+// archived entry with the same identity instead of being refused, and the
+// archive keeps exactly one entry for it.
+func TestPublishReplaceOverwritesAnArchivedVersion(t *testing.T) {
+	dir, key := newRepo(t)
+	first := writePackage(t, t.TempDir(), key, pkgSpec{name: "pkg", version: "1.0-1"})
+	publish(t, dir, key, at.Add(time.Hour), first)
+	second := writePackage(t, t.TempDir(), key, pkgSpec{name: "pkg", version: "1.0-1", unsigned: true})
+
+	res, err := repopub.Publish(dir, repopub.PublishOptions{
+		Key: key, Paths: []string{second}, GeneratedAt: at.Add(2 * time.Hour),
+		AllowUnsigned: true, Replace: true})
+	if err != nil {
+		t.Fatalf("replace refused: %v", err)
+	}
+	if len(res.Replaced) != 1 || len(res.Added) != 1 {
+		t.Fatalf("replaced %d, added %d; want 1 and 1", len(res.Replaced), len(res.Added))
+	}
+	if res.Replaced[0].Hash == res.Added[0].Hash {
+		t.Fatal("fixture packages are identical; the test proves nothing")
+	}
+	if res.ArchiveCount != 1 {
+		t.Fatalf("archive holds %d entries, want the replacement only", res.ArchiveCount)
+	}
+
+	// Two packages with one identity in the same call stay a duplicate.
+	third := writePackage(t, t.TempDir(), key, pkgSpec{name: "pkg", version: "1.0-1"})
+	if _, err := repopub.Publish(dir, repopub.PublishOptions{
+		Key: key, Paths: []string{first, third}, GeneratedAt: at.Add(3 * time.Hour),
+		Replace: true}); err == nil || !strings.Contains(err.Error(), "already published") {
+		t.Fatalf("duplicate identities in one replace publish = %v, want refusal", err)
+	}
+}
+
 // TestPublishRefusesTheSameVersionTwiceInOneCall covers the same rule
 // within a single invocation, where there is no previous state to
 // compare against — the case a naive implementation misses.

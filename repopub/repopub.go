@@ -62,12 +62,19 @@ type PublishOptions struct {
 	AllowUnsigned bool
 	// Qualification binds the checked artifacts and base repository state.
 	Qualification *Qualification
+	// Replace overwrites archived packages of the same name, version and
+	// architecture instead of refusing them. It breaks the retention
+	// promise for those versions; use it only on a repository nobody
+	// consumes yet, such as one being bootstrapped.
+	Replace bool
 }
 
 // PublishResult reports what a publish did.
 type PublishResult struct {
 	IndexVersion int64
 	Added        int
+	// Replaced names each overwritten entry as "name version arch sha256".
+	Replaced     []string
 	ActiveCount  int
 	ArchiveCount int
 }
@@ -83,13 +90,19 @@ func Publish(dir string, opts PublishOptions) (PublishResult, error) {
 		URLTemplate:   opts.URLTemplate,
 		AllowUnsigned: opts.AllowUnsigned,
 		Qualification: opts.Qualification,
+		Replace:       opts.Replace,
 	})
 	if err != nil {
 		return PublishResult{}, err
 	}
+	var replaced []string
+	for _, e := range res.Replaced {
+		replaced = append(replaced, e.Name+" "+e.Version.String()+" "+e.Architecture+" "+e.Hash)
+	}
 	return PublishResult{
 		IndexVersion: res.IndexVersion,
 		Added:        len(res.Added),
+		Replaced:     replaced,
 		ActiveCount:  res.ActiveCount,
 		ArchiveCount: res.ArchiveCount,
 	}, nil

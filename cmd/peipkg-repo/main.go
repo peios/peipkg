@@ -144,6 +144,9 @@ func cmdPublish(args []string) error {
 		"publish packages that carry no signature")
 	rebuild := fs.Bool("rebuild", false,
 		"discard the recorded archive and rebuild it from package files on disk")
+	replace := fs.Bool("replace", false,
+		"overwrite already-published packages of the same name, version and architecture "+
+			"(breaks retention; only for a repository nobody consumes yet)")
 	dir, rest, err := parseWithDirAndRest(fs, args, "publish")
 	if err != nil {
 		return err
@@ -166,9 +169,13 @@ func cmdPublish(args []string) error {
 		URLTemplate:   *template,
 		AllowUnsigned: *allowUnsigned,
 		Rebuild:       *rebuild,
+		Replace:       *replace,
 	})
 	if err != nil {
 		return err
+	}
+	for _, e := range result.Replaced {
+		fmt.Printf("replaced %s %s (%s), was sha256 %s\n", e.Name, e.Version, e.Architecture, e.Hash)
 	}
 	for _, e := range result.Added {
 		fmt.Printf("published %s %s (%s)\n", e.Name, e.Version, e.Architecture)
