@@ -4,7 +4,7 @@
 # release family, while each executable and its symbols can be installed
 # independently.
 #
-# Build with the workspace's peipkg-net environment. Only build.vendor crosses
+# Build with the workspace's default environment. Only build.vendor crosses
 # the network boundary to materialize the checksum-locked Go module graph; the
 # main build and tests use the native org.golang.go toolchain with GOPROXY and
 # the checksum database disabled.
