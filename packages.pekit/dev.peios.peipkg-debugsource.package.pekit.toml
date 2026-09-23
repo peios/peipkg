@@ -1,4 +1,5 @@
 [package]
+architecture = "noarch"
 name         = "dev.peios.peipkg-debugsource"
 description  = "Debug sources for the Peios package-management tools"
 

@@ -3,7 +3,7 @@ name        = "dev.peios.peipkg-debuginfo"
 description = "Debugging symbols for the Peios package manager"
 
 [dependencies]
-"dev.peios.peipkg" = "= {{version}}-1"
+"dev.peios.peipkg" = "= {{release}}"
 
 [files]
 "@source:LICENSE"                 = "usr/share/licenses/dev.peios.peipkg-debuginfo/LICENSE"

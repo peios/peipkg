@@ -85,7 +85,7 @@ build_program() {
   destination=$2
   ldflags='-B gobuildid -bindnow'
   if [ "$name" = peipkg ]; then
-    ldflags="$ldflags -X github.com/peios/peipkg/internal/cli.peipkgVersion=$PEKIT_VERSION-1"
+    ldflags="$ldflags -X github.com/peios/peipkg/internal/cli.peipkgVersion=$PEKIT_VERSION"
   fi
   go build -buildmode=pie -ldflags="$ldflags" -o "$destination" "./cmd/$name"
 }
@@ -94,7 +94,7 @@ for name in peipkg peipkg-compose peipkg-repo; do
   build_program "$name" "$PEKIT_OUT/usr/bin/$name"
   test -x "$PEKIT_OUT/usr/bin/$name"
 done
-grep -aF "$PEKIT_VERSION-1" "$PEKIT_OUT/usr/bin/peipkg" >/dev/null
+grep -aF "$PEKIT_VERSION" "$PEKIT_OUT/usr/bin/peipkg" >/dev/null
 
 # Ship one concise manual for every public executable. gzip -n omits the
 # timestamp and original path so these payloads remain reproducible.
@@ -207,12 +207,24 @@ for name in peipkg peipkg-compose peipkg-repo; do
   readelf -h "$elf" 2>/dev/null | grep -Eq 'Type:[[:space:]]+DYN'
   readelf -lW "$elf" 2>/dev/null | grep -q 'GNU_RELRO'
   readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]'
-  ! readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RWE'
+  if readelf -lW "$elf" 2>/dev/null | grep -Eq 'GNU_STACK[[:space:]].*RWE'; then
+    echo "peipkg: $name has an executable stack" >&2
+    exit 1
+  fi
   readelf -dW "$elf" 2>/dev/null | grep -q 'BIND_NOW'
   readelf -dW "$elf" 2>/dev/null | grep -Eq 'FLAGS_1.*PIE'
-  ! readelf -dW "$elf" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH)'
-  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.debug_info'
-  ! readelf -SW "$elf" 2>/dev/null | grep -q '\.symtab'
+  if readelf -dW "$elf" 2>/dev/null | grep -Eq '(NEEDED|RPATH|RUNPATH)'; then
+    echo "peipkg: $name has a forbidden dynamic tag or shared-library dependency" >&2
+    exit 1
+  fi
+  if readelf -SW "$elf" 2>/dev/null | grep -q '\.debug_info'; then
+    echo "peipkg: $name still contains unsplit debug information" >&2
+    exit 1
+  fi
+  if readelf -SW "$elf" 2>/dev/null | grep -q '\.symtab'; then
+    echo "peipkg: $name still contains a symbol table" >&2
+    exit 1
+  fi
 
   build_id=$(readelf -n "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)
   component=$name
@@ -224,7 +236,10 @@ for name in peipkg peipkg-compose peipkg-repo; do
   test "$(readelf -n "$debug" 2>/dev/null | sed -n 's/^[[:space:]]*Build ID: //p' | head -1)" = "$build_id"
   go version -m "$elf" | grep -F 'github.com/peios/peipkg'
   for forbidden in "$SRC" "$BUILD" "$PEKIT_OUT_BASE" "$PEKIT_WORKSPACE_ROOT"; do
-    ! grep -aF "$forbidden" "$elf" "$debug" >/dev/null
+    if grep -aqF "$forbidden" "$elf" "$debug"; then
+      echo "peipkg: $name leaks a build path: $forbidden" >&2
+      exit 1
+    fi
   done
 done
 
