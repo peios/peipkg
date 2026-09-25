@@ -124,6 +124,15 @@ func Resolve(ctx context.Context, m Manifest, manifestName string,
 // not absorbed.
 func ResolveWithSources(ctx context.Context, m Manifest, manifestName string,
 	fetcher repository.Fetcher, warnings io.Writer, scan *SourceScan) (Lock, error) {
+	return resolve(ctx, m, manifestName, fetcher, warnings, scan, false)
+}
+
+// resolve is ResolveWithSources with the dependency mode. With
+// noDependencies every candidate's dependencies are dropped before
+// resolution, so the plan is exactly the requested packages (and anything a
+// request is satisfied by through provides), with no closure.
+func resolve(ctx context.Context, m Manifest, manifestName string,
+	fetcher repository.Fetcher, warnings io.Writer, scan *SourceScan, noDependencies bool) (Lock, error) {
 
 	if warnings == nil {
 		warnings = io.Discard
@@ -151,6 +160,14 @@ func ResolveWithSources(ctx context.Context, m Manifest, manifestName string,
 	candidates, err := applyManifestPins(scan.candidates, m.Packages)
 	if err != nil {
 		return Lock{}, err
+	}
+	if noDependencies {
+		stripped := make([]resolver.Candidate, len(candidates))
+		for i, c := range candidates {
+			c.Dependencies = nil
+			stripped[i] = c
+		}
+		candidates = stripped
 	}
 
 	// Each [[package]] is evaluated like its own `peipkg install` (with an
@@ -187,6 +204,7 @@ func ResolveWithSources(ctx context.Context, m Manifest, manifestName string,
 	lock := Lock{
 		Arch: m.Arch, SourceDate: m.SourceDate,
 		Manifest: manifestName, ManifestDigest: manifestDigest(m),
+		NoDependencies: noDependencies,
 	}
 	for _, op := range plan.Operations {
 		if op.Candidate == nil {

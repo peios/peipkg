@@ -57,13 +57,15 @@ func usage(w *os.File) {
   peipkg-compose lock  <manifest> [-o <lock>]
                      resolve the manifest and write the lock
   peipkg-compose build <manifest> --out <dir> [--locked] [--update]
-                     [--record-xattrs <file>]
+                     [--record-xattrs <file>] [--no-dependencies]
                      produce a populated root from a manifest
 
 flags for build:
   --locked               require an existing lock; do not resolve
   --update               re-resolve and overwrite any existing lock
-  --record-xattrs <file> record implied security xattrs as JSONL instead of setting them`)
+  --record-xattrs <file> record implied security xattrs as JSONL instead of setting them
+  --no-dependencies      install only the manifest's packages, not their dependencies;
+                         the root is not self-sufficient (a files-only overlay)`)
 }
 
 // recordedXattr is the CLI's portable representation of an attribute that
@@ -212,6 +214,8 @@ func cmdBuild(args []string) int {
 		"permit packages declaring special_system_package to compose outside the §3.4 layout")
 	recordXattrs := fs.String("record-xattrs", "",
 		"record implied security xattrs as JSONL instead of setting them")
+	noDeps := fs.Bool("no-dependencies", false,
+		"install only the manifest's packages, not their dependencies; the root is not self-sufficient")
 	manifest, err := parseOneManifest(fs, args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "peipkg-compose build:", err)
@@ -234,6 +238,7 @@ func cmdBuild(args []string) int {
 		Warnings:     os.Stderr,
 
 		BypassPathRestrictions: *bypassPaths,
+		NoDependencies:         *noDeps,
 		RecordXattr: func() func(string, string, []byte) error {
 			if recorder == nil {
 				return nil

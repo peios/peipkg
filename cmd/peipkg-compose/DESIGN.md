@@ -353,7 +353,7 @@ Two verbs.
 
 ```
 peipkg-compose lock  <manifest> [-o <lock>]
-peipkg-compose build <manifest> --out <dir> [--locked] [--update]
+peipkg-compose build <manifest> --out <dir> [--locked] [--update] [--no-dependencies]
 ```
 
 **`lock`** runs Stage 1 only: resolve the manifest, verify the trust
@@ -370,6 +370,15 @@ and builds — the Cargo `build`/`Cargo.lock` behaviour.
 - **`--locked`** requires the lock: build from it, never resolve, fail
   if it is missing or stale. This is the CI / orchestration mode.
 - **`--update`** ignores any existing lock, re-resolves, rewrites it.
+- **`--no-dependencies`** installs exactly the manifest's packages and
+  ignores their dependencies, so the root is **not** self-sufficient.
+  It exists for a caller that only lifts the named packages' own files
+  out of the composition: a Debian build root taking one catalogue tool,
+  whose runtime needs Debian meets, from a repository still being
+  bootstrapped and so missing that tool's dependencies. Trust and hash
+  verification are unchanged. The lock records `no_dependencies = true`,
+  and a build refuses a lock resolved in the other mode, so such a lock
+  never stands in for a complete closure.
 
 compose runs **unattended** — it has no interactive gate. peipkg's
 `proceed?` confirmation and its §7.6.6 elevated-authorisation prompts

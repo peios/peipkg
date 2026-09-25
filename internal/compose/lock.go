@@ -53,6 +53,10 @@ type Lock struct {
 	// extracted, which happens in the build phase. Recording it here is
 	// what lets the use of that trust survive into the build.
 	Sources []LockedSource
+	// NoDependencies records that the closure was resolved without
+	// dependencies (BuildOptions.NoDependencies): Packages is only what the
+	// manifest named, not a complete root.
+	NoDependencies bool
 }
 
 // LockedSource is one repository the closure draws packages from, with
@@ -109,6 +113,7 @@ type wireLock struct {
 	SourceDate     *string             `toml:"source_date"`
 	Manifest       string              `toml:"manifest,omitempty"`
 	ManifestDigest *string             `toml:"manifest_digest,omitempty"`
+	NoDependencies bool                `toml:"no_dependencies,omitempty"`
 	Sources        []wireLockedSource  `toml:"source"`
 	Packages       []wireLockedPackage `toml:"package"`
 }
@@ -186,6 +191,7 @@ func DecodeLock(data []byte) (Lock, error) {
 	l := Lock{
 		Arch: *w.Arch, SourceDate: sourceDate,
 		Manifest: w.Manifest, ManifestDigest: *w.ManifestDigest,
+		NoDependencies: w.NoDependencies,
 	}
 	if err := validateHash(l.ManifestDigest); err != nil {
 		return Lock{}, fmt.Errorf("peipkg/compose: lock manifest_digest: %w", err)
@@ -320,6 +326,7 @@ func (l Lock) Encode() ([]byte, error) {
 		SourceDate:     ptr(l.SourceDate.UTC().Format(time.RFC3339)),
 		Manifest:       l.Manifest,
 		ManifestDigest: ptr(l.ManifestDigest),
+		NoDependencies: l.NoDependencies,
 	}
 	for _, src := range srcs {
 		w.Sources = append(w.Sources, wireLockedSource{

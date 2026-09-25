@@ -90,6 +90,15 @@ type BuildOptions struct {
 	// unprivileged image builder records them and has the image writer
 	// carry them, which needs no privilege.
 	RecordXattr func(relPath, name string, value []byte) error
+	// NoDependencies installs exactly the manifest's packages and ignores
+	// their dependencies, so the result is not a self-sufficient root. It
+	// is for a caller that takes only the named packages' own files out of
+	// the composition, such as a build-root overlay whose runtime needs are
+	// met elsewhere, and can then draw on a repository that does not yet
+	// hold those packages' dependencies. Signature and hash verification
+	// are unchanged. The lock records the mode, and a lock resolved in the
+	// other mode is refused.
+	NoDependencies bool
 }
 
 // Build produces a populated peipkg root from a manifest. It runs the
@@ -192,6 +201,9 @@ func chooseLock(ctx context.Context, m Manifest, manifestBase, lockPath string,
 		if err := ensureLockMatches(lock, m); err != nil {
 			return Lock{}, err
 		}
+		if err := ensureLockMode(lock, opts.NoDependencies); err != nil {
+			return Lock{}, err
+		}
 		return lock, nil
 	case opts.Update:
 		return resolveAndWrite(ctx, m, manifestBase, lockPath, opts)
@@ -208,14 +220,32 @@ func chooseLock(ctx context.Context, m Manifest, manifestBase, lockPath string,
 	if err := ensureLockMatches(lock, m); err != nil {
 		return Lock{}, fmt.Errorf("%w (re-run with --update to refresh the lock)", err)
 	}
+	if err := ensureLockMode(lock, opts.NoDependencies); err != nil {
+		return Lock{}, fmt.Errorf("%w (re-run with --update to refresh the lock)", err)
+	}
 	return lock, nil
+}
+
+// ensureLockMode refuses a lock resolved with the other dependency mode: a
+// lock without dependencies must never stand in for a whole closure, nor
+// the reverse.
+func ensureLockMode(lock Lock, noDependencies bool) error {
+	switch {
+	case lock.NoDependencies && !noDependencies:
+		return fmt.Errorf("peipkg/compose: the lock was resolved without dependencies " +
+			"(--no-dependencies) and does not describe a complete root")
+	case !lock.NoDependencies && noDependencies:
+		return fmt.Errorf("peipkg/compose: the lock was resolved with dependencies, " +
+			"but --no-dependencies was requested")
+	}
+	return nil
 }
 
 // resolveAndWrite runs the resolve stage and writes the lock.
 func resolveAndWrite(ctx context.Context, m Manifest, manifestBase, lockPath string,
 	opts BuildOptions) (Lock, error) {
 
-	lock, err := Resolve(ctx, m, manifestBase, opts.Fetcher, opts.Warnings)
+	lock, err := resolve(ctx, m, manifestBase, opts.Fetcher, opts.Warnings, nil, opts.NoDependencies)
 	if err != nil {
 		return Lock{}, err
 	}
