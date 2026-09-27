@@ -18,30 +18,62 @@ import (
 func (r *Root) SetDirectoryDescriptors(descriptors map[string][]byte, stamp func(string, []byte) error) {
 	r.directorySD = descriptors
 	r.stampSD = stamp
-	r.appliedSD = make(map[string]bool)
+	r.appliedSD = make(map[string]directoryIdentity)
 }
 
-func (r *Root) mkdirAt(parent int, name, rel string, perm os.FileMode) error {
+type directoryIdentity struct{ dev, ino uint64 }
+
+func identity(fd int) (directoryIdentity, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return directoryIdentity{}, err
+	}
+	return directoryIdentity{uint64(st.Dev), st.Ino}, nil
+}
+
+// Retain the native create handle: reopening the name could select a different
+// inode if a directory writable by someone else is renamed concurrently.
+func (r *Root) mkdirAt(parent int, name, rel string, perm os.FileMode) (int, error) {
 	descriptor := r.directorySD[rel]
 	if len(descriptor) > 0 {
 		f, _, err := files.OpenAt(parent, name, files.OpenOptions{
-			Access:      files.ListDirectory | files.Traverse,
+			Access:      files.ListDirectory | files.Traverse | files.ReadAttributes,
 			Disposition: files.DispCreate, Directory: true, SecurityDescriptor: descriptor,
 		})
 		if err == nil {
-			r.appliedSD[rel] = true
-			return f.Close()
+			fd, err := unix.FcntlInt(uintptr(f.FD()), unix.F_DUPFD_CLOEXEC, 0)
+			f.Close()
+			if err != nil {
+				return -1, err
+			}
+			id, err := identity(fd)
+			if err != nil {
+				unix.Close(fd)
+				return -1, err
+			}
+			r.appliedSD[rel] = id
+			return fd, nil
 		}
 		if !errors.Is(err, errno.ENOSYS) {
-			return err
+			return -1, err
 		}
 	}
-	return unix.Mkdirat(parent, name, uint32(perm.Perm()))
+	if err := unix.Mkdirat(parent, name, uint32(perm.Perm())); err != nil {
+		return -1, err
+	}
+	return openDirAt(parent, name)
 }
 
 func (r *Root) applyDirectorySD(fd int, rel string) error {
 	descriptor := r.directorySD[rel]
-	if len(descriptor) == 0 || r.appliedSD[rel] {
+	if len(descriptor) == 0 {
+		return nil
+	}
+	id, err := identity(fd)
+	if err != nil {
+		return err
+	}
+	if prior, ok := r.appliedSD[rel]; ok && prior == id {
 		return nil
 	}
 	info := sd.InfoOwner | sd.InfoGroup | sd.InfoDACL
@@ -50,12 +82,12 @@ func (r *Root) applyDirectorySD(fd int, rel string) error {
 	if len(descriptor) > 2 && descriptor[2]&0x10 != 0 {
 		info |= sd.InfoSACL
 	}
-	err := sd.SetSD(sd.FD(fd), info, descriptor)
+	err = sd.SetSD(sd.FD(fd), info, descriptor)
 	if errors.Is(err, errno.ENOSYS) {
 		err = r.stampSD(path.Join(r.path, rel), descriptor)
 	}
 	if err == nil {
-		r.appliedSD[rel] = true
+		r.appliedSD[rel] = id
 	}
 	return err
 }

@@ -46,7 +46,7 @@ import (
 // above all — ends the walk.
 type Root struct {
 	directorySD map[string][]byte
-	appliedSD   map[string]bool
+	appliedSD   map[string]directoryIdentity
 	stampSD     func(string, []byte) error
 	fd          int
 	path        string
@@ -118,13 +118,10 @@ func (r *Root) walk(rel string, create bool, perm os.FileMode) (*Dir, error) {
 		walked = path.Join(walked, comp)
 		next, err := openDirAt(cur, comp)
 		if create && errors.Is(err, unix.ENOENT) {
-			if mkErr := r.mkdirAt(cur, comp, walked, perm); mkErr != nil &&
-				!errors.Is(mkErr, unix.EEXIST) && !errors.Is(mkErr, errno.EEXIST) {
-				unix.Close(cur)
-				return nil, fmt.Errorf("peipkg/safepath: creating %s: %w",
-					path.Join(r.path, walked), mkErr)
+			next, err = r.mkdirAt(cur, comp, walked, perm)
+			if errors.Is(err, unix.EEXIST) || errors.Is(err, errno.EEXIST) {
+				next, err = openDirAt(cur, comp)
 			}
-			next, err = openDirAt(cur, comp)
 		}
 		unix.Close(cur)
 		if err != nil {
