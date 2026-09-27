@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"github.com/peios/peipkg/internal/archive"
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/resolver"
+	"github.com/peios/peipkg/internal/sdstamp"
 )
 
 // journalSchemaVersion is the journal format this build writes and can
@@ -415,6 +417,38 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 		return preparedTxn{}, err
 	}
 	p.pins = pins
+
+	// Check every producer before creating even a planning directory. A scope
+	// supplied by a later package must already govern earlier packages' children.
+	directorySD := map[string][]byte{}
+	for _, op := range plan.Operations {
+		if op.Kind == resolver.OpRemove {
+			continue
+		}
+		pp := provided[op.Name]
+		if err := checkPayloadLayout(env, pp); err != nil {
+			return p, err
+		}
+		if err := checkSDOverridePolicy(env, op, pp); err != nil {
+			return p, err
+		}
+		dirs := map[string]bool{}
+		for _, entry := range pp.Pkg.Payload {
+			if entry.Type == archive.EntryDir {
+				dirs[entry.Path] = true
+			}
+		}
+		for _, override := range pp.Pkg.Manifest.SDOverrides {
+			if !dirs[override.Path] {
+				continue
+			}
+			if prior, ok := directorySD[override.Path]; ok && !bytes.Equal(prior, override.SD) {
+				return p, fmt.Errorf("conflicting directory descriptors for %s", override.Path)
+			}
+			directorySD[override.Path] = override.SD
+		}
+	}
+	pins.root.SetDirectoryDescriptors(directorySD, sdstamp.Stamp)
 
 	// §7.1.2.2 step 2: verify disk space before staging, per target
 	// filesystem. Before the journal is opened, so a shortage costs

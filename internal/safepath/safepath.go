@@ -32,6 +32,7 @@ package safepath
 import (
 	"errors"
 	"fmt"
+	"github.com/peios/libp-go/errno"
 	"os"
 	"path"
 	"strings"
@@ -44,8 +45,11 @@ import (
 // descriptor, and a component that is not a real directory — a symlink
 // above all — ends the walk.
 type Root struct {
-	fd   int
-	path string
+	directorySD map[string][]byte
+	appliedSD   map[string]bool
+	stampSD     func(string, []byte) error
+	fd          int
+	path        string
 }
 
 // Dir is a directory beneath a [Root], pinned by an open descriptor.
@@ -114,8 +118,8 @@ func (r *Root) walk(rel string, create bool, perm os.FileMode) (*Dir, error) {
 		walked = path.Join(walked, comp)
 		next, err := openDirAt(cur, comp)
 		if create && errors.Is(err, unix.ENOENT) {
-			if mkErr := unix.Mkdirat(cur, comp, uint32(perm.Perm())); mkErr != nil &&
-				!errors.Is(mkErr, unix.EEXIST) {
+			if mkErr := r.mkdirAt(cur, comp, walked, perm); mkErr != nil &&
+				!errors.Is(mkErr, unix.EEXIST) && !errors.Is(mkErr, errno.EEXIST) {
 				unix.Close(cur)
 				return nil, fmt.Errorf("peipkg/safepath: creating %s: %w",
 					path.Join(r.path, walked), mkErr)
@@ -125,6 +129,12 @@ func (r *Root) walk(rel string, create bool, perm os.FileMode) (*Dir, error) {
 		unix.Close(cur)
 		if err != nil {
 			return nil, resolveError(path.Join(r.path, walked), err)
+		}
+		if create {
+			if err := r.applyDirectorySD(next, walked); err != nil {
+				unix.Close(next)
+				return nil, fmt.Errorf("directory descriptor %s: %w", walked, err)
+			}
 		}
 		cur = next
 	}

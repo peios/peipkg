@@ -108,11 +108,20 @@ func TestComposeRecordsSDOverrides(t *testing.T) {
 		value []byte
 	}
 	recorded := map[string]rec{}
+	root := filepath.Join(t.TempDir(), "root")
 	record := func(rel, name string, value []byte) error {
+		if name == sdstamp.XattrName {
+			st, err := os.Stat(filepath.Join(root, rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !st.IsDir() && st.Size() != 0 {
+				t.Fatal("descriptor recorded after payload bytes")
+			}
+		}
 		recorded[rel] = rec{name: name, value: value}
 		return nil
 	}
-	root := filepath.Join(t.TempDir(), "root")
 	if err := assemble(ctx, root, m, fetched, false, record); err != nil {
 		t.Fatalf("assemble: %v", err)
 	}

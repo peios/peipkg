@@ -229,3 +229,53 @@ func TestExecuteRollsBackWhenADescriptorIsRejected(t *testing.T) {
 		t.Error("the package database recorded the package after a failed install")
 	}
 }
+
+// The boundary must exist even if the package declaring it comes after a
+// package whose planning pass creates descendants. Files must still be empty
+// when the off-Peios stamp runs (native Peios uses a creator SD instead).
+func TestOverridesPrecedeChildrenAndContentAcrossPackages(t *testing.T) {
+	ctx := t.Context()
+	store, root, lock := freshEnv(t)
+	consumer := testPkg{name: "consumer", version: "1.0-1",
+		files:       map[string]string{"usr/share/private/nested/secret": "private bytes"},
+		sdOverrides: map[string]string{"usr/share/private/nested/secret": "file descriptor"},
+	}
+	scope := testPkg{name: "scope", version: "1.0-1", dirs: []string{"usr/share/private"},
+		sdOverrides: map[string]string{"usr/share/private": "directory descriptor"},
+	}
+	directoryStamped := false
+	original := sdstamp.Stamp
+	sdstamp.Stamp = func(p string, raw []byte) error {
+		switch string(raw) {
+		case "directory descriptor":
+			children, err := os.ReadDir(p)
+			if err != nil || len(children) != 0 {
+				t.Fatalf("scope established after children: %v %v", children, err)
+			}
+			directoryStamped = true
+		case "file descriptor":
+			if !directoryStamped {
+				t.Fatal("file created before parent scope")
+			}
+			st, err := os.Stat(p)
+			if err != nil || st.Size() != 0 {
+				t.Fatalf("content written before protection: %v %v", st, err)
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { sdstamp.Stamp = original })
+	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+		Provider: fakeProvider{"consumer": provide(t, consumer), "scope": provide(t, scope)}, SDOverridePolicy: allowAll}
+	plan := resolver.Plan{Operations: []resolver.Operation{installOp(t, "consumer", "1.0-1"), installOp(t, "scope", "1.0-1")}}
+	if _, err := install.Execute(ctx, plan, env); err != nil {
+		t.Fatal(err)
+	}
+	if !directoryStamped {
+		t.Fatal("missing directory boundary")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "usr/share/private/nested/secret"))
+	if err != nil || string(data) != "private bytes" {
+		t.Fatalf("payload missing: %q %v", data, err)
+	}
+}

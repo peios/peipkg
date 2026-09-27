@@ -404,13 +404,12 @@ func preparePackage(ctx context.Context, env Env, pins *pinnedDirs, txnID int64,
 func materializePackage(pins *pinnedDirs, s stagedOp, pp ProvidedPackage) error {
 	var sidecars pipsig.Sidecars
 	written := map[string]string{} // regular files written, archive path -> staged path
-	dirs := map[string]string{}    // directories created, archive path -> final path
+	overrides := sdstamp.New(pp.Pkg.Manifest.SDOverrides)
 	root := pins.root.Path()
 	err := archive.Extract(pp.Archive, func(entry archive.PayloadEntry, content io.Reader) error {
 		physical := filepath.Join(root, entry.Path)
 		switch entry.Type {
 		case archive.EntryDir:
-			dirs[entry.Path] = physical
 			// Resolving the whole path with MkdirAll pins it too, so a
 			// directory entry cannot be the thing that plants an ancestor
 			// for a later entry to be redirected through.
@@ -438,7 +437,7 @@ func materializePackage(pins *pinnedDirs, s stagedOp, pp ProvidedPackage) error 
 			if err != nil {
 				return err
 			}
-			if err := writeStagedFile(dir, filepath.Base(staged), content); err != nil {
+			if err := writeStagedFile(dir, filepath.Base(staged), content, overrides.Descriptor(entry.Path)); err != nil {
 				return err
 			}
 			written[entry.Path] = staged
@@ -470,29 +469,7 @@ func materializePackage(pins *pinnedDirs, s stagedOp, pp ProvidedPackage) error 
 	}); err != nil {
 		return fmt.Errorf("peipkg/install: staging %s: %w", s.op.Name, err)
 	}
-	// §3.3.5 overrides, last: a descriptor may deny this process the
-	// access it needed to write the payload, so nothing may still be
-	// waiting to be written when one is applied. Signatures in
-	// particular are stamped above, because setting a descriptor that
-	// withholds WRITE_DAC from the installer would strand them.
-	//
-	// A regular file is stamped on its staged inode, before the commit
-	// rename carries it to its final path — the same reasoning as the
-	// signature stamp, and it makes the entry become visible already
-	// carrying its descriptor rather than briefly wearing an inherited
-	// one. A directory has no staged sibling: it is created at its final
-	// path, so it is stamped there, after the extract loop has put every
-	// child inside it.
-	if err := sdstamp.New(pp.Pkg.Manifest.SDOverrides).Apply(
-		func(path string) (string, bool) {
-			if staged, ok := written[path]; ok {
-				return staged, true
-			}
-			dir, ok := dirs[path]
-			return dir, ok
-		}); err != nil {
-		return fmt.Errorf("peipkg/install: staging %s: %w", s.op.Name, err)
-	}
+
 	return nil
 }
 
@@ -655,8 +632,12 @@ func otherOwners(owners []db.PackageFile, pkg string) []string {
 // made executable — mirroring the same interim in compose's assemble.go.
 // The correct rule (executable-in => 0o755, else 0o644, recorded in
 // files.json) is deferred.
-func writeStagedFile(dir *safepath.Dir, name string, content io.Reader) error {
-	f, err := dir.Create(name, 0o755)
+func writeStagedFile(dir *safepath.Dir, name string, content io.Reader, descriptor ...[]byte) error {
+	var raw []byte
+	if len(descriptor) > 0 {
+		raw = descriptor[0]
+	}
+	f, err := dir.CreateWithSD(name, 0o755, raw, sdstamp.Stamp)
 	if err != nil {
 		return err
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/layout"
 	"github.com/peios/peipkg/internal/pipsig"
+	"github.com/peios/peipkg/internal/safepath"
 	"github.com/peios/peipkg/internal/sdstamp"
 )
 
@@ -137,6 +138,10 @@ func assembleRoot(ctx context.Context, rootDir string, m Manifest,
 	if err := seedDatabase(ctx, rootDir, m, fetched, holders, links, register); err != nil {
 		return err
 	}
+	// Establish every parent scope before parallel extraction can create children.
+	if err := preparePayloadDirectories(rootDir, fetched, stampSD); err != nil {
+		return err
+	}
 	// Payloads are extracted only after the database has accepted the
 	// closure, so a cross-package path collision is caught by the
 	// package_file UNIQUE constraint before any file is written — which
@@ -144,7 +149,7 @@ func assembleRoot(ctx context.Context, rootDir string, m Manifest,
 	// writes disjoint paths, and concurrent MkdirAll of shared parents
 	// is idempotent. The stamps are serialised by the caller's mutex.
 	if _, err := parallelMap(len(fetched), 0, func(i int) (struct{}, error) {
-		return struct{}{}, extractPayload(rootDir, fetched[i], stamp, stampSD)
+		return struct{}{}, extractPreparedPayload(rootDir, fetched[i], stamp, stampSD)
 	}); err != nil {
 		return err
 	}
@@ -247,18 +252,73 @@ func packageFilesOf(fp fetchedPackage) []db.PackageFile {
 // packages — while file and symlink entries land at their final paths
 // with O_EXCL, so a cross-package collision the database missed would
 // surface here too.
+func preparePayloadDirectories(root string, packages []fetchedPackage, stampSD func(string, []byte) error) error {
+	r, err := safepath.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	descriptors := map[string][]byte{}
+	for _, fp := range packages {
+		overrides := sdstamp.New(fp.Pkg.Manifest.SDOverrides)
+		for _, entry := range fp.Pkg.Payload {
+			if entry.Type != archive.EntryDir {
+				continue
+			}
+			raw := overrides.Descriptor(entry.Path)
+			if len(raw) == 0 {
+				continue
+			}
+			if prior, ok := descriptors[entry.Path]; ok && !bytes.Equal(prior, raw) {
+				return fmt.Errorf("conflicting directory descriptors for %s", entry.Path)
+			}
+			descriptors[entry.Path] = raw
+		}
+	}
+	r.SetDirectoryDescriptors(descriptors, stampSD)
+	for _, fp := range packages {
+		for _, entry := range fp.Pkg.Payload {
+			rel := entry.Path
+			if entry.Type != archive.EntryDir {
+				rel = filepath.Dir(rel)
+			}
+			d, err := r.MkdirAll(rel, 0o755)
+			if err != nil {
+				return err
+			}
+			d.Close()
+		}
+	}
+	return nil
+}
+
 func extractPayload(root string, fp fetchedPackage,
+	stamp, stampSD func(path string, value []byte) error) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	if err := preparePayloadDirectories(root, []fetchedPackage{fp}, stampSD); err != nil {
+		return err
+	}
+	return extractPreparedPayload(root, fp, stamp, stampSD)
+}
+
+func extractPreparedPayload(root string, fp fetchedPackage,
 	stamp, stampSD func(path string, value []byte) error) error {
 	var sidecars pipsig.Sidecars
 	written := map[string]string{} // regular files written, archive path -> physical path
-	dirs := map[string]string{}    // directories created, archive path -> physical path
-	err := archive.Extract(bytes.NewReader(fp.Raw),
+	overrides := sdstamp.New(fp.Pkg.Manifest.SDOverrides)
+	r, err := safepath.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	err = archive.Extract(bytes.NewReader(fp.Raw),
 		func(entry archive.PayloadEntry, content io.Reader) error {
 			physical := filepath.Join(root, entry.Path)
 			switch entry.Type {
 			case archive.EntryDir:
-				dirs[entry.Path] = physical
-				return os.MkdirAll(physical, 0o755)
+				return nil
 			case archive.EntryFile:
 				if pipsig.IsSidecar(entry.Path) {
 					// Becomes the target's security.peios.sig attribute
@@ -268,7 +328,12 @@ func extractPayload(root string, fp fetchedPackage,
 				if err := os.MkdirAll(filepath.Dir(physical), 0o755); err != nil {
 					return err
 				}
-				if err := writeFile(physical, content); err != nil {
+				dir, err := r.Dir(filepath.Dir(entry.Path))
+				if err != nil {
+					return err
+				}
+				defer dir.Close()
+				if err := writeProtectedFile(dir, filepath.Base(entry.Path), content, overrides.Descriptor(entry.Path), stampSD); err != nil {
 					return err
 				}
 				written[entry.Path] = physical
@@ -293,32 +358,21 @@ func extractPayload(root string, fp fetchedPackage,
 	}, stamp); err != nil {
 		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
 	}
-	// §3.3.5 overrides. compose extracts to final paths, so a file and a
-	// directory are both stamped where they already are — but only once
-	// the whole payload is on disk, because a directory descriptor that
-	// withheld access from the composer would strand whatever was still
-	// to be written beneath it.
-	//
-	// compose applies these unconditionally, where `peipkg install`
-	// gates them on a per-repository policy (§5.20). Composing a root
-	// from nothing is the operator's own act: they wrote the manifest
-	// that names the packages, and there is no running system whose
-	// access control could be subverted behind their back. It is the
-	// same reasoning that lets an image builder pass
-	// BypassPathRestrictions. §5.20's policy governs installing onto a
-	// live system, which is a different question with a different
-	// person answering it.
-	if err := sdstamp.New(fp.Pkg.Manifest.SDOverrides).ApplyWith(
-		func(path string) (string, bool) {
-			if physical, ok := written[path]; ok {
-				return physical, true
-			}
-			dir, ok := dirs[path]
-			return dir, ok
-		}, stampSD); err != nil {
-		return fmt.Errorf("peipkg/compose: extracting %s: %w", fp.Locked.Name, err)
-	}
+
 	return nil
+}
+
+func writeProtectedFile(dir *safepath.Dir, name string, content io.Reader, descriptor []byte, stampSD func(string, []byte) error) error {
+	f, err := dir.CreateWithSD(name, 0o755, descriptor, stampSD)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(f, content)
+	closeErr := f.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 // writeFile creates a new file at path with O_EXCL — a cross-package

@@ -77,6 +77,9 @@ func New(list []manifest.SDOverride) Overrides {
 	return Overrides{byPath: byPath}
 }
 
+// Descriptor returns the explicit creator descriptor, or nil for inheritance.
+func (o Overrides) Descriptor(path string) []byte { return o.byPath[path] }
+
 // Len is the number of overrides held.
 func (o Overrides) Len() int { return len(o.byPath) }
 
@@ -109,10 +112,9 @@ func (o Overrides) Apply(locate func(path string) (string, bool)) error {
 // leaving an entry with an inherited descriptor is precisely the
 // failure §5.20 forbids.
 //
-// The caller is responsible for ordering: on a consumer that
-// materialises a directory before the entries beneath it, ApplyWith
-// must run after the whole payload is on disk, or a restrictive
-// directory descriptor will deny the consumer its own remaining writes.
+// ApplyWith is for metadata replay on an unpublished image. Live creation
+// must supply creator descriptors and establish parent scopes before children;
+// stamping after content is written cannot provide that security boundary.
 func (o Overrides) ApplyWith(locate func(path string) (string, bool),
 	stamp func(path string, sd []byte) error) error {
 	for _, entry := range o.Paths() {
