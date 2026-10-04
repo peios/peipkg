@@ -320,6 +320,13 @@ func TestQueryJSONShapes(t *testing.T) {
 	if owners := query("owns", "--json", "/usr/bin/widget").([]any); len(owners) != 1 || owners[0] != "widget" {
 		t.Errorf("owns: %v", owners)
 	}
+	if problems := query("verify", "--json", "widget").([]any); len(problems) != 0 {
+		t.Errorf("verify --json of an intact package: %v, want []", problems)
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr/bin/widget"), []byte("changed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	has("verify", query("verify", "--json", "widget").([]any)[0], "package", "problem")
 	if roles := query("claim", "--json").([]any); len(roles) != 0 {
 		t.Errorf("claim --json with no roles: %v, want []", roles)
 	}

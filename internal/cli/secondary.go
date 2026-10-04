@@ -89,6 +89,7 @@ func cmdSearch(app *App, args []string) error {
 // it verifies every installed package.
 func cmdVerify(app *App, args []string) error {
 	fs := flags("verify")
+	asJSON := fs.Bool("json", false, "emit the problems found as JSON")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -112,6 +113,11 @@ func cmdVerify(app *App, args []string) error {
 		}
 	}
 
+	type problem struct {
+		Package string `json:"package"`
+		Problem string `json:"problem"`
+	}
+	found := []problem{}
 	problems := 0
 	for _, name := range names {
 		if _, found, err := store.GetPackage(ctx, name); err != nil {
@@ -125,10 +131,18 @@ func cmdVerify(app *App, args []string) error {
 		}
 		for _, f := range files {
 			if issue := verifyFile(app.paths.root, f); issue != "" {
-				app.printf("%s: %s\n", name, issue)
+				if !*asJSON {
+					app.printf("%s: %s\n", name, issue)
+				}
+				found = append(found, problem{name, issue})
 				problems++
 			}
 		}
+	}
+	// With --json the problems are the answer, an empty list when there
+	// are none, and finding some is not a failure to answer.
+	if *asJSON {
+		return app.emitJSON(found)
 	}
 	if problems > 0 {
 		return fmt.Errorf("verify: %d problem(s) found", problems)
