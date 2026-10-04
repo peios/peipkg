@@ -317,6 +317,9 @@ func TestQueryJSONShapes(t *testing.T) {
 	has("repo list", query("repo", "list", "--json").([]any)[0], "name", "base_url",
 		"trust_anchors", "trusted", "last_refresh", "stale", "packages")
 	has("files", query("files", "--json", "widget").([]any)[0], "path", "type")
+	txn := query("history", "--json").([]any)[0]
+	has("history", txn, "id", "state", "started_at", "summary", "operations")
+	has("a history operation", txn.(map[string]any)["operations"].([]any)[0], "action", "name", "to")
 	if owners := query("owns", "--json", "/usr/bin/widget").([]any); len(owners) != 1 || owners[0] != "widget" {
 		t.Errorf("owns: %v", owners)
 	}

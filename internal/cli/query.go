@@ -368,15 +368,30 @@ func cmdHistory(app *App, args []string) error {
 		return err
 	}
 	if *asJSON {
+		type op struct {
+			Action string `json:"action"` // install, upgrade, downgrade, remove or claim
+			Name   string `json:"name"`
+			From   string `json:"from,omitempty"`
+			To     string `json:"to,omitempty"`
+		}
 		type view struct {
-			ID        int64  `json:"id"`
-			State     string `json:"state"`
-			StartedAt string `json:"started_at"`
-			Summary   string `json:"summary"`
+			ID         int64  `json:"id"`
+			State      string `json:"state"`
+			StartedAt  string `json:"started_at"`
+			Summary    string `json:"summary"`
+			Operations []op   `json:"operations"`
 		}
 		views := make([]view, len(txns))
 		for i, t := range txns {
-			views[i] = view{t.ID, string(t.State), t.StartedAt.Format(time.RFC3339), t.OpSummary}
+			views[i] = view{t.ID, string(t.State), t.StartedAt.UTC().Format(time.RFC3339), t.OpSummary, []op{}}
+			ops, err := store.TxnOps(ctx, t.ID)
+			if err != nil {
+				return err
+			}
+			for _, o := range ops {
+				views[i].Operations = append(views[i].Operations,
+					op{string(o.Action), o.PackageName, o.FromVersion, o.ToVersion})
+			}
 		}
 		return app.emitJSON(views)
 	}
