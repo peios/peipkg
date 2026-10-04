@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -358,6 +360,55 @@ func TestDrivenUntrustedRepositoryHasItsCode(t *testing.T) {
 	code, events := drive(t, root, "", "install", "widget")
 	if end := last(t, events); code != 1 || end["code"] != "untrusted" {
 		t.Fatalf("untrusted: exit %d, %v", code, end)
+	}
+}
+
+// A driven transaction outlives the program driving it. This runs peipkg
+// as a process of its own, as a program would, so that its events go to a
+// real standard output: once proceed is answered the driver closes its
+// end and goes, and every event after is a write to a broken pipe. Writing
+// to a broken standard output kills a Go program unless it ignores SIGPIPE.
+func TestDrivenRunOutlivesItsDriver(t *testing.T) {
+	if args := os.Getenv("PEIPKG_TEST_RUN"); args != "" {
+		os.Exit(Run(strings.Split(args, "\x1f")))
+	}
+	root := t.TempDir()
+	pkg := localPackage(t, "tool", "1.0-1", map[string]string{"usr/bin/tool": "tool"})
+	child := exec.Command(os.Args[0], "-test.run=^TestDrivenRunOutlivesItsDriver$")
+	child.Env = append(os.Environ(),
+		"PEIPKG_TEST_RUN="+strings.Join([]string{"--root", root, "--driven", "install", pkg}, "\x1f"))
+	stdin, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	events := bufio.NewScanner(stdout)
+	for events.Scan() {
+		if strings.Contains(events.Text(), `"kind":"proceed"`) {
+			break
+		}
+	}
+	if _, err := stdin.Write([]byte(`{"id":1,"answer":"yes"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	// The driver goes: nothing reads what peipkg says from here on.
+	_ = stdout.Close()
+	if err := child.Wait(); err != nil {
+		t.Fatalf("peipkg did not finish once its driver went: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "usr/bin/tool")); err != nil || string(got) != "tool" {
+		t.Fatalf("the install did not land: %q, %v", got, err)
+	}
+	out := &bytes.Buffer{}
+	if code := newApp(root, strings.NewReader(""), out, &bytes.Buffer{}).run("history", []string{"--json"}); code != 0 ||
+		!strings.Contains(out.String(), `"state": "committed"`) {
+		t.Fatalf("history: exit %d\n%s", code, out)
 	}
 }
 
