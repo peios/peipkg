@@ -49,7 +49,7 @@ func refuseAlternateUpgrade(ops []resolver.Operation) error {
 		b.WriteString(alternateUpgradeBlock(op.Name, op.Candidate.AlternateUpgrade.Message))
 	}
 	b.WriteString("peipkg proceeds only with --bypass-alternate-upgrade.")
-	return fmt.Errorf("%s", b.String())
+	return withCode("alternate-upgrade", fmt.Errorf("%s", b.String()))
 }
 
 // isEveryPackageUpgrade reports whether reqs is the upgrade-everything

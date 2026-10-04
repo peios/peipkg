@@ -43,9 +43,17 @@ func cmdSearch(app *App, args []string) error {
 	client := app.repoClient(store)
 
 	type match struct {
-		Name, Version, Repository, Description string
+		Name          string `json:"name"`
+		Version       string `json:"version"`
+		Architecture  string `json:"architecture"`
+		Repository    string `json:"repository"`
+		Description   string `json:"description,omitempty"`
+		License       string `json:"license,omitempty"`
+		Homepage      string `json:"homepage,omitempty"`
+		SizeDownload  int64  `json:"size_download"`
+		SizeInstalled int64  `json:"size_installed"`
 	}
-	var matches []match
+	matches := []match{} // [] rather than null when nothing matches
 	for _, cfg := range repos {
 		idx, err := client.ActiveIndex(ctx, cfg.Name)
 		if err != nil {
@@ -55,8 +63,10 @@ func cmdSearch(app *App, args []string) error {
 		for _, e := range idx.Packages {
 			if strings.Contains(strings.ToLower(e.Name), term) ||
 				strings.Contains(strings.ToLower(e.Description), term) {
-				matches = append(matches,
-					match{e.Name, e.Version.String(), cfg.Name, e.Description})
+				matches = append(matches, match{Name: e.Name, Version: e.Version.String(),
+					Architecture: e.Architecture, Repository: cfg.Name,
+					Description: e.Description, License: e.License, Homepage: e.Homepage,
+					SizeDownload: e.SizeCompressed, SizeInstalled: e.SizeInstalled})
 			}
 		}
 	}

@@ -649,6 +649,21 @@ func writeStagedFile(dir *safepath.Dir, name string, content io.Reader, descript
 	return closeErr
 }
 
+// UnownedFileError is §7.1.5's refusal: an install would replace a file
+// that belongs to no package, and the operator did not pass
+// --overwrite-unowned. It is a type of its own so a program driving
+// peipkg can offer that retry.
+type UnownedFileError struct {
+	Package, Path string
+}
+
+func (e *UnownedFileError) Error() string {
+	return fmt.Sprintf("peipkg/install: %s would overwrite %s, which is already on this "+
+		"system and belongs to no installed package; its content differs from the "+
+		"package's. Move it aside, or pass --overwrite-unowned to displace it (the "+
+		"displaced copy is kept)", e.Package, e.Path)
+}
+
 // unownedPolicy applies the §7.1.5 unowned-file rule to a destination
 // that may already hold something.
 //
@@ -696,11 +711,7 @@ func unownedPolicy(ctx context.Context, env Env, dir *safepath.Dir, pkgName, des
 		return false, "", nil
 	}
 	if !env.OverwriteUnowned {
-		return false, "", fmt.Errorf(
-			"peipkg/install: %s would overwrite %s, which is already on this system and "+
-				"belongs to no installed package; its content differs from the package's. "+
-				"Move it aside, or pass --overwrite-unowned to displace it (the displaced "+
-				"copy is kept)", pkgName, destLogical)
+		return false, "", &UnownedFileError{Package: pkgName, Path: destLogical}
 	}
 	return true, fmt.Sprintf(
 		"%s overwrote %s, which belonged to no package; the previous content is kept at %s",

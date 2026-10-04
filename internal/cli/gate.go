@@ -13,6 +13,13 @@ import (
 // presentPlan prints a resolved plan for the operator to review,
 // including any elevated actions it carries.
 func (app *App) presentPlan(plan resolver.Plan) {
+	if app.driven != nil {
+		app.planEvent(plan)
+		if len(plan.Operations) == 0 {
+			app.driven.done = "nothing to do"
+		}
+		return
+	}
 	if len(plan.Operations) == 0 {
 		app.printf("nothing to do — the request is already satisfied\n")
 		return
@@ -85,10 +92,17 @@ func describeOp(op resolver.Operation, anchor string) string {
 // actions it is a no-op that returns true.
 func (app *App) authorize(auths []resolver.Authorization) bool {
 	for _, a := range auths {
-		app.printf("\nthis operation requires elevated authorisation:\n  %s\n", a.Detail)
-		app.printf("authorise this specific action? [y/N] ")
-		if !app.readConfirmation() {
-			return false
+		if app.driven != nil {
+			answer := app.ask(map[string]any{"kind": "authorise", "text": a.Detail})
+			if answer != "yes" {
+				return false
+			}
+		} else {
+			app.printf("\nthis operation requires elevated authorisation:\n  %s\n", a.Detail)
+			app.printf("authorise this specific action? [y/N] ")
+			if !app.readConfirmation() {
+				return false
+			}
 		}
 		// §7.6.6: the authorising act and what it authorised are
 		// recorded in the audit stream.
@@ -107,12 +121,17 @@ func (app *App) authorize(auths []resolver.Authorization) bool {
 // authorised removal is recorded in the audit stream as the
 // authorisation it is.
 func (app *App) decideModified(pkg, path string) install.ModifiedDecision {
-	app.printf("\n%s has been modified since %s was installed, and removing the "+
-		"package would delete it.\n", path, pkg)
-	app.printf("remove it (the previous content is kept beside it), keep it (it will " +
-		"belong to no package), or abort? [r/k/A] ")
-	line, _ := app.reader.ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
+	var answer string
+	if app.driven != nil {
+		answer = app.ask(map[string]any{"kind": "modified", "package": pkg, "path": path})
+	} else {
+		app.printf("\n%s has been modified since %s was installed, and removing the "+
+			"package would delete it.\n", path, pkg)
+		app.printf("remove it (the previous content is kept beside it), keep it (it will " +
+			"belong to no package), or abort? [r/k/A] ")
+		answer, _ = app.reader.ReadString('\n')
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
 	case "r", "remove":
 		app.emit(audit.Event{Type: audit.TypeAuthorisation, Outcome: audit.OutcomeSuccess,
 			Detail: fmt.Sprintf("remove %s, modified since install, with %s", path, pkg)})
@@ -126,6 +145,9 @@ func (app *App) decideModified(pkg, path string) install.ModifiedDecision {
 // confirm asks the operator to approve the plan, returning true when the
 // operation should proceed. End-of-input is treated as a refusal.
 func (app *App) confirm() bool {
+	if app.driven != nil {
+		return app.ask(map[string]any{"kind": "proceed"}) == "yes"
+	}
 	app.printf("proceed? [y/N] ")
 	return app.readConfirmation()
 }

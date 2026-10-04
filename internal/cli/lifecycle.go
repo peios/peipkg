@@ -306,6 +306,9 @@ func cmdUninstall(app *App, args []string) error {
 func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, yes bool,
 	extraCandidates []resolver.Candidate, claimDir install.ClaimDirective, eventType string,
 	crossRoot bool) error {
+	if err := app.refuseYesWhenDriven(yes); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	store, err := app.openDB(ctx)
 	if err != nil {
@@ -367,22 +370,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		return err
 	}
 
-	app.presentPlan(plan)
-	if len(plan.Operations) == 0 {
-		return nil
-	}
-	if dryRun {
-		app.printf("(dry run — no changes were made)\n")
-		return nil
-	}
-	// §7.6.6: elevated actions need a deliberate, specific authorisation
-	// that the routine confirmation — and --yes — do not supply.
-	if !app.authorize(plan.Authorizations) {
-		app.printf("cancelled — required authorisation was not given\n")
-		return nil
-	}
-	if !yes && !app.confirm() {
-		app.printf("cancelled\n")
+	if !app.approve(plan, dryRun, yes) {
 		return nil
 	}
 
@@ -407,6 +395,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		OverwriteUnowned:       app.overwriteUnowned,
 		SDOverridePolicy:       app.sdOverridePolicy(),
 		DecideModified:         app.decideModified,
+		Progress:               app.progressFunc(),
 	}
 	result, err := install.Execute(ctx, plan, env)
 	if err != nil {
@@ -422,7 +411,57 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	app.emit(audit.Event{Type: eventType, TxnID: result.TxnID,
 		Outcome: audit.OutcomeSuccess, Packages: auditPackages(plan),
 		Detail: operationCount(plan)})
-	app.printf("done — %s\n", operationCount(plan))
+	app.applied(result.TxnID, operationCount(plan))
+	return nil
+}
+
+// approve presents a plan and gathers what it needs before it may run:
+// each elevated action's own authorisation, then the routine proceed. It
+// reports whether to go ahead. A plan with nothing in it, a dry run, and
+// a refusal all end here, the outcome recorded.
+func (app *App) approve(plan resolver.Plan, dryRun, yes bool) bool {
+	app.presentPlan(plan)
+	if len(plan.Operations) == 0 {
+		return false
+	}
+	if dryRun {
+		if app.driven != nil {
+			app.driven.done = "dry run"
+		} else {
+			app.printf("(dry run — no changes were made)\n")
+		}
+		return false
+	}
+	// §7.6.6: elevated actions need a deliberate, specific authorisation
+	// that the routine confirmation — and --yes — do not supply.
+	if !app.authorize(plan.Authorizations) {
+		app.cancelledBecause("required authorisation was not given")
+		return false
+	}
+	if !yes && !app.confirm() {
+		app.cancelledBecause("")
+		return false
+	}
+	return true
+}
+
+// applied records a committed transaction: its outcome for a driven run,
+// and the line a terminal shows.
+func (app *App) applied(txn int64, summary string) {
+	if app.driven != nil {
+		app.driven.txn, app.driven.done = txn, summary
+		return
+	}
+	app.printf("done — %s\n", summary)
+}
+
+// refuseYesWhenDriven refuses --yes in the driven mode. The program
+// driving peipkg answers the proceed question itself: a flag that skips
+// it would let a caller approve a plan it has not been shown.
+func (app *App) refuseYesWhenDriven(yes bool) error {
+	if yes && app.driven != nil {
+		return fmt.Errorf("--yes is not accepted with --driven: answer the proceed question")
+	}
 	return nil
 }
 
@@ -588,6 +627,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 			OverwriteUnowned:       app.overwriteUnowned,
 			SDOverridePolicy:       app.sdOverridePolicy(),
 			DecideModified:         app.decideModified,
+			Progress:               app.progressFunc(),
 		}
 	}
 
@@ -616,7 +656,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 	app.emit(audit.Event{Type: eventType, TxnID: firstTxnID(results),
 		Outcome:  audit.OutcomeSuccess,
 		Packages: auditPackages(plan), Detail: operationCount(plan)})
-	app.printf("done — %s across %d roots\n", operationCount(plan), len(envs))
+	app.applied(firstTxnID(results), fmt.Sprintf("%s across %d roots", operationCount(plan), len(envs)))
 	return nil
 }
 
@@ -726,7 +766,10 @@ func (app *App) refuseOrphanUpgrade(ctx context.Context, reqs []resolver.Request
 				r.Name, r.Name)
 		}
 	}
-	if named {
+	// Only the upgrade of everything passes orphans over. A downgrade or
+	// an undo is audited as an upgrade, and so reaches here too, but
+	// names its packages through other requests and passes over nothing.
+	if named || !isEveryPackageUpgrade(reqs) {
 		return nil
 	}
 	for _, name := range sortedNames(orphaned) {
@@ -866,15 +909,15 @@ func ensureFreshTrust(app *App, allowStale bool) error {
 		}
 		if !allowStale {
 			if refreshErr != nil {
-				return fmt.Errorf("repository %q trust state is %s old (maximum %s) and the "+
-					"refresh failed: %v\nretry with the repository reachable, or pass "+
-					"--allow-stale to proceed with stale trust state (§6.5.4)",
-					cfg.Name, formatAge(age), formatAge(max), refreshErr)
+				return withCode("stale", fmt.Errorf("repository %q trust state is %s old "+
+					"(maximum %s) and the refresh failed: %v\nretry with the repository "+
+					"reachable, or pass --allow-stale to proceed with stale trust state (§6.5.4)",
+					cfg.Name, formatAge(age), formatAge(max), refreshErr))
 			}
-			return fmt.Errorf("repository %q is frozen: it refreshes but its index has not "+
-				"progressed, and its trust state is %s old (maximum %s)\npass --allow-stale "+
-				"to proceed with stale trust state (§6.5.4)",
-				cfg.Name, formatAge(age), formatAge(max))
+			return withCode("stale", fmt.Errorf("repository %q is frozen: it refreshes but its "+
+				"index has not progressed, and its trust state is %s old (maximum %s)\npass "+
+				"--allow-stale to proceed with stale trust state (§6.5.4)",
+				cfg.Name, formatAge(age), formatAge(max)))
 		}
 		fmt.Fprintf(app.errOut, "peipkg: warning: proceeding with stale trust state for "+
 			"repository %q (%s old) — authorised by --allow-stale (§6.5.4)\n",
@@ -929,15 +972,15 @@ func ensureIndexNotStale(ctx context.Context, app *App, client *repository.Clien
 	}
 	if !allowStale {
 		if refreshErr != nil {
-			return fmt.Errorf("repository %q index was generated %s ago (maximum %s) and the "+
-				"refresh failed: %v\nretry with the repository reachable, or pass "+
-				"--allow-stale to proceed with stale metadata (§5.34)",
-				cfg.Name, formatAge(age), formatAge(max), refreshErr)
+			return withCode("stale", fmt.Errorf("repository %q index was generated %s ago "+
+				"(maximum %s) and the refresh failed: %v\nretry with the repository reachable, "+
+				"or pass --allow-stale to proceed with stale metadata (§5.34)",
+				cfg.Name, formatAge(age), formatAge(max), refreshErr))
 		}
-		return fmt.Errorf("repository %q serves stale metadata: its index was generated %s "+
-			"ago (maximum %s) and refreshing did not bring a newer one\npass --allow-stale "+
-			"to proceed with stale metadata (§5.34)",
-			cfg.Name, formatAge(age), formatAge(max))
+		return withCode("stale", fmt.Errorf("repository %q serves stale metadata: its index "+
+			"was generated %s ago (maximum %s) and refreshing did not bring a newer one\npass "+
+			"--allow-stale to proceed with stale metadata (§5.34)",
+			cfg.Name, formatAge(age), formatAge(max)))
 	}
 	fmt.Fprintf(app.errOut, "peipkg: warning: proceeding with stale metadata for repository "+
 		"%q (index generated %s ago) — authorised by --allow-stale (§5.34)\n",
@@ -1068,6 +1111,9 @@ func cmdUndo(app *App, args []string) error {
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
 	}
+	if err := app.refuseYesWhenDriven(*yes); err != nil {
+		return err
+	}
 
 	ctx := context.Background()
 	store, err := app.openDB(ctx)
@@ -1147,20 +1193,7 @@ func (app *App) undoCrossRoot(ctx context.Context, crossRootID string, dryRun, y
 			Outcome: audit.OutcomeRejection, Detail: err.Error()})
 		return err
 	}
-	app.presentPlan(plan)
-	if len(plan.Operations) == 0 {
-		return nil
-	}
-	if dryRun {
-		app.printf("(dry run — no changes were made)\n")
-		return nil
-	}
-	if !app.authorize(plan.Authorizations) {
-		app.printf("cancelled — required authorisation was not given\n")
-		return nil
-	}
-	if !yes && !app.confirm() {
-		app.printf("cancelled\n")
+	if !app.approve(plan, dryRun, yes) {
 		return nil
 	}
 	provider := &repoProvider{client: app.repoClient(store), configs: configs, warn: app.errOut}

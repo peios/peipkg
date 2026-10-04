@@ -98,6 +98,56 @@ type Env struct {
 	// same paths the upgrade's modified-detection covers (isEtcPath), so
 	// binaries and libraries are not hashed at uninstall.
 	DecideModified func(pkg, path string) ModifiedDecision
+	// Progress, when set, is told as the transaction moves through its
+	// phases, for a caller that shows them. It is called on the executing
+	// goroutine. A nil Progress reports nothing.
+	Progress func(Progress)
+}
+
+// Phase is one stage of a transaction, in the order they run.
+type Phase string
+
+const (
+	// PhaseFetch fetches and verifies a package (§7.4.3).
+	PhaseFetch Phase = "fetch"
+	// PhaseStage writes a package's content beside its destinations.
+	PhaseStage Phase = "stage"
+	// PhaseApply moves every staged change into place.
+	PhaseApply Phase = "apply"
+	// PhaseCommit records the new package state: the durability boundary.
+	PhaseCommit Phase = "commit"
+	// PhaseFinish discards backups, reclaims directories and runs the
+	// side effects, after the commit.
+	PhaseFinish Phase = "finish"
+)
+
+// Progress is one step of a transaction, as Env.Progress reports it.
+type Progress struct {
+	Phase Phase
+	// Package is the package the step is about, or "" for a phase that
+	// covers the whole transaction.
+	Package string
+	// Step counts from 1 within the phase, to Steps.
+	Step, Steps int
+}
+
+// report passes p to the environment's Progress, if it has one.
+func (env Env) report(p Progress) {
+	if env.Progress != nil {
+		env.Progress(p)
+	}
+}
+
+// installing counts a plan's operations that bring a package in, which
+// are the ones the fetch and stage phases step through.
+func installing(plan resolver.Plan) int {
+	n := 0
+	for _, op := range plan.Operations {
+		if op.Kind != resolver.OpRemove {
+			n++
+		}
+	}
+	return n
 }
 
 // ModifiedDecision is the operator's answer for a modified file that a
@@ -340,10 +390,13 @@ func provideAll(ctx context.Context, plan resolver.Plan, env Env) (
 	map[string]ProvidedPackage, error) {
 
 	provided := make(map[string]ProvidedPackage)
+	steps, step := installing(plan), 0
 	for _, op := range plan.Operations {
 		if op.Kind == resolver.OpRemove {
 			continue
 		}
+		step++
+		env.report(Progress{Phase: PhaseFetch, Package: op.Name, Step: step, Steps: steps})
 		pp, err := env.Provider.Provide(ctx, op)
 		if err != nil {
 			return nil, fmt.Errorf("peipkg/install: providing %s: %w", op.Name, err)
@@ -519,10 +572,13 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	// Materialize staged content after the journal exists. A failure
 	// rolls back whatever was written and abandons the transaction;
 	// nothing has been committed.
+	steps, step := installing(plan), 0
 	for _, s := range p.staged {
 		if s.op.Kind == resolver.OpRemove {
 			continue
 		}
+		step++
+		env.report(Progress{Phase: PhaseStage, Package: s.op.Name, Step: step, Steps: steps})
 		if err := materializePackage(pins, s, provided[s.op.Name]); err != nil {
 			return p, errors.Join(err, abandon(ctx, env, pins, txnID, p.staged, "staging failed"))
 		}
@@ -532,6 +588,7 @@ func prepareTxn(ctx context.Context, plan resolver.Plan, env Env, crossRootID st
 	}
 
 	p.ops = allFileOps(p.staged)
+	env.report(Progress{Phase: PhaseApply, Step: 1, Steps: 1})
 	if err := commitOps(p.ops); err != nil {
 		return p, errors.Join(err, finishRolledBack(ctx, env, pins, txnID, p.ops,
 			allCreatedDirs(p.staged), "applying file changes failed"))
@@ -556,6 +613,7 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 	// way, so this is where its pinned descriptors are released.
 	defer p.pins.close()
 	env := p.env
+	env.report(Progress{Phase: PhaseCommit, Step: 1, Steps: 1})
 	err := env.DB.Tx(ctx, func(tx *db.Tx) error {
 		if err := applyMetadata(ctx, tx, p.staged); err != nil {
 			return err
@@ -578,6 +636,7 @@ func commitTxn(ctx context.Context, p preparedTxn, rollbackOnFailure bool) (Resu
 	// (§7.2.2 modified /etc files), discard the now-purposeless backups
 	// (§7.2.2 step 4.3), and run the post-commit side effects.
 	result := Result{TxnID: p.txnID}
+	env.report(Progress{Phase: PhaseFinish, Step: 1, Steps: 1})
 	for _, s := range p.staged {
 		result.Warnings = append(result.Warnings, s.warnings...)
 		result.SDOverrides = append(result.SDOverrides, s.sdOverrides...)

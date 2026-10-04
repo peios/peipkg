@@ -96,6 +96,9 @@ func claimStatus(app *App, role string) error {
 // claimChange grants or revokes a role's holder as a standalone
 // transaction (§7.7).
 func claimChange(app *App, req install.ClaimRequest, yes bool) error {
+	if err := app.refuseYesWhenDriven(yes); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	store, err := app.openDB(ctx)
 	if err != nil {
@@ -104,7 +107,7 @@ func claimChange(app *App, req install.ClaimRequest, yes bool) error {
 	defer store.Close()
 
 	if !yes && !app.confirm() {
-		app.printf("cancelled\n")
+		app.cancelledBecause("")
 		return nil
 	}
 	env := install.Env{
@@ -127,6 +130,10 @@ func claimChange(app *App, req install.ClaimRequest, yes bool) error {
 	}
 	app.emit(audit.Event{Type: audit.TypeClaim, TxnID: result.TxnID,
 		Outcome: audit.OutcomeSuccess, Detail: detail})
+	if app.driven != nil {
+		app.driven.txn, app.driven.done = result.TxnID, detail
+		return nil
+	}
 	app.printf("%s\n", detail)
 	return nil
 }

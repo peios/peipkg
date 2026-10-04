@@ -5,11 +5,16 @@
 package install
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
+
+// ErrBusy is the error Acquire wraps when another process holds the
+// lock, so a caller can tell "try again later" from a real failure.
+var ErrBusy = errors.New("another package operation is already in progress")
 
 // Lock is the single-writer lock over a package operation (§7.6.7). It
 // is an advisory flock on a lock file; the kernel releases it when the
@@ -30,7 +35,7 @@ func Acquire(path string) (*Lock, error) {
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("peipkg/install: another package operation is already in progress")
+		return nil, fmt.Errorf("peipkg/install: %w", ErrBusy)
 	}
 	return &Lock{file: f}, nil
 }

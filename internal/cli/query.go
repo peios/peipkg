@@ -72,13 +72,9 @@ func cmdList(app *App, args []string) error {
 		return err
 	}
 	if *asJSON {
-		type view struct {
-			Name, Version, Architecture, Origin string
-			Orphaned                            bool `json:"orphaned"`
-		}
-		views := make([]view, len(pkgs))
+		views := make([]packageJSON, len(pkgs))
 		for i, p := range pkgs {
-			views[i] = view{p.Name, p.Version, p.Architecture, p.OriginRepo, orphaned[p.Name]}
+			views[i] = newPackageJSON(p, orphaned[p.Name], false)
 		}
 		return app.emitJSON(views)
 	}
@@ -98,6 +94,66 @@ func cmdList(app *App, args []string) error {
 		app.printf("%s  %s  %s\n", p.Name, p.Version, p.Architecture)
 	}
 	return nil
+}
+
+// packageJSON is an installed package as list --json and info --json give
+// it: one shape, info's with the fields only it carries filled in.
+type packageJSON struct {
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Architecture  string `json:"architecture"`
+	Origin        string `json:"origin"` // "" for a package installed from a local file
+	Orphaned      bool   `json:"orphaned"`
+	InstalledAt   string `json:"installed_at"`
+	Description   string `json:"description,omitempty"`
+	SizeInstalled int64  `json:"size_installed"`
+
+	License          string   `json:"license,omitempty"`
+	LicenseClass     string   `json:"license_class,omitempty"`
+	Homepage         string   `json:"homepage,omitempty"`
+	AlternateUpgrade string   `json:"alternate_upgrade,omitempty"`
+	Dependencies     []string `json:"dependencies,omitempty"`
+	Provides         []string `json:"provides,omitempty"`
+}
+
+// newPackageJSON builds p's JSON view; detail adds what info gives and
+// list does not.
+func newPackageJSON(p db.Package, orphaned, detail bool) packageJSON {
+	v := packageJSON{Name: p.Name, Version: p.Version, Architecture: p.Architecture,
+		Origin: p.OriginRepo, Orphaned: orphaned,
+		InstalledAt: p.InstalledAt.UTC().Format(time.RFC3339)}
+	m, err := manifest.Decode([]byte(p.Manifest))
+	if err != nil {
+		return v
+	}
+	v.Description = m.Description
+	v.SizeInstalled = m.SizeInstalled
+	if !detail {
+		return v
+	}
+	v.License = m.License
+	if m.LicenseClass != manifest.LicenseClassUnknown {
+		v.LicenseClass = string(m.LicenseClass)
+	}
+	v.Homepage = m.Homepage
+	if m.AlternateUpgrade != nil {
+		v.AlternateUpgrade = m.AlternateUpgrade.Message
+	}
+	for _, d := range m.Dependencies {
+		s := d.Name
+		if !d.Constraint.Any() {
+			s += " " + d.Constraint.String()
+		}
+		v.Dependencies = append(v.Dependencies, s)
+	}
+	for _, pr := range m.Provides {
+		s := pr.Name
+		if pr.Version != nil {
+			s += " " + pr.Version.String()
+		}
+		v.Provides = append(v.Provides, s)
+	}
+	return v
 }
 
 // orphanedPackages reports, by package name, which installed packages
@@ -164,33 +220,7 @@ func cmdInfo(app *App, args []string) error {
 		if err != nil {
 			return err
 		}
-		// Same field naming as list --json, so a consumer reads one shape.
-		view := struct {
-			Name, Version, Architecture, Origin string
-			Orphaned                            bool   `json:"orphaned"`
-			InstalledAt                         string `json:"installed_at"`
-			Description                         string `json:"description,omitempty"`
-			License                             string `json:"license,omitempty"`
-			LicenseClass                        string `json:"license_class,omitempty"`
-			Homepage                            string `json:"homepage,omitempty"`
-			AlternateUpgrade                    string `json:"alternate_upgrade,omitempty"`
-		}{
-			Name: pkg.Name, Version: pkg.Version, Architecture: pkg.Architecture,
-			Origin: pkg.OriginRepo, Orphaned: orphaned[pkg.Name],
-			InstalledAt: pkg.InstalledAt.Format(time.RFC3339),
-		}
-		if m, err := manifest.Decode([]byte(pkg.Manifest)); err == nil {
-			view.Description = m.Description
-			view.License = m.License
-			if m.LicenseClass != manifest.LicenseClassUnknown {
-				view.LicenseClass = string(m.LicenseClass)
-			}
-			view.Homepage = m.Homepage
-			if m.AlternateUpgrade != nil {
-				view.AlternateUpgrade = m.AlternateUpgrade.Message
-			}
-		}
-		return app.emitJSON(view)
+		return app.emitJSON(newPackageJSON(pkg, orphaned[pkg.Name], true))
 	}
 	app.printf("name:         %s\n", pkg.Name)
 	app.printf("version:      %s\n", pkg.Version)
@@ -232,6 +262,7 @@ func cmdInfo(app *App, args []string) error {
 // cmdFiles prints the filesystem objects a package owns.
 func cmdFiles(app *App, args []string) error {
 	fs := flags("files")
+	asJSON := fs.Bool("json", false, "emit JSON")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -257,6 +288,18 @@ func cmdFiles(app *App, args []string) error {
 	if err != nil {
 		return err
 	}
+	if *asJSON {
+		type view struct {
+			Path   string `json:"path"`
+			Type   string `json:"type"` // file, dir or symlink
+			Target string `json:"target,omitempty"`
+		}
+		views := make([]view, len(files))
+		for i, f := range files {
+			views[i] = view{f.Path, string(f.Type), f.SymlinkTarget}
+		}
+		return app.emitJSON(views)
+	}
 	for _, f := range files {
 		app.printf("%s\n", f.Path)
 	}
@@ -266,6 +309,7 @@ func cmdFiles(app *App, args []string) error {
 // cmdOwns reports which package owns a path.
 func cmdOwns(app *App, args []string) error {
 	fs := flags("owns")
+	asJSON := fs.Bool("json", false, "emit JSON")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
@@ -285,6 +329,15 @@ func cmdOwns(app *App, args []string) error {
 	owners, err := store.FileOwners(ctx, path)
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		// An unowned path is an empty list, not an error: the question
+		// had an answer.
+		names := make([]string, len(owners))
+		for i, o := range owners {
+			names[i] = o.PackageName
+		}
+		return app.emitJSON(names)
 	}
 	if len(owners) == 0 {
 		return fmt.Errorf("owns: no package owns %q", path)

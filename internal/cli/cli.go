@@ -86,6 +86,9 @@ type App struct {
 	// per-invocation and never persisted: the out-of-band tool that owns
 	// the package's upgrade path passes it to drive peipkg.
 	bypassAlternateUpgrade bool
+	// driven is set in the driven mode (--driven), where a program runs
+	// peipkg: output is events and questions are answered on input.
+	driven *driver
 }
 
 // newPaths locates peipkg's files beneath an operating root.
@@ -157,6 +160,8 @@ func Run(args []string) int {
 	global := flag.NewFlagSet("peipkg", flag.ContinueOnError)
 	global.SetOutput(os.Stderr)
 	root := global.String("root", "/", "filesystem root to operate under")
+	driven := global.Bool("driven", false,
+		"run for a program: events as JSON Lines on output, answers on input")
 	if err := global.Parse(args); err != nil {
 		return 2
 	}
@@ -187,14 +192,26 @@ func Run(args []string) int {
 	app := newApp(resolvedRoot, os.Stdin, os.Stdout, os.Stderr)
 	app.rootExplicit = rootExplicit
 	verb, cmdArgs := rest[0], rest[1:]
-	handler, ok := dispatch[verb]
-	if !ok {
+	if _, ok := dispatch[verb]; !ok {
 		fmt.Fprintf(os.Stderr, "peipkg: unknown command %q\n", verb)
 		printUsage(os.Stderr)
 		return 2
 	}
-	if err := handler(app, cmdArgs); err != nil {
-		fmt.Fprintf(os.Stderr, "peipkg: %v\n", err)
+	if *driven {
+		app.startDriven()
+	}
+	return app.run(verb, cmdArgs)
+}
+
+// run executes one verb and returns its exit code. A driven run always
+// ends with exactly one terminal event, whatever happened.
+func (app *App) run(verb string, args []string) int {
+	err := dispatch[verb](app, args)
+	if app.driven != nil {
+		return app.finish(err)
+	}
+	if err != nil {
+		fmt.Fprintf(app.errOut, "peipkg: %v\n", err)
 		return 1
 	}
 	return 0

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/config"
@@ -226,15 +227,7 @@ func cmdRepoList(app *App, args []string) error {
 		return err
 	}
 	if *asJSON {
-		type view struct {
-			Name, BaseURL, Policy string
-			Priority              int
-		}
-		views := make([]view, len(repos))
-		for i, r := range repos {
-			views[i] = view{r.Name, r.BaseURL, string(r.SignaturePolicy), r.Priority}
-		}
-		return app.emitJSON(views)
+		return app.repoListJSON(repos)
 	}
 	if len(repos) == 0 {
 		app.printf("no repositories configured\n")
@@ -244,6 +237,71 @@ func cmdRepoList(app *App, args []string) error {
 		app.printf("%s  %s  priority=%d  %s\n", r.Name, r.BaseURL, r.Priority, r.SignaturePolicy)
 	}
 	return nil
+}
+
+// repoListJSON emits the configured repositories with their trust state:
+// whether the trust ceremony has run, when the repository last refreshed,
+// how old its metadata is, whether either is past its maximum, and how
+// many packages its cached index offers.
+func (app *App) repoListJSON(repos []config.RepoConfig) error {
+	type view struct {
+		Name                   string   `json:"name"`
+		BaseURL                string   `json:"base_url"`
+		Priority               int      `json:"priority"`
+		SignaturePolicy        string   `json:"signature_policy"`
+		TrustAnchors           []string `json:"trust_anchors"`
+		AllowInsecureTransport bool     `json:"allow_insecure_transport"`
+		Trusted                bool     `json:"trusted"`
+		LastRefresh            string   `json:"last_refresh,omitempty"`
+		IndexGenerated         string   `json:"index_generated,omitempty"`
+		Stale                  bool     `json:"stale"`
+		Packages               int      `json:"packages"`
+	}
+	ctx := context.Background()
+	store, err := app.openDB(ctx)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	client := app.repoClient(store)
+	now := time.Now()
+
+	views := make([]view, 0, len(repos))
+	for _, r := range repos {
+		v := view{Name: r.Name, BaseURL: r.BaseURL, Priority: r.Priority,
+			SignaturePolicy: string(r.SignaturePolicy), TrustAnchors: r.TrustAnchors,
+			AllowInsecureTransport: r.AllowInsecureTransport}
+		if v.TrustAnchors == nil {
+			v.TrustAnchors = []string{}
+		}
+		row, found, err := store.GetRepository(ctx, r.Name)
+		if err != nil {
+			return err
+		}
+		if found {
+			v.Trusted = true
+			if !row.LastRefreshAt.IsZero() {
+				v.LastRefresh = row.LastRefreshAt.UTC().Format(time.RFC3339)
+			}
+			if row.GeneratedAtFloor != 0 {
+				v.IndexGenerated = time.Unix(row.GeneratedAtFloor, 0).UTC().Format(time.RFC3339)
+			}
+			_, ageStale, err := client.TrustAge(ctx, r, now)
+			if err != nil {
+				return err
+			}
+			_, indexStale, err := client.IndexStaleness(ctx, r, now)
+			if err != nil {
+				return err
+			}
+			v.Stale = ageStale || indexStale
+			if idx, err := client.ActiveIndex(ctx, r.Name); err == nil {
+				v.Packages = len(idx.Packages)
+			}
+		}
+		views = append(views, v)
+	}
+	return app.emitJSON(views)
 }
 
 // cmdRepoRemove removes a repository's configuration and recorded state.
