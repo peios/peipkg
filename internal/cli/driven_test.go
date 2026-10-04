@@ -361,6 +361,28 @@ func TestDrivenUntrustedRepositoryHasItsCode(t *testing.T) {
 	}
 }
 
+// An operator who may not read the package database is told so, with the
+// code that says it: not that something unrelated failed.
+func TestAnUnreadableDatabaseIsDenied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	root := t.TempDir()
+	if code, _ := drive(t, root, "", "list"); code != 0 {
+		t.Fatal("list on a new root failed")
+	}
+	db := filepath.Join(root, "var/state/peipkg/db.sqlite")
+	if err := os.Chmod(db, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(db, 0o644) })
+	code, events := drive(t, root, "", "list", "--json")
+	if end := last(t, events); code != 1 || end["code"] != "denied" ||
+		!strings.Contains(end["message"].(string), "package database can't be read") {
+		t.Fatalf("unreadable database: exit %d, %v", code, end)
+	}
+}
+
 func TestDrivenStaleMetadataHasItsCode(t *testing.T) {
 	// Metadata that refreshing cannot freshen is refused with the code
 	// that tells the caller --allow-stale is the way on.

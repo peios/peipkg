@@ -7,9 +7,11 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -230,9 +232,29 @@ func (app *App) openDB(ctx context.Context) (*db.DB, error) {
 func (app *App) openDBAt(ctx context.Context, root string) (*db.DB, error) {
 	p := newPaths(root)
 	if err := os.MkdirAll(p.stateDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating %s: %w", p.stateDir, err)
+		return nil, unreadable(p, fmt.Errorf("creating %s: %w", p.stateDir, err))
 	}
-	return db.Open(ctx, p.dbPath)
+	store, err := db.Open(ctx, p.dbPath)
+	if err != nil {
+		return nil, unreadable(p, err)
+	}
+	return store, nil
+}
+
+// unreadable reports a failure to open the package database as the
+// permission failure it is, when the operator may not read the database
+// at all. Without it an operator who may not even look into the state
+// directory was told that creating it failed because it exists.
+func unreadable(p paths, err error) error {
+	f, oerr := os.Open(p.dbPath)
+	if oerr == nil {
+		_ = f.Close()
+		return err
+	}
+	if errors.Is(oerr, fs.ErrPermission) {
+		return fmt.Errorf("the package database can't be read: %w", oerr)
+	}
+	return err
 }
 
 // printf writes a formatted line to the command's standard output.
