@@ -652,6 +652,28 @@ func TestCrossRootUndoEndToEnd(t *testing.T) {
 	}
 }
 
+// TestUndoBesideACrossRootPackage undoes an ordinary, single-root change on
+// a system where another package's dependency lives in a second root. The
+// undo touches only this root, but resolution checks every installed
+// package, and live-boot's peiosutils is satisfied only in the initramfs:
+// resolving single-root refused the undo as unsatisfiable.
+func TestUndoBesideACrossRootPackage(t *testing.T) {
+	app, anchor, _ := installLiveBootCrossRoot(t)
+	pkg := localPackage(t, "tool", "1.0-1", map[string]string{"usr/bin/tool": "tool"})
+	if err := cmdInstall(app, []string{pkg, "--yes"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := cmdUndo(app, []string{"--yes"}); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(anchor, "usr/bin/tool")); !os.IsNotExist(err) {
+		t.Errorf("the undone install's file is still there: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(anchor, "usr/bin/live-boot")); err != nil {
+		t.Errorf("undoing the last change touched the one before it: %v", err)
+	}
+}
+
 // TestInstallMaxTrustedAgeGate exercises the §6.5.4 maximum-trusted-age
 // gate end to end: an aged repository blocks install when its refresh
 // makes no progress (frozen index) or fails outright, --allow-stale

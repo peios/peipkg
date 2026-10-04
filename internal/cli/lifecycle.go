@@ -1140,8 +1140,15 @@ func cmdUndo(app *App, args []string) error {
 	app.printf("undoing transaction %d (%s)\n", last.ID, last.OpSummary)
 	// An undo is a version-changing transaction; §7.6 has no dedicated
 	// type, so it is audited as an upgrade.
+	//
+	// It resolves across every reachable root, as a downgrade does, even
+	// though the transaction it undoes touched only this one: the
+	// resolver checks every installed package's dependencies, and one
+	// placed `IN` another root (live-boot's initramfs half) is only
+	// satisfied there. Resolving single-root refused every undo on such a
+	// system.
 	return transact(app, reqs, resolver.Options{AllowDowngrade: true},
-		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUpgrade, false)
+		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUpgrade, true)
 }
 
 // undoCrossRoot reverses every root of a committed cross-root transaction
