@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/peios/peipkg/internal/audit"
@@ -16,13 +18,18 @@ import (
 //	peipkg claim <role>              show the holder, its links, and providers
 //	peipkg claim <role> grant <pkg>  make <pkg> the holder of <role>
 //	peipkg claim <role> revoke       take away the grant, leaving <role> unheld
+//	peipkg claim --json              every role, its holder, links and providers
 func cmdClaim(app *App, args []string) error {
 	fs := flags("claim")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	fs.BoolVar(yes, "y", false, "skip the confirmation prompt")
+	asJSON := fs.Bool("json", false, "emit every role as JSON")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return err
+	}
+	if len(pos) == 0 && *asJSON {
+		return claimList(app)
 	}
 	if len(pos) == 0 {
 		return fmt.Errorf("claim: a role is required")
@@ -91,6 +98,72 @@ func claimStatus(app *App, role string) error {
 		app.printf("eligible providers: %s\n", strings.Join(providers, ", "))
 	}
 	return nil
+}
+
+// claimList emits every role an installed package can fill or a package
+// holds: its holder, the links that holding it made, and the installed
+// packages eligible to hold it.
+func claimList(app *App) error {
+	ctx := context.Background()
+	store, err := app.openDB(ctx)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	type link struct {
+		Path   string `json:"path"`
+		Target string `json:"target"`
+	}
+	type role struct {
+		Role      string   `json:"role"`
+		Holder    string   `json:"holder,omitempty"`
+		Links     []link   `json:"links"`
+		Providers []string `json:"providers"`
+	}
+	roles := map[string]*role{}
+	get := func(name string) *role {
+		if roles[name] == nil {
+			roles[name] = &role{Role: name, Links: []link{}, Providers: []string{}}
+		}
+		return roles[name]
+	}
+	holders, err := store.ClaimHolders(ctx)
+	if err != nil {
+		return err
+	}
+	for _, h := range holders {
+		get(h.Role).Holder = h.Holder
+	}
+	pkgs, err := store.ListPackages(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range pkgs {
+		m, err := manifest.Decode([]byte(p.Manifest))
+		if err != nil {
+			continue
+		}
+		for _, provided := range m.Provides {
+			if claims.EligibleProvider(m, provided.Name) &&
+				!slices.Contains(get(provided.Name).Providers, p.Name) {
+				get(provided.Name).Providers = append(get(provided.Name).Providers, p.Name)
+			}
+		}
+	}
+	out := make([]role, 0, len(roles))
+	for _, name := range slices.Sorted(maps.Keys(roles)) {
+		links, err := store.ClaimLinksForRole(ctx, name)
+		if err != nil {
+			return err
+		}
+		r := roles[name]
+		for _, l := range links {
+			r.Links = append(r.Links, link{l.Path, l.Target})
+		}
+		out = append(out, *r)
+	}
+	return app.emitJSON(out)
 }
 
 // claimChange grants or revokes a role's holder as a standalone

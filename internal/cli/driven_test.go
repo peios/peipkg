@@ -320,6 +320,9 @@ func TestQueryJSONShapes(t *testing.T) {
 	if owners := query("owns", "--json", "/usr/bin/widget").([]any); len(owners) != 1 || owners[0] != "widget" {
 		t.Errorf("owns: %v", owners)
 	}
+	if roles := query("claim", "--json").([]any); len(roles) != 0 {
+		t.Errorf("claim --json with no roles: %v, want []", roles)
+	}
 	if none := query("search", "--json", "no-such-thing"); none == nil || len(none.([]any)) != 0 {
 		t.Errorf("search with no match: %v, want []", none)
 	}

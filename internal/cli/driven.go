@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/peios/peipkg/internal/install"
 	"github.com/peios/peipkg/internal/resolver"
@@ -36,6 +38,11 @@ type driver struct {
 // still arrives, as message and warning events, so nothing a person at a
 // terminal would have been told is lost to the program.
 func (app *App) startDriven() {
+	// A program that goes away mid-transaction must not take the
+	// transaction with it. Writing to its closed pipe fails rather than
+	// killing peipkg, the events are lost, and any question still to come
+	// reads the end of input: a refusal.
+	signal.Ignore(syscall.SIGPIPE)
 	d := &driver{events: app.out}
 	app.driven = d
 	app.out = &eventLines{emit: func(line string) {
