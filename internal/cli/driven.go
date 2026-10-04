@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/peios/peipkg/internal/install"
+	"github.com/peios/peipkg/internal/repository"
 	"github.com/peios/peipkg/internal/resolver"
 )
 
@@ -229,6 +230,8 @@ func withCode(code string, err error) error {
 //   - alternate-upgrade: a package declares that it is upgraded another
 //     way. --bypass-alternate-upgrade proceeds.
 //   - unresolvable: no plan satisfies the request.
+//   - untrusted: a configured repository's trust ceremony has never run.
+//     `repo add <name>` runs it.
 //   - failed: anything else.
 func errorCode(err error) string {
 	var coded *codedError
@@ -239,6 +242,8 @@ func errorCode(err error) string {
 		return coded.code
 	case errors.Is(err, install.ErrBusy):
 		return "busy"
+	case errors.Is(err, repository.ErrNoTrustState):
+		return "untrusted"
 	case errors.As(err, &unowned):
 		return "unowned"
 	case errors.As(err, &rejection):

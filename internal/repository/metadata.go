@@ -2,6 +2,7 @@ package repository
 
 import (
 	"crypto/ed25519"
+	"errors"
 
 	"github.com/peios/peipkg/internal/repodata"
 )
@@ -48,6 +49,10 @@ func EncodeIndex(idx Index) ([]byte, error) {
 }
 
 var ErrUntrusted = repodata.ErrUntrusted
+
+// ErrNoTrustState reports a repository that is configured but whose trust
+// ceremony (repo add) has never run, so nothing it serves is trusted yet.
+var ErrNoTrustState = errors.New("has no recorded trust state")
 
 func VerifyDetached(content, sigContent []byte, candidates []ed25519.PublicKey) error {
 	return repodata.VerifyDetached(content, sigContent, candidates)

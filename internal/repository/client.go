@@ -181,7 +181,7 @@ func (c *Client) Refresh(ctx context.Context, cfg config.RepoConfig) error {
 		return err
 	}
 	if !found {
-		return fmt.Errorf("peipkg/repository: %q has no recorded trust state; add it first", cfg.Name)
+		return fmt.Errorf("peipkg/repository: %q %w; add it first", cfg.Name, ErrNoTrustState)
 	}
 	prevTrust, err := ParseTrustSet(prev.TrustKeys)
 	if err != nil {
@@ -230,7 +230,7 @@ func (c *Client) ActiveIndex(ctx context.Context, repoName string) (Index, error
 		return Index{}, err
 	}
 	if !found {
-		return Index{}, fmt.Errorf("peipkg/repository: %q has no recorded trust state", repoName)
+		return Index{}, fmt.Errorf("peipkg/repository: %q %w", repoName, ErrNoTrustState)
 	}
 	trust, err := ParseTrustSet(row.TrustKeys)
 	if err != nil {

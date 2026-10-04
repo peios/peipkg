@@ -341,6 +341,26 @@ func TestQueryJSONShapes(t *testing.T) {
 	}
 }
 
+// A repository configured on disk, as an image ships one, is not trusted
+// until its trust ceremony runs; until then everything is refused with the
+// code that says so.
+func TestDrivenUntrustedRepositoryHasItsCode(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "lcl/conf/peipkg")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := "base_url = \"file:///nowhere\"\npriority = 50\nsignature_policy = \"required\"\n" +
+		"trust_anchors = [\"" + strings.Repeat("ab", 32) + "\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "medium.repo"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, events := drive(t, root, "", "install", "widget")
+	if end := last(t, events); code != 1 || end["code"] != "untrusted" {
+		t.Fatalf("untrusted: exit %d, %v", code, end)
+	}
+}
+
 func TestDrivenStaleMetadataHasItsCode(t *testing.T) {
 	// Metadata that refreshing cannot freshen is refused with the code
 	// that tells the caller --allow-stale is the way on.
