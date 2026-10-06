@@ -92,24 +92,41 @@ func describeOp(op resolver.Operation, anchor string) string {
 // actions it is a no-op that returns true.
 func (app *App) authorize(auths []resolver.Authorization) bool {
 	for _, a := range auths {
+		var granted bool
 		if app.driven != nil {
-			answer := app.ask(map[string]any{"kind": "authorise", "text": a.Detail})
-			if answer != "yes" {
-				return false
-			}
+			granted = app.ask(map[string]any{"kind": "authorise", "text": a.Detail}) == "yes"
 		} else {
 			app.printf("\nthis operation requires elevated authorisation:\n  %s\n", a.Detail)
 			app.printf("authorise this specific action? [y/N] ")
-			if !app.readConfirmation() {
-				return false
-			}
+			granted = app.readConfirmation()
 		}
 		// §7.6.6: the authorising act and what it authorised are
-		// recorded in the audit stream.
-		app.emit(audit.Event{Type: audit.TypeAuthorisation,
-			Outcome: audit.OutcomeSuccess, Detail: a.Detail})
+		// recorded in the audit stream, and so is a refusal: the operator
+		// was asked, and the answer is the record.
+		ev := audit.New(audit.TypeActionAuthorised).
+			Str(audit.FieldOperationName, authAction(a.Kind)).
+			Str(audit.FieldPackageName, a.Package).
+			Bool(audit.FieldOutcomeSuccess, granted).
+			Str(audit.FieldOutcomeDetail, a.Detail)
+		app.emit(ev)
+		if !granted {
+			return false
+		}
 	}
 	return true
+}
+
+// authAction names a plan's elevated action as its audit record does.
+func authAction(k resolver.AuthKind) string {
+	switch k {
+	case resolver.AuthLowTrustProvides:
+		return audit.ActionLowTrustProvides
+	case resolver.AuthForeignReplaces:
+		return audit.ActionForeignReplaces
+	case resolver.AuthDowngrade:
+		return audit.ActionDowngrade
+	}
+	return ""
 }
 
 // decideModified asks the operator what to do with a configuration file
@@ -131,15 +148,23 @@ func (app *App) decideModified(pkg, path string) install.ModifiedDecision {
 			"belong to no package), or abort? [r/k/A] ")
 		answer, _ = app.reader.ReadString('\n')
 	}
+	decision := install.ModifiedAbort
 	switch strings.ToLower(strings.TrimSpace(answer)) {
 	case "r", "remove":
-		app.emit(audit.Event{Type: audit.TypeAuthorisation, Outcome: audit.OutcomeSuccess,
-			Detail: fmt.Sprintf("remove %s, modified since install, with %s", path, pkg)})
-		return install.ModifiedRemove
+		decision = install.ModifiedRemove
 	case "k", "keep":
-		return install.ModifiedKeep
+		decision = install.ModifiedKeep
 	}
-	return install.ModifiedAbort
+	// The removal is what was put to the operator. Keeping the file and
+	// aborting both decline it, and are recorded as declined.
+	app.emit(audit.New(audit.TypeActionAuthorised).
+		Str(audit.FieldOperationName, audit.ActionRemoveModifiedFile).
+		Str(audit.FieldPackageName, pkg).
+		Str(audit.FieldFilePath, path).
+		Bool(audit.FieldOutcomeSuccess, decision == install.ModifiedRemove).
+		Str(audit.FieldOutcomeDetail,
+			fmt.Sprintf("remove %s, modified since install, with %s", path, pkg)))
+	return decision
 }
 
 // confirm asks the operator to approve the plan, returning true when the

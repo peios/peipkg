@@ -18,12 +18,29 @@ func cmdRecover(app *App, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Every run is recorded, including one with nothing to recover and
+	// one that failed part-way, with the transactions rolled back so far.
+	recovered, err := recoverAll(app)
+	ev := audit.New(audit.TypeTransactionRecovered).
+		Uint(audit.FieldOperationSucceeded, uint64(recovered))
+	if err != nil {
+		ev = ev.Failed("", err.Error())
+	} else {
+		ev = ev.Succeeded()
+	}
+	app.emit(ev)
+	return err
+}
+
+// recoverAll does cmdRecover's work, reporting how many interrupted
+// transactions it rolled back, including on failure.
+func recoverAll(app *App) (int, error) {
 	ctx := context.Background()
 
 	// The reachable roots: the current root plus every named root under it.
 	refs, err := gatherRootRefs(ctx, app.paths.root)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	rootPaths := map[string]bool{app.paths.root: true}
 	for _, path := range refs {
@@ -45,7 +62,7 @@ func cmdRecover(app *App, args []string) error {
 	for path := range rootPaths {
 		store, exists, err := openRootDBForRecover(ctx, app, path)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if !exists {
 			continue
@@ -56,7 +73,7 @@ func cmdRecover(app *App, args []string) error {
 
 		txn, pending, err := store.PendingTxn(ctx)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if !pending {
 			continue
@@ -70,7 +87,7 @@ func cmdRecover(app *App, args []string) error {
 
 	if len(singleRoot) == 0 && len(crossIDs) == 0 {
 		app.printf("no interrupted transaction to recover\n")
-		return nil
+		return 0, nil
 	}
 
 	recovered := 0
@@ -78,7 +95,7 @@ func cmdRecover(app *App, args []string) error {
 	sort.Strings(singleRoot)
 	for _, path := range singleRoot {
 		if err := install.Recover(ctx, envs[path]); err != nil {
-			return err
+			return recovered, err
 		}
 		app.printf("recovered: rolled back the interrupted transaction in %s\n", path)
 		recovered++
@@ -92,17 +109,14 @@ func cmdRecover(app *App, args []string) error {
 	for _, id := range ids {
 		rolledBack, err := install.RecoverCrossRoot(ctx, envs, id)
 		if err != nil {
-			return err
+			return recovered, err
 		}
 		if rolledBack {
 			app.printf("recovered: rolled back cross-root transaction %s\n", id)
 			recovered++
 		}
 	}
-
-	app.emit(audit.Event{Type: audit.TypeRecovery, Outcome: audit.OutcomeSuccess,
-		Detail: "interrupted transactions were reconciled"})
-	return nil
+	return recovered, nil
 }
 
 // openRootDBForRecover opens the database of a reachable root: the current

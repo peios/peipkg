@@ -83,7 +83,7 @@ func cmdInstall(app *App, args []string) error {
 		app.setRoot(target)
 	}
 	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, locals, claimDir,
-		audit.TypeInstall, true)
+		verbInstall, true)
 }
 
 // topLevelTargetRoot decides which root a top-level install lands in from
@@ -220,7 +220,7 @@ func cmdUpgrade(app *App, args []string) error {
 	// commits as one cross-root transaction. --no-recurse confines both
 	// resolution and execution to the current root.
 	return transact(app, reqs, resolver.Options{}, *dryRun, *yes, nil,
-		install.ClaimDirective{}, audit.TypeUpgrade, !*noRecurse)
+		install.ClaimDirective{}, verbUpgrade, !*noRecurse)
 }
 
 // gatherUpgradeRoots walks the root topology starting at start: the
@@ -291,20 +291,21 @@ func cmdUninstall(app *App, args []string) error {
 		reqs[i] = resolver.Request{Kind: resolver.Remove, Name: name}
 	}
 	return transact(app, reqs, resolver.Options{CascadeRemovals: *cascade},
-		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUninstall, true)
+		*dryRun, *yes, nil, install.ClaimDirective{}, verbUninstall, true)
 }
 
 // transact resolves a set of requests into a plan, presents it for
 // approval, and — once approved — executes it as one transaction. It
-// emits the §7.6 audit event for the outcome: eventType on success, or
-// peipkg.transaction-failed on a rejection or rollback.
+// writes the §7.6 audit records for the outcome: one per package the
+// plan touched, or, for a request refused before a plan existed, one
+// failed record per package the request named.
 //
 // extraCandidates are packages added to the resolver's candidate set
 // beyond the repositories' active indexes — raw local-file packages.
 // When opts.AllowDowngrade is set the repositories' archive indexes are
 // fetched too, so a downgrade or undo can reach historical versions.
 func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, yes bool,
-	extraCandidates []resolver.Candidate, claimDir install.ClaimDirective, eventType string,
+	extraCandidates []resolver.Candidate, claimDir install.ClaimDirective, verb txnVerb,
 	crossRoot bool) error {
 	if err := app.refuseYesWhenDriven(yes); err != nil {
 		return err
@@ -356,17 +357,16 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	// or undo is a deliberate step back, which the declaration does not
 	// speak to.
 	if err == nil && !app.bypassAlternateUpgrade &&
-		(eventType == audit.TypeInstall || eventType == audit.TypeUpgrade) {
+		(verb == verbInstall || verb == verbUpgrade) {
 		plan, err = app.enforceAlternateUpgrade(ctx, plan, reqs, resolve)
 	}
 	// §5.37: an upgrade of an orphaned package is refused unless a
 	// currently trusted repository now claims it.
-	if err == nil && eventType == audit.TypeUpgrade {
+	if err == nil && verb == verbUpgrade {
 		err = app.refuseOrphanUpgrade(ctx, reqs, available)
 	}
 	if err != nil {
-		app.emit(audit.Event{Type: audit.TypeTxnFailed,
-			Outcome: audit.OutcomeRejection, Detail: err.Error()})
+		app.emitRefused(reqs, err)
 		return err
 	}
 
@@ -380,7 +380,7 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 	// two-phase-commit transaction; a single-root plan uses the existing
 	// single-root executor against the anchor's environment.
 	if len(planRoots(plan, app.paths.root)) > 1 {
-		return app.executeCrossRoot(ctx, plan, store, provider, claimDir, eventType)
+		return app.executeCrossRoot(ctx, plan, store, provider, claimDir)
 	}
 
 	env := install.Env{
@@ -398,19 +398,18 @@ func transact(app *App, reqs []resolver.Request, opts resolver.Options, dryRun, 
 		Progress:               app.progressFunc(),
 	}
 	result, err := install.Execute(ctx, plan, env)
+	txnOf := func(resolver.Operation) int64 { return result.TxnID }
 	if err != nil {
-		app.emit(audit.Event{Type: audit.TypeTxnFailed, TxnID: result.TxnID,
-			Outcome: audit.OutcomeRollback, Packages: auditPackages(plan),
-			Detail: err.Error()})
+		// A failure that carries a transaction id was rolled back; one
+		// without failed before the transaction opened.
+		app.emitPlan(plan, txnOf, err)
 		return err
 	}
 	for _, w := range result.Warnings {
 		fmt.Fprintf(app.errOut, "peipkg: warning: %s\n", w)
 	}
 	app.reportSDOverrides(result.SDOverrides)
-	app.emit(audit.Event{Type: eventType, TxnID: result.TxnID,
-		Outcome: audit.OutcomeSuccess, Packages: auditPackages(plan),
-		Detail: operationCount(plan)})
+	app.emitPlan(plan, txnOf, nil)
 	app.applied(result.TxnID, operationCount(plan))
 	return nil
 }
@@ -594,7 +593,7 @@ func (app *App) gatherInstalledByRoot(ctx context.Context, anchorStore *db.DB,
 // package provider — v1 fetches every root's packages from the anchor's
 // repositories — and runs [install.ExecuteCrossRoot].
 func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchorStore *db.DB,
-	provider install.PackageProvider, claimDir install.ClaimDirective, eventType string) error {
+	provider install.PackageProvider, claimDir install.ClaimDirective) error {
 
 	crossRootID, err := newCrossRootID()
 	if err != nil {
@@ -632,9 +631,21 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 	}
 
 	results, err := install.ExecuteCrossRoot(ctx, plan, envs, crossRootID)
+	// §7.6.3: each package's record carries the transaction of the root
+	// it went into. A cross-root transaction has one per root, and the
+	// record of a package is joined to its own root's ledger rows.
+	// ExecuteCrossRoot partitions the plan by op.Root, which a multi-root
+	// plan always sets; an empty one is the anchor.
+	txnOf := func(op resolver.Operation) int64 {
+		if res, ok := results[op.Root]; ok {
+			return res.TxnID
+		}
+		return results[app.paths.root].TxnID
+	}
 	if err != nil {
-		app.emit(audit.Event{Type: audit.TypeTxnFailed, TxnID: firstTxnID(results),
-			Outcome: audit.OutcomeRollback, Packages: auditPackages(plan), Detail: err.Error()})
+		// A failure in preparation returns no results, so its records
+		// carry no transaction id; a failed commit leaves each root's.
+		app.emitPlan(plan, txnOf, err)
 		return err
 	}
 	for _, res := range results {
@@ -643,19 +654,7 @@ func (app *App) executeCrossRoot(ctx context.Context, plan resolver.Plan, anchor
 		}
 		app.reportSDOverrides(res.SDOverrides)
 	}
-	// §7.6.3: an emitted event includes the transaction identifier. The
-	// failure path above scans results for one; the success path did not,
-	// so encodeEvent wrote txn_id: 0 — leaving a committed cross-root
-	// operation, the highest-blast-radius thing peipkg does, as the one
-	// event that could not be joined to the txn ledger rows.
-	//
-	// A cross-root transaction genuinely has N per-root identifiers and
-	// one crossRootID. This reports one per-root id, matching the failure
-	// path; carrying crossRootID as well would need a new event field,
-	// which is an audit-schema change rather than a fix.
-	app.emit(audit.Event{Type: eventType, TxnID: firstTxnID(results),
-		Outcome:  audit.OutcomeSuccess,
-		Packages: auditPackages(plan), Detail: operationCount(plan)})
+	app.emitPlan(plan, txnOf, nil)
 	app.applied(firstTxnID(results), fmt.Sprintf("%s across %d roots", operationCount(plan), len(envs)))
 	return nil
 }
@@ -687,33 +686,6 @@ func sameRoot(a, b string) bool {
 		return a == b
 	}
 	return aa == bb
-}
-
-// auditPackages renders a plan's operations as audit package
-// references: the version each package ends at, or — for a removal —
-// the version removed.
-func auditPackages(plan resolver.Plan) []audit.PackageRef {
-	refs := make([]audit.PackageRef, 0, len(plan.Operations))
-	for _, op := range plan.Operations {
-		ref := audit.PackageRef{Name: op.Name}
-		if op.Kind == resolver.OpRemove {
-			ref.Version = op.FromVersion.String()
-		} else {
-			ref.Version = op.ToVersion.String()
-			if op.Candidate != nil {
-				ref.Architecture = op.Candidate.Architecture
-				// §7.6.3 requires the source repository on install and
-				// upgrade events. It is what an audit consumer correlates
-				// a bad install against a compromised repository with,
-				// and a plan drawing from several repositories used to
-				// name none of them. Empty means a local file, which is
-				// itself worth recording.
-				ref.Repo = op.Candidate.Repo
-			}
-		}
-		refs = append(refs, ref)
-	}
-	return refs
 }
 
 // refuseOrphanUpgrade applies §5.37's upgrade rule: a package whose
@@ -922,9 +894,12 @@ func ensureFreshTrust(app *App, allowStale bool) error {
 		fmt.Fprintf(app.errOut, "peipkg: warning: proceeding with stale trust state for "+
 			"repository %q (%s old) — authorised by --allow-stale (§6.5.4)\n",
 			cfg.Name, formatAge(age))
-		app.emit(audit.Event{Type: audit.TypeAuthorisation, Outcome: audit.OutcomeSuccess,
-			Repo: cfg.Name, Detail: fmt.Sprintf("proceed with stale trust state (age %s)",
-				formatAge(age))})
+		app.emit(audit.New(audit.TypeActionAuthorised).
+			Str(audit.FieldOperationName, audit.ActionStaleTrustState).
+			Str(audit.FieldRepositoryName, cfg.Name).
+			Succeeded().
+			Str(audit.FieldOutcomeDetail, fmt.Sprintf("proceed with stale trust state (age %s)",
+				formatAge(age))))
 	}
 	return nil
 }
@@ -985,9 +960,12 @@ func ensureIndexNotStale(ctx context.Context, app *App, client *repository.Clien
 	fmt.Fprintf(app.errOut, "peipkg: warning: proceeding with stale metadata for repository "+
 		"%q (index generated %s ago) — authorised by --allow-stale (§5.34)\n",
 		cfg.Name, formatAge(age))
-	app.emit(audit.Event{Type: audit.TypeAuthorisation, Outcome: audit.OutcomeSuccess,
-		Repo: cfg.Name, Detail: fmt.Sprintf("proceed with stale index metadata (generated %s ago)",
-			formatAge(age))})
+	app.emit(audit.New(audit.TypeActionAuthorised).
+		Str(audit.FieldOperationName, audit.ActionStaleIndex).
+		Str(audit.FieldRepositoryName, cfg.Name).
+		Succeeded().
+		Str(audit.FieldOutcomeDetail, fmt.Sprintf("proceed with stale index metadata "+
+			"(generated %s ago)", formatAge(age))))
 	return nil
 }
 
@@ -1093,10 +1071,11 @@ func cmdDowngrade(app *App, args []string) error {
 		return fmt.Errorf("downgrade: invalid version %q: %w", pos[1], err)
 	}
 	reqs := []resolver.Request{{Kind: resolver.Downgrade, Name: pos[0], Version: target}}
-	// §7.6 has no `downgrade` event type; a downgrade is audited as an
-	// upgrade (a downgrade is an upgrade to an older version, §7.2.5).
+	// A downgrade is an upgrade to an older version (§7.2.5): it runs as
+	// one, and is audited as peipkg.package.upgraded, the two versions
+	// showing the direction.
 	return transact(app, reqs, resolver.Options{AllowDowngrade: true},
-		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUpgrade, true)
+		*dryRun, *yes, nil, install.ClaimDirective{}, verbUpgrade, true)
 }
 
 // cmdUndo reverses the most recent committed transaction: an install is
@@ -1138,8 +1117,9 @@ func cmdUndo(app *App, args []string) error {
 		return err
 	}
 	app.printf("undoing transaction %d (%s)\n", last.ID, last.OpSummary)
-	// An undo is a version-changing transaction; §7.6 has no dedicated
-	// type, so it is audited as an upgrade.
+	// An undo runs as an upgrade. Each package it touches is audited by
+	// what happens to it: an undone install is recorded as uninstalled,
+	// an undone upgrade as upgraded to the older version.
 	//
 	// It resolves across every reachable root, as a downgrade does, even
 	// though the transaction it undoes touched only this one: the
@@ -1148,7 +1128,7 @@ func cmdUndo(app *App, args []string) error {
 	// satisfied there. Resolving single-root refused every undo on such a
 	// system.
 	return transact(app, reqs, resolver.Options{AllowDowngrade: true},
-		*dryRun, *yes, nil, install.ClaimDirective{}, audit.TypeUpgrade, true)
+		*dryRun, *yes, nil, install.ClaimDirective{}, verbUpgrade, true)
 }
 
 // undoCrossRoot reverses every root of a committed cross-root transaction
@@ -1196,15 +1176,14 @@ func (app *App) undoCrossRoot(ctx context.Context, crossRootID string, dryRun, y
 
 	plan, err := resolver.ResolveMultiRoot(reqs, installedByRoot, available, refToPath, opts)
 	if err != nil {
-		app.emit(audit.Event{Type: audit.TypeTxnFailed,
-			Outcome: audit.OutcomeRejection, Detail: err.Error()})
+		app.emitRefused(reqs, err)
 		return err
 	}
 	if !app.approve(plan, dryRun, yes) {
 		return nil
 	}
 	provider := &repoProvider{client: app.repoClient(store), configs: configs, warn: app.errOut}
-	return app.executeCrossRoot(ctx, plan, store, provider, install.ClaimDirective{}, audit.TypeUpgrade)
+	return app.executeCrossRoot(ctx, plan, store, provider, install.ClaimDirective{})
 }
 
 // crossRootInverseRequests gathers, across every reachable root, the

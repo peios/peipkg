@@ -370,14 +370,31 @@ func TestAuditLocalInstallEmitsEvent(t *testing.T) {
 		t.Fatalf("expected one audit event, got %d: %+v", len(rec.Events), rec.Events)
 	}
 	e := rec.Events[0]
-	if e.Type != audit.TypeInstall || e.Outcome != audit.OutcomeSuccess {
-		t.Errorf("event: type=%q outcome=%q, want %q success", e.Type, e.Outcome, audit.TypeInstall)
+	if e.Type != audit.TypePackageInstalled {
+		t.Errorf("event type = %q, want %q", e.Type, audit.TypePackageInstalled)
 	}
-	if len(e.Packages) != 1 || e.Packages[0].Name != "tool" {
-		t.Errorf("event packages: %+v", e.Packages)
+	for path, want := range map[string]any{
+		audit.FieldOutcomeSuccess:      true,
+		audit.FieldPackageName:         "tool",
+		audit.FieldPackageVersion:      "1.0-1",
+		audit.FieldPackageArchitecture: "x86_64",
+	} {
+		if got, _ := e.Get(path); got != want {
+			t.Errorf("%s = %v, want %v", path, got, want)
+		}
 	}
-	if e.TxnID == 0 {
+	if id, ok := e.Get(audit.FieldTransactionID); !ok || id.(uint64) == 0 {
 		t.Error("event has no transaction id")
+	}
+	// A local file has no repository: the field is absent, never "".
+	if v, ok := e.Get(audit.FieldSourceRepository); ok {
+		t.Errorf("a local-file install carries source.repository.name %v", v)
+	}
+	for _, p := range []string{audit.FieldPackageVersionPrev, audit.FieldOutcomeReason,
+		audit.FieldOutcomeDetail} {
+		if v, ok := e.Get(p); ok {
+			t.Errorf("%s = %v on a fresh, successful install, want absent", p, v)
+		}
 	}
 }
 

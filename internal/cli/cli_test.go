@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/peios/peipkg/internal/db"
 	"github.com/peios/peipkg/internal/install"
 	"github.com/peios/peipkg/internal/resolver"
+	"github.com/peios/peipkg/internal/version"
 )
 
 // testApp builds an App rooted at a fresh temporary directory and
@@ -368,10 +370,106 @@ func TestAuditFailedResolutionEmitsEvent(t *testing.T) {
 	if err := cmdInstall(app, []string{"nonexistent"}); err == nil {
 		t.Fatal("install of an unknown package should fail")
 	}
-	// §7.6: a rejected operation emits a transaction-failed event.
-	if len(rec.Events) != 1 || rec.Events[0].Type != audit.TypeTxnFailed ||
-		rec.Events[0].Outcome != audit.OutcomeRejection {
-		t.Fatalf("expected one rejection transaction-failed event, got %+v", rec.Events)
+	// §7.6: a refused request writes one failed record per package it
+	// named, with no transaction, since none opened.
+	if len(rec.Events) != 1 || rec.Events[0].Type != audit.TypePackageInstalled {
+		t.Fatalf("expected one failed peipkg.package.installed record, got %+v", rec.Events)
+	}
+	e := rec.Events[0]
+	for path, want := range map[string]any{
+		audit.FieldOutcomeSuccess: false,
+		audit.FieldOutcomeReason:  "unresolvable",
+		audit.FieldPackageName:    "nonexistent",
+	} {
+		if got, _ := e.Get(path); got != want {
+			t.Errorf("%s = %v, want %v", path, got, want)
+		}
+	}
+	if _, ok := e.Get(audit.FieldTransactionID); ok {
+		t.Error("a refused request carries transaction.id")
+	}
+	if d, _ := e.Get(audit.FieldOutcomeDetail); d == nil {
+		t.Error("a refused request carries no outcome.detail")
+	}
+}
+
+// An upgrade of everything names no package; its refusal is one record
+// without object.package.name.
+func TestAuditRefusedUpgradeOfEverythingNamesNoPackage(t *testing.T) {
+	app, _ := testApp(t)
+	rec := app.emitter.(*audit.Recorder)
+	reqs := []resolver.Request{{Kind: resolver.Upgrade}, {Kind: resolver.Upgrade}}
+	app.emitRefused(reqs, fmt.Errorf("boom"))
+	if len(rec.Events) != 1 || rec.Events[0].Type != audit.TypePackageUpgraded {
+		t.Fatalf("got %+v, want one peipkg.package.upgraded", rec.Events)
+	}
+	if _, ok := rec.Events[0].Get(audit.FieldPackageName); ok {
+		t.Error("an upgrade of everything named a package")
+	}
+	if r, _ := rec.Events[0].Get(audit.FieldOutcomeReason); r != "failed" {
+		t.Errorf("outcome.reason = %v, want failed", r)
+	}
+}
+
+// Each operation of a plan is its own record, typed by what happened to
+// that package: an upgrade that pulls in a dependency installs it, a
+// downgrade is an upgrade with the versions reversed, and a removal has
+// no architecture or source.
+func TestAuditPlanWritesOneRecordPerOperation(t *testing.T) {
+	app, _ := testApp(t)
+	rec := app.emitter.(*audit.Recorder)
+	v := func(s string) version.Version {
+		ver, err := version.Parse(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ver
+	}
+	plan := resolver.Plan{Operations: []resolver.Operation{
+		{Kind: resolver.OpRemove, Name: "old", FromVersion: v("1.0-1")},
+		{Kind: resolver.OpInstall, Name: "dep", ToVersion: v("2.0-1"),
+			Candidate: &resolver.Candidate{Architecture: "noarch", Repo: "main"}},
+		{Kind: resolver.OpDowngrade, Name: "app", FromVersion: v("3.0-1"), ToVersion: v("2.5-1"),
+			Candidate: &resolver.Candidate{Architecture: "x86_64", Repo: "archive"}},
+	}}
+	app.emitPlan(plan, func(resolver.Operation) int64 { return 9 }, nil)
+	want := []struct {
+		typ    string
+		fields map[string]any
+		absent []string
+	}{
+		{audit.TypePackageUninstalled, map[string]any{
+			audit.FieldPackageName: "old", audit.FieldPackageVersion: "1.0-1"},
+			[]string{audit.FieldPackageArchitecture, audit.FieldSourceRepository, audit.FieldPackageVersionPrev}},
+		{audit.TypePackageInstalled, map[string]any{
+			audit.FieldPackageName: "dep", audit.FieldPackageVersion: "2.0-1",
+			audit.FieldPackageArchitecture: "noarch", audit.FieldSourceRepository: "main"},
+			[]string{audit.FieldPackageVersionPrev}},
+		{audit.TypePackageUpgraded, map[string]any{
+			audit.FieldPackageName: "app", audit.FieldPackageVersion: "2.5-1",
+			audit.FieldPackageVersionPrev: "3.0-1", audit.FieldSourceRepository: "archive"},
+			nil},
+	}
+	if len(rec.Events) != len(want) {
+		t.Fatalf("got %d records, want %d: %+v", len(rec.Events), len(want), rec.Events)
+	}
+	for i, w := range want {
+		e := rec.Events[i]
+		if e.Type != w.typ {
+			t.Errorf("record %d: type %q, want %q", i, e.Type, w.typ)
+		}
+		w.fields[audit.FieldTransactionID] = uint64(9)
+		w.fields[audit.FieldOutcomeSuccess] = true
+		for p, val := range w.fields {
+			if got, _ := e.Get(p); got != val {
+				t.Errorf("record %d: %s = %v, want %v", i, p, got, val)
+			}
+		}
+		for _, p := range w.absent {
+			if got, ok := e.Get(p); ok {
+				t.Errorf("record %d: %s = %v, want absent", i, p, got)
+			}
+		}
 	}
 }
 
@@ -382,6 +480,42 @@ func TestRecoverNothingPending(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no interrupted transaction") {
 		t.Errorf("recover output: %q", out.String())
+	}
+	// Every run is recorded, one with nothing to recover included.
+	recs := app.emitter.(*audit.Recorder).OfType(audit.TypeTransactionRecovered)
+	if len(recs) != 1 {
+		t.Fatalf("got %d peipkg.transaction.recovered records, want 1", len(recs))
+	}
+	if n, _ := recs[0].Get(audit.FieldOperationSucceeded); n != uint64(0) {
+		t.Errorf("operation.succeeded-count = %v, want 0", n)
+	}
+	if s, _ := recs[0].Get(audit.FieldOutcomeSuccess); s != true {
+		t.Errorf("outcome.success = %v, want true", s)
+	}
+}
+
+// A recover that fails is recorded as failed (PEI-617: no record was
+// written on recover's failure paths).
+func TestRecoverFailureIsRecorded(t *testing.T) {
+	app, _ := testApp(t)
+	// A root whose state directory is a file cannot be opened.
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "var"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.setRoot(root)
+	if err := cmdRecover(app, nil); err == nil {
+		t.Fatal("recover in an unusable root succeeded")
+	}
+	recs := app.emitter.(*audit.Recorder).OfType(audit.TypeTransactionRecovered)
+	if len(recs) != 1 {
+		t.Fatalf("got %d peipkg.transaction.recovered records, want 1", len(recs))
+	}
+	if s, _ := recs[0].Get(audit.FieldOutcomeSuccess); s != false {
+		t.Errorf("outcome.success = %v, want false", s)
+	}
+	if _, ok := recs[0].Get(audit.FieldOutcomeDetail); !ok {
+		t.Error("a failed recover carries no outcome.detail")
 	}
 }
 
@@ -401,11 +535,62 @@ func TestDecideModifiedRequiresAnExplicitAnswer(t *testing.T) {
 	for input, want := range cases {
 		out := &bytes.Buffer{}
 		app := newApp(t.TempDir(), strings.NewReader(input), out, &bytes.Buffer{})
+		rec := &audit.Recorder{}
+		app.emitter = rec
 		if got := app.decideModified("app", "/usr/etc/app.conf"); got != want {
 			t.Errorf("decideModified with input %q = %v, want %v", input, got, want)
 		}
 		if !strings.Contains(out.String(), "/usr/etc/app.conf") {
 			t.Errorf("the prompt does not name the file:\n%s", out.String())
+		}
+		// Every answer is recorded: only remove authorises the removal;
+		// keep and abort decline it.
+		recs := rec.OfType(audit.TypeActionAuthorised)
+		if len(recs) != 1 {
+			t.Fatalf("input %q: %d peipkg.action.authorised records, want 1", input, len(recs))
+		}
+		for path, w := range map[string]any{
+			audit.FieldOperationName:  audit.ActionRemoveModifiedFile,
+			audit.FieldPackageName:    "app",
+			audit.FieldFilePath:       "/usr/etc/app.conf",
+			audit.FieldOutcomeSuccess: want == install.ModifiedRemove,
+		} {
+			if got, _ := recs[0].Get(path); got != w {
+				t.Errorf("input %q: %s = %v, want %v", input, path, got, w)
+			}
+		}
+	}
+}
+
+// §7.6.6: each elevated action put to the operator is recorded with its
+// answer, a refusal included, and the first refusal stops the rest.
+func TestAuthorizeRecordsEveryAnswer(t *testing.T) {
+	auths := []resolver.Authorization{
+		{Kind: resolver.AuthDowngrade, Package: "app", Detail: "app would move backward"},
+		{Kind: resolver.AuthForeignReplaces, Package: "fork", Detail: "fork replaces app"},
+		{Kind: resolver.AuthLowTrustProvides, Package: "sub", Detail: "sub provides dep"},
+	}
+	app := newApp(t.TempDir(), strings.NewReader("y\nn\ny\n"), &bytes.Buffer{}, &bytes.Buffer{})
+	rec := &audit.Recorder{}
+	app.emitter = rec
+	if app.authorize(auths) {
+		t.Fatal("authorize returned true after a refusal")
+	}
+	recs := rec.OfType(audit.TypeActionAuthorised)
+	want := []map[string]any{
+		{audit.FieldOperationName: audit.ActionDowngrade, audit.FieldPackageName: "app",
+			audit.FieldOutcomeSuccess: true, audit.FieldOutcomeDetail: "app would move backward"},
+		{audit.FieldOperationName: audit.ActionForeignReplaces, audit.FieldPackageName: "fork",
+			audit.FieldOutcomeSuccess: false, audit.FieldOutcomeDetail: "fork replaces app"},
+	}
+	if len(recs) != len(want) {
+		t.Fatalf("got %d records, want %d: %+v", len(recs), len(want), recs)
+	}
+	for i, fields := range want {
+		for path, w := range fields {
+			if got, _ := recs[i].Get(path); got != w {
+				t.Errorf("record %d: %s = %v, want %v", i, path, got, w)
+			}
 		}
 	}
 }

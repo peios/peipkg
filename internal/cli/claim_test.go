@@ -99,6 +99,27 @@ func TestCmdClaimStatusGrantRevoke(t *testing.T) {
 			t.Error("registryd should be unheld after revoke")
 		}
 	})
+
+	// A grant names the holder and a revoke leaves it out; both name the
+	// role and the transaction.
+	recs := app.emitter.(*audit.Recorder).OfType(audit.TypeClaimChanged)
+	if len(recs) != 2 {
+		t.Fatalf("got %d peipkg.claim.changed records, want 2", len(recs))
+	}
+	if h, _ := recs[0].Get(audit.FieldClaimHolder); h != "loregd" {
+		t.Errorf("grant: object.claim.holder = %v, want loregd", h)
+	}
+	if h, ok := recs[1].Get(audit.FieldClaimHolder); ok {
+		t.Errorf("revoke: object.claim.holder = %v, want absent", h)
+	}
+	for i, r := range recs {
+		if role, _ := r.Get(audit.FieldClaimRole); role != "registryd" {
+			t.Errorf("record %d: object.claim.role = %v", i, role)
+		}
+		if _, ok := r.Get(audit.FieldTransactionID); !ok {
+			t.Errorf("record %d: no transaction.id", i)
+		}
+	}
 }
 
 func TestCmdClaimUsageErrors(t *testing.T) {
@@ -119,8 +140,8 @@ func recordedClaimEvent(app *App) bool {
 	if !ok {
 		return false
 	}
-	for _, e := range rec.Events {
-		if e.Type == audit.TypeClaim && e.Outcome == audit.OutcomeSuccess {
+	for _, e := range rec.OfType(audit.TypeClaimChanged) {
+		if s, _ := e.Get(audit.FieldOutcomeSuccess); s == true {
 			return true
 		}
 	}

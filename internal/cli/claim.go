@@ -193,16 +193,17 @@ func claimChange(app *App, req install.ClaimRequest, yes bool) error {
 	}
 
 	result, err := install.Claim(ctx, env, req)
+	// A grant names the new holder; a revoke leaves the holder out.
+	ev := audit.New(audit.TypeClaimChanged).Txn(result.TxnID).
+		Str(audit.FieldClaimRole, req.Role).
+		Str(audit.FieldClaimHolder, req.Holder)
+	app.emit(withOutcome(ev, err))
 	if err != nil {
-		app.emit(audit.Event{Type: audit.TypeClaim, TxnID: result.TxnID,
-			Outcome: audit.OutcomeRollback, Detail: err.Error()})
 		return err
 	}
 	for _, w := range result.Warnings {
 		fmt.Fprintf(app.errOut, "peipkg: warning: %s\n", w)
 	}
-	app.emit(audit.Event{Type: audit.TypeClaim, TxnID: result.TxnID,
-		Outcome: audit.OutcomeSuccess, Detail: detail})
 	if app.driven != nil {
 		app.driven.txn, app.driven.done = result.TxnID, detail
 		return nil

@@ -210,8 +210,13 @@ const (
 // plan is applied (§7.6.6). The routine proceed-with-this confirmation
 // never satisfies it.
 type Authorization struct {
-	Kind   AuthKind
-	Detail string // human-readable, specific to the action
+	Kind AuthKind
+	// Package is the package the plan would install or move that raises
+	// the action: the substitute for AuthLowTrustProvides, the
+	// successor for AuthForeignReplaces, the package moving backward for
+	// AuthDowngrade. It is what the action's audit record names.
+	Package string
+	Detail  string // human-readable, specific to the action
 }
 
 // NoticeKind identifies a resolution outcome worth reporting to the

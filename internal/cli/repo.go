@@ -120,22 +120,42 @@ func cmdRepoAdd(app *App, args []string) error {
 			"                  repo add <name>   (for a repository already configured on this system)")
 	}
 
+	// Every add is recorded from here on, failed or not: the ceremony
+	// decides whose packages the system will install.
+	previous, err := app.addRepository(cfg, len(pos) == 1)
+	ev := audit.New(audit.TypeRepositoryAdded).
+		Str(audit.FieldRepositoryName, cfg.Name).
+		Str(audit.FieldRepositoryURL, cfg.BaseURL)
+	app.emit(withOutcome(ev, err))
+	if err != nil {
+		return err
+	}
+	// §7.6.3.1: a trust-policy or transport-flag change is recorded, one
+	// record per setting. Re-adding an existing repository with a
+	// weakened policy otherwise produced an audit trail identical to a
+	// routine add, and trust-policy history could not be reconstructed
+	// from the event stream at all.
+	for _, c := range trustPolicyChanges(previous, cfg) {
+		app.emit(c.event(cfg.Name))
+	}
+	return nil
+}
+
+// addRepository writes a repository's configuration, when this command
+// supplied it, and performs the trust ceremony. It returns the
+// configuration the repository had before, nil when it had none.
+func (app *App) addRepository(cfg config.RepoConfig, preconfigured bool) (*config.RepoConfig, error) {
 	ctx := context.Background()
 	store, err := app.openDB(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer store.Close()
 
 	provider := app.configProvider()
-	preconfigured := len(pos) == 1
 
-	// §7.6.3.1 emits peipkg.config-change for a trust-policy or
-	// transport-flag change. Capture what was configured before this
-	// command overwrites it: re-adding an existing repository with a
-	// weakened policy otherwise produced an audit trail identical to a
-	// routine add, and trust-policy history could not be reconstructed
-	// from the event stream at all.
+	// Capture what was configured before this command overwrites it, for
+	// the peipkg.repository.reconfigured records.
 	var previous *config.RepoConfig
 	if prior, found, err := provider.Repository(cfg.Name); err == nil && found {
 		previous = &prior
@@ -143,7 +163,7 @@ func cmdRepoAdd(app *App, args []string) error {
 
 	if !preconfigured {
 		if err := provider.Put(cfg); err != nil {
-			return err
+			return previous, err
 		}
 	}
 	if err := app.repoClient(store).Add(ctx, cfg); err != nil {
@@ -159,60 +179,93 @@ func cmdRepoAdd(app *App, args []string) error {
 		if !preconfigured {
 			_ = provider.Remove(cfg.Name)
 		}
-		return err
+		return previous, err
 	}
 	app.printf("added repository %q\n", cfg.Name)
 	app.warnUnsigned(cfg)
-	app.emit(audit.Event{Type: audit.TypeRepoAdd, Outcome: audit.OutcomeSuccess,
-		Repo: cfg.Name, Detail: cfg.BaseURL})
-	if detail := trustPolicyChanges(previous, cfg); detail != "" {
-		app.emit(audit.Event{Type: audit.TypeConfigChange, Outcome: audit.OutcomeSuccess,
-			Repo: cfg.Name, Detail: detail})
-	}
-	return nil
+	return previous, nil
 }
 
-// trustPolicyChanges describes how the trust-relevant settings of an
-// existing repository differ from the ones just configured, as
-// "field: old -> new" clauses. It returns "" when nothing changed, and
-// for a repository that did not previously exist — a first add is
-// already covered by peipkg.repo-add.
+// settingChange is one trust-relevant setting a repository add changed:
+// signature_policy as text, every other setting as a number.
+type settingChange struct {
+	name                 string
+	text, textPrevious   string
+	value, valuePrevious uint64
+	numeric              bool
+}
+
+// event is the change's peipkg.repository.reconfigured record.
+func (c settingChange) event(repo string) audit.Event {
+	ev := audit.New(audit.TypeRepositoryReconfigured).
+		Str(audit.FieldRepositoryName, repo).
+		Str(audit.FieldConfigName, c.name)
+	if c.numeric {
+		return ev.Uint(audit.FieldConfigValue, c.value).
+			Uint(audit.FieldConfigValuePrevious, c.valuePrevious)
+	}
+	return ev.Str(audit.FieldConfigText, c.text).
+		Str(audit.FieldConfigTextPrevious, c.textPrevious)
+}
+
+// trustPolicyChanges lists how the trust-relevant settings of an
+// existing repository differ from the ones just configured, by the names
+// the repository file gives them. It returns nothing when nothing
+// changed, and for a repository that did not previously exist: a first
+// add is already covered by peipkg.repository.added.
+//
+// A number is recorded as written, so 0 for a setting left at its
+// default; allow_insecure_transport is 1 or 0; trust_anchors is how many
+// anchors are configured, so swapping one anchor for another records a
+// change between equal counts.
 //
 // This only sees a change made through the flags of `repo add <name>
 // <url>`. The configured form reads the .repo file for both sides, so an
 // operator who edits that file directly and re-runs the ceremony leaves
 // nothing here to compare; detecting that would need peipkg to record the
 // previously-trusted policy of its own accord.
-func trustPolicyChanges(previous *config.RepoConfig, next config.RepoConfig) string {
+func trustPolicyChanges(previous *config.RepoConfig, next config.RepoConfig) []settingChange {
 	if previous == nil {
-		return ""
+		return nil
 	}
-	var changes []string
+	var changes []settingChange
+	number := func(name string, from, to int64) {
+		if from != to {
+			changes = append(changes, settingChange{name: name, numeric: true,
+				value: nonNegative(to), valuePrevious: nonNegative(from)})
+		}
+	}
 	if previous.SignaturePolicy != next.SignaturePolicy {
-		changes = append(changes, fmt.Sprintf("signature_policy: %s -> %s",
-			previous.SignaturePolicy, next.SignaturePolicy))
+		changes = append(changes, settingChange{name: "signature_policy",
+			text: string(next.SignaturePolicy), textPrevious: string(previous.SignaturePolicy)})
 	}
-	if previous.AllowInsecureTransport != next.AllowInsecureTransport {
-		changes = append(changes, fmt.Sprintf("allow_insecure_transport: %t -> %t",
-			previous.AllowInsecureTransport, next.AllowInsecureTransport))
-	}
-	if previous.MaxTrustedAgeDays != next.MaxTrustedAgeDays {
-		changes = append(changes, fmt.Sprintf("max_trusted_age_days: %d -> %d",
-			previous.MaxTrustedAgeDays, next.MaxTrustedAgeDays))
-	}
-	if previous.MinIndexVersion != next.MinIndexVersion {
-		changes = append(changes, fmt.Sprintf("min_index_version: %d -> %d",
-			previous.MinIndexVersion, next.MinIndexVersion))
-	}
-	if previous.MaxIndexStalenessDays != next.MaxIndexStalenessDays {
-		changes = append(changes, fmt.Sprintf("max_index_staleness_days: %d -> %d",
-			previous.MaxIndexStalenessDays, next.MaxIndexStalenessDays))
-	}
+	number("allow_insecure_transport", boolNumber(previous.AllowInsecureTransport),
+		boolNumber(next.AllowInsecureTransport))
+	number("max_trusted_age_days", int64(previous.MaxTrustedAgeDays), int64(next.MaxTrustedAgeDays))
+	number("min_index_version", previous.MinIndexVersion, next.MinIndexVersion)
+	number("max_index_staleness_days", int64(previous.MaxIndexStalenessDays),
+		int64(next.MaxIndexStalenessDays))
 	if !slices.Equal(previous.TrustAnchors, next.TrustAnchors) {
-		changes = append(changes, fmt.Sprintf("trust_anchors: %d -> %d",
-			len(previous.TrustAnchors), len(next.TrustAnchors)))
+		changes = append(changes, settingChange{name: "trust_anchors", numeric: true,
+			value: uint64(len(next.TrustAnchors)), valuePrevious: uint64(len(previous.TrustAnchors))})
 	}
-	return strings.Join(changes, "; ")
+	return changes
+}
+
+func boolNumber(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// nonNegative clamps a setting configuration validation already keeps
+// non-negative.
+func nonNegative(v int64) uint64 {
+	if v < 0 {
+		return 0
+	}
+	return uint64(v)
 }
 
 // cmdRepoList prints the configured repositories.
@@ -317,6 +370,20 @@ func cmdRepoRemove(app *App, args []string) error {
 	}
 	name := pos[0]
 
+	err = app.removeRepository(name)
+	ev := audit.New(audit.TypeRepositoryRemoved).Str(audit.FieldRepositoryName, name)
+	if err != nil {
+		app.emit(ev.Failed("", err.Error()))
+		return err
+	}
+	app.emit(ev.Succeeded())
+	app.printf("removed repository %q\n", name)
+	return nil
+}
+
+// removeRepository removes a repository's configuration and its recorded
+// trust state.
+func (app *App) removeRepository(name string) error {
 	ctx := context.Background()
 	store, err := app.openDB(ctx)
 	if err != nil {
@@ -327,12 +394,7 @@ func cmdRepoRemove(app *App, args []string) error {
 	if err := app.configProvider().Remove(name); err != nil {
 		return err
 	}
-	if err := store.DeleteRepository(ctx, name); err != nil {
-		return err
-	}
-	app.printf("removed repository %q\n", name)
-	app.emit(audit.Event{Type: audit.TypeRepoRemove, Outcome: audit.OutcomeSuccess, Repo: name})
-	return nil
+	return store.DeleteRepository(ctx, name)
 }
 
 // cmdRefresh refreshes the metadata of the configured repositories. A
@@ -388,12 +450,10 @@ func cmdRefresh(app *App, args []string) error {
 	if refreshed == 0 && failures == 0 {
 		app.printf("no repositories to refresh\n")
 	}
-	outcome := audit.OutcomeSuccess
-	if failures > 0 {
-		outcome = audit.OutcomeRejection
-	}
-	app.emit(audit.Event{Type: audit.TypeRefresh, Outcome: outcome,
-		Detail: fmt.Sprintf("%d refreshed, %d failed", refreshed, failures)})
+	app.emit(audit.New(audit.TypeRepositoryRefreshed).
+		Uint(audit.FieldOperationSucceeded, uint64(refreshed)).
+		Uint(audit.FieldOperationFailed, uint64(failures)).
+		Bool(audit.FieldOutcomeSuccess, failures == 0))
 	if failures > 0 {
 		return fmt.Errorf("%d repository refresh(es) failed", failures)
 	}

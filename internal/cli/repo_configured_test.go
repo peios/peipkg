@@ -273,36 +273,112 @@ func TestRepoAddEmitsConfigChangeWhenTrustPolicyWeakens(t *testing.T) {
 	if err := add("required"); err != nil {
 		t.Fatalf("repo add (first): %v", err)
 	}
-	// A first add is fully described by peipkg.repo-add; there is no
-	// prior policy to have changed.
-	if n := countEvents(rec, audit.TypeConfigChange); n != 0 {
-		t.Fatalf("a first add emitted %d config-change events, want 0", n)
+	// A first add is fully described by peipkg.repository.added; there is
+	// no prior policy to have changed.
+	if n := countEvents(rec, audit.TypeRepositoryReconfigured); n != 0 {
+		t.Fatalf("a first add emitted %d reconfigured records, want 0", n)
+	}
+	added := rec.OfType(audit.TypeRepositoryAdded)
+	if len(added) != 1 {
+		t.Fatalf("got %d peipkg.repository.added records, want 1", len(added))
+	}
+	for path, want := range map[string]any{
+		audit.FieldRepositoryName: "medium",
+		audit.FieldRepositoryURL:  url,
+		audit.FieldOutcomeSuccess: true,
+	} {
+		if got, _ := added[0].Get(path); got != want {
+			t.Errorf("added: %s = %v, want %v", path, got, want)
+		}
 	}
 
-	// The operator re-adds the same repository, downgrading the policy.
+	// The operator re-adds the same repository, downgrading the policy
+	// and raising the trusted age.
 	rec.Events = nil
-	if err := add("optional"); err != nil {
+	if err := cmdRepoAdd(app, []string{"--anchor", fp, "--insecure", "--policy", "optional",
+		"--max-trusted-age-days", "60", "medium", url}); err != nil {
 		t.Fatalf("repo add (weakened): %v", err)
 	}
 
-	var change *audit.Event
-	for i := range rec.Events {
-		if rec.Events[i].Type == audit.TypeConfigChange {
-			change = &rec.Events[i]
+	// One record per changed setting, carrying both values, or the
+	// record says something changed without saying what from.
+	changes := rec.OfType(audit.TypeRepositoryReconfigured)
+	if len(changes) != 2 {
+		t.Fatalf("got %d reconfigured records, want 2 (policy and age): %+v", len(changes), rec.Events)
+	}
+	want := []map[string]any{
+		{audit.FieldConfigName: "signature_policy", audit.FieldConfigText: "optional",
+			audit.FieldConfigTextPrevious: "required"},
+		{audit.FieldConfigName: "max_trusted_age_days", audit.FieldConfigValue: uint64(60),
+			audit.FieldConfigValuePrevious: uint64(0)},
+	}
+	for i, fields := range want {
+		fields[audit.FieldRepositoryName] = "medium"
+		for path, w := range fields {
+			if got, _ := changes[i].Get(path); got != w {
+				t.Errorf("record %d: %s = %v, want %v", i, path, got, w)
+			}
 		}
 	}
-	if change == nil {
-		t.Fatalf("weakening signature_policy emitted no config-change event; got %+v", rec.Events)
+}
+
+// A failed trust ceremony is recorded (PEI-617: it used to leave
+// nothing), with peipkg's error code as the reason.
+func TestRepoAddFailureIsRecorded(t *testing.T) {
+	app, _ := testApp(t)
+	rec := app.emitter.(*audit.Recorder)
+	err := cmdRepoAdd(app, []string{"--anchor", strings.Repeat("ab", 32),
+		"--insecure", "nowhere", "http://127.0.0.1:1/"})
+	if err == nil {
+		t.Fatal("repo add of an unreachable repository succeeded")
 	}
-	if change.Repo != "medium" {
-		t.Errorf("config-change Repo = %q, want %q", change.Repo, "medium")
+	added := rec.OfType(audit.TypeRepositoryAdded)
+	if len(added) != 1 {
+		t.Fatalf("got %d peipkg.repository.added records, want 1", len(added))
 	}
-	// The detail has to carry both values, or the event records that
-	// something changed without recording what it changed from.
-	for _, want := range []string{"signature_policy", "required", "optional"} {
-		if !strings.Contains(change.Detail, want) {
-			t.Errorf("config-change Detail %q does not mention %q", change.Detail, want)
+	for path, want := range map[string]any{
+		audit.FieldRepositoryName: "nowhere",
+		audit.FieldRepositoryURL:  "http://127.0.0.1:1/",
+		audit.FieldOutcomeSuccess: false,
+		audit.FieldOutcomeReason:  "failed",
+	} {
+		if got, _ := added[0].Get(path); got != want {
+			t.Errorf("%s = %v, want %v", path, got, want)
 		}
+	}
+}
+
+// A repository removal is recorded, failed or not.
+func TestRepoRemoveIsRecorded(t *testing.T) {
+	app, _ := testApp(t)
+	url, fp := serveMinimalRepo(t, "medium")
+	rec := app.emitter.(*audit.Recorder)
+	if err := cmdRepoAdd(app, []string{"--anchor", fp, "--insecure", "medium", url}); err != nil {
+		t.Fatalf("repo add: %v", err)
+	}
+	if err := cmdRepoRemove(app, []string{"medium"}); err != nil {
+		t.Fatalf("repo remove: %v", err)
+	}
+	// A name no repository file can have fails the removal.
+	if err := cmdRepoRemove(app, []string{"../medium"}); err == nil {
+		t.Fatal("removing an invalid repository name succeeded")
+	}
+	removed := rec.OfType(audit.TypeRepositoryRemoved)
+	if len(removed) != 2 {
+		t.Fatalf("got %d peipkg.repository.removed records, want 2", len(removed))
+	}
+	for i, want := range []map[string]any{
+		{audit.FieldRepositoryName: "medium", audit.FieldOutcomeSuccess: true},
+		{audit.FieldRepositoryName: "../medium", audit.FieldOutcomeSuccess: false},
+	} {
+		for path, w := range want {
+			if got, _ := removed[i].Get(path); got != w {
+				t.Errorf("record %d: %s = %v, want %v", i, path, got, w)
+			}
+		}
+	}
+	if _, ok := removed[1].Get(audit.FieldOutcomeDetail); !ok {
+		t.Error("failed removal: no outcome.detail")
 	}
 }
 
@@ -325,8 +401,8 @@ func TestRepoAddEmitsNoConfigChangeWhenNothingChanged(t *testing.T) {
 	if err := add(); err != nil {
 		t.Fatalf("repo add (repeat): %v", err)
 	}
-	if n := countEvents(rec, audit.TypeConfigChange); n != 0 {
-		t.Errorf("an unchanged re-add emitted %d config-change events, want 0", n)
+	if n := countEvents(rec, audit.TypeRepositoryReconfigured); n != 0 {
+		t.Errorf("an unchanged re-add emitted %d reconfigured records, want 0", n)
 	}
 }
 

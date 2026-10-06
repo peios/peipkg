@@ -555,6 +555,10 @@ func TestLowTrustProvidesRaisesAuthorization(t *testing.T) {
 		plan.Authorizations[0].Kind != resolver.AuthLowTrustProvides {
 		t.Fatalf("expected one AuthLowTrustProvides, got %#v", plan.Authorizations)
 	}
+	// The audit record names the substitute.
+	if got := plan.Authorizations[0].Package; got != "postfix" {
+		t.Errorf("Authorization.Package = %q, want postfix", got)
+	}
 }
 
 func TestReplacesSupersedesInstalled(t *testing.T) {
@@ -662,6 +666,10 @@ func TestForeignReplacesRaisesAuthorization(t *testing.T) {
 		plan.Authorizations[0].Kind != resolver.AuthForeignReplaces {
 		t.Fatalf("expected one AuthForeignReplaces, got %#v", plan.Authorizations)
 	}
+	// The audit record names the successor.
+	if got := plan.Authorizations[0].Package; got != "nginx" {
+		t.Errorf("Authorization.Package = %q, want nginx", got)
+	}
 }
 
 func TestForeignReplacesStillRaisedAfterVictimUpgradeSelection(t *testing.T) {
@@ -706,6 +714,9 @@ func TestDowngradeRaisesAuthorization(t *testing.T) {
 	if len(plan.Authorizations) != 1 ||
 		plan.Authorizations[0].Kind != resolver.AuthDowngrade {
 		t.Fatalf("expected one AuthDowngrade, got %#v", plan.Authorizations)
+	}
+	if got := plan.Authorizations[0].Package; got != "libc" {
+		t.Errorf("Authorization.Package = %q, want libc", got)
 	}
 }
 

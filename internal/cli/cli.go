@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/peios/peipkg/internal/audit"
 	"github.com/peios/peipkg/internal/db"
@@ -115,7 +114,7 @@ func newApp(root string, in io.Reader, out, errOut io.Writer) *App {
 		reader:  bufio.NewReader(in),
 		out:     out,
 		errOut:  errOut,
-		emitter: audit.KMESEmitter{},
+		emitter: audit.NewKMESEmitter(),
 	}
 }
 
@@ -262,11 +261,10 @@ func (app *App) printf(format string, a ...any) {
 	fmt.Fprintf(app.out, format, a...)
 }
 
-// emit records an audit event for an operation (§7.6). It stamps the
-// event with the current time; emission is best-effort, so a failure
-// is reported as a warning, never raised as a fault.
+// emit records an audit event for an operation (§7.6). The record's time
+// is the KMES header's, stamped by the kernel. Emission is best-effort,
+// so a failure is reported as a warning, never raised as a fault.
 func (app *App) emit(ev audit.Event) {
-	ev.Timestamp = time.Now()
 	if err := app.emitter.Emit(ev); err != nil {
 		fmt.Fprintf(app.errOut, "peipkg: warning: audit emission failed: %v\n", err)
 	}

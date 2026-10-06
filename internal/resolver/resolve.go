@@ -179,7 +179,8 @@ func resolveCore(reqs []Request, installedByRoot map[string][]Installed, availab
 	for _, op := range plan.Operations {
 		if op.Kind == OpDowngrade {
 			auths = append(auths, Authorization{
-				Kind: AuthDowngrade,
+				Kind:    AuthDowngrade,
+				Package: op.Name,
 				Detail: fmt.Sprintf("%s would move backward from %s to %s",
 					op.Name, op.FromVersion, op.ToVersion),
 			})
@@ -468,7 +469,8 @@ func lowTrustProvidesAuthorization(idx candidateIndex, dep manifest.Dependency,
 	for _, c := range idx.byName[dep.Name] {
 		if c.RepoPriority < cand.RepoPriority && !dep.Constraint.Matches(c.Version) {
 			return &Authorization{
-				Kind: AuthLowTrustProvides,
+				Kind:    AuthLowTrustProvides,
+				Package: cand.Name,
 				Detail: fmt.Sprintf(
 					"dependency %q is satisfied by %q %s via `provides` from repository %q, "+
 						"shadowing %q %s from higher-priority repository %q whose version "+
@@ -548,7 +550,8 @@ func applyReplaces(world map[string]*worldPkg, auths *[]Authorization) {
 						p.name, p.candidate.Repo, p.candidate.RepoPriority,
 						r.Name, victim.installedRepo)
 				}
-				*auths = append(*auths, Authorization{Kind: AuthForeignReplaces, Detail: detail})
+				*auths = append(*auths, Authorization{Kind: AuthForeignReplaces,
+					Package: p.name, Detail: detail})
 			}
 		}
 	}
