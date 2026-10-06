@@ -16,3 +16,6 @@ description = "Peios live-system package manager"
 ":licenses/**"                          = "usr/share/licenses/dev.peios.peipkg/third-party"
 ":usr/bin/peipkg"                       = "usr/bin/peipkg"
 ":usr/share/man/man1/peipkg.1.gz"       = "usr/share/man/man1/peipkg.1.gz"
+# evman documentation for every event peipkg writes and every field it
+# defines (PGSS §6.10), the fragment owning the peipkg root.
+"@source:peipkg.evman"                  = "usr/share/evman/peipkg.evman"

@@ -1,0 +1,353 @@
+--- field object.package.name
+type: str
+
+The name of the package the event is about. A package's name is its
+identity across every repository that serves it (PSPU §5.3), so the same
+package from two repositories has the same value here;
+`source.repository.name` says which one an install drew from.
+
+A transaction that touches several packages writes one record for each, so
+every record names at most one package.
+
+--- field object.package.version
+type: str
+
+The version of the package an event is about: the version installed, the
+version an upgrade or downgrade moved to, or the version an uninstall
+removed. A version of PSPU §5.5, compared by PSPU §5.6.
+
+--- field object.package.version-previous
+type: str
+
+The version a package moved from, beside `object.package.version`, on an
+upgrade, downgrade or undo. Absent on a fresh install and on an uninstall,
+which replace no version.
+
+A `-previous` variant, which PGSS §6.4 permits without a definition. It is
+defined anyway so that the Events book generator, which does not apply that
+allowance, can resolve it.
+
+--- field object.package.architecture
+type: str
+
+The architecture of the package an event is about: an identifier of PSPU
+§5.8, such as `x86_64`, `aarch64` or `noarch`. `noarch` is a real
+architecture, not the absence of one. Absent when the plan did not carry
+one, as for a package being uninstalled.
+
+--- field source.repository.name
+type: str
+
+The repository a package was installed or upgraded from, by the name it is
+configured under. One transaction can draw from several repositories, which
+is why this is per package. It is how a bad install is traced back to the
+repository that served it.
+
+Absent when the package came from a local file, which is the only way an
+install or upgrade has no repository. An uninstall has no source and never
+carries it. The role is `source` because the repository is where the
+package came from; `object.repository.name` is the field for events about a
+repository itself.
+
+--- field object.repository.name
+type: str
+
+The repository the event is about, by the name it is configured under.
+The name is local configuration, not an identity: a repository is
+identified by its base URL, in `object.repository.url`, and two systems
+may call one repository by different names.
+
+--- field object.repository.url
+type: str
+
+The base URL of the repository the event is about, which is what
+identifies it (PSPU §5.36). An HTTPS URL unless the repository was
+given an insecure-transport allowance, so an `http:` value here marks a
+repository whose indexes are fetched without transport security.
+
+--- field object.claim.role
+type: str
+
+The role a claim event changed the holder of. A role is a virtual name
+that several installed packages may contend to own on the filesystem,
+with at most one holding it at a time (PSPU §5.23).
+
+--- field object.claim.holder
+type: str
+
+The package that holds `object.claim.role` after the event, by name.
+Absent when the event left the role unheld, as revoking a claim does.
+
+--- event peipkg.package.installed
+tier: essential
+gating: none — every installation is recorded
+cardinality: once per package a transaction installs; once per named package on a rejected request
+
+The record that peipkg installed a package, or tried to and failed. A
+transaction writes one record for each package its plan installs, whichever
+command ran it: an `upgrade` that pulls in a new dependency writes this
+event for the dependency, and undoing an uninstall writes it for the
+package restored. A request refused before any transaction opened writes
+one failed record for each package it named.
+
+Essential because a package installation changes what the system runs, and
+it is rare. Replaces `peipkg.install`, and the install half of
+`peipkg.transaction-failed`.
+
+field: subject.token.sid               required
+  The operator: the user SID of the token peipkg ran under. This is
+  peipkg's own word; the kernel-stamped `emitter.token.guid` is the
+  identity it cannot forge.
+field: transaction.id                  optional
+  The peipkg transaction, for every record of one transaction. Absent when
+  the request was refused before a transaction opened, or when a cross-root
+  transaction failed while preparing its roots. In a cross-root
+  transaction, the transaction of the root this package is installed in.
+field: object.package.name             optional
+  Absent only on a refused request that named no package.
+field: object.package.version          optional
+  The version installed. Absent on a refused request that named no version.
+field: object.package.architecture     optional
+field: source.repository.name          optional
+  Absent for an install from a local file.
+field: outcome.success                 required
+field: outcome.reason                  when outcome.success == false
+  values: stale | busy | denied | unowned | alternate-upgrade | unresolvable | untrusted | failed
+  closed: false
+  peipkg's stable error code for the failure, the one its driven mode
+  reports. Whether anything was rolled back follows from
+  `transaction.id`: a failure with one was rolled back, a failure without
+  one was refused before it began.
+field: outcome.detail                  optional
+  The error as peipkg reported it to the operator. Absent on success.
+
+--- event peipkg.package.upgraded
+tier: essential
+gating: none — every upgrade, downgrade and undo is recorded
+cardinality: once per package a transaction moves to another version; once per named package on a rejected request
+
+The record that peipkg moved an installed package to another version, or
+tried to and failed. A downgrade and an undo are recorded here too:
+comparing `object.package.version` with `object.package.version-previous`
+by PSPU §5.6 tells which way the package moved. A refused downgrade or undo
+is recorded here as well, with the version it asked for.
+
+Replaces `peipkg.upgrade`, and the upgrade half of
+`peipkg.transaction-failed`.
+
+field: subject.token.sid               required
+field: transaction.id                  optional
+  Absent when the request was refused before a transaction opened, or when
+  a cross-root transaction failed while preparing its roots.
+field: object.package.name             optional
+  Absent only on a refused request that named no package, such as an
+  upgrade of everything.
+field: object.package.version          optional
+  The version the package moved to.
+field: object.package.version-previous optional
+  The version it moved from. Absent on a refused request.
+field: object.package.architecture     optional
+field: source.repository.name          optional
+  Absent for an upgrade from a local file.
+field: outcome.success                 required
+field: outcome.reason                  when outcome.success == false
+  values: stale | busy | denied | unowned | alternate-upgrade | unresolvable | untrusted | failed
+  closed: false
+field: outcome.detail                  optional
+
+--- event peipkg.package.uninstalled
+tier: essential
+gating: none — every uninstallation is recorded
+cardinality: once per package a transaction removes; once per named package on a rejected request
+
+The record that peipkg removed a package, or tried to and failed. A
+transaction writes one record for each package its plan removes, including
+a package removed to resolve a conflict during an install, and a package
+removed by undoing its install.
+
+Replaces `peipkg.uninstall`, and the uninstall half of
+`peipkg.transaction-failed`.
+
+field: subject.token.sid               required
+field: transaction.id                  optional
+  Absent when the request was refused before a transaction opened.
+field: object.package.name             required
+field: object.package.version          optional
+  The version removed. Absent on a refused request.
+field: outcome.success                 required
+field: outcome.reason                  when outcome.success == false
+  values: stale | busy | denied | unowned | alternate-upgrade | unresolvable | untrusted | failed
+  closed: false
+field: outcome.detail                  optional
+
+--- event peipkg.claim.changed
+tier: standard
+gating: none
+cardinality: once per claim grant or revoke
+
+The record that peipkg granted a role to a package or revoked it, or tried
+to and failed. A grant names the new holder; a revoke leaves
+`object.claim.holder` out. A change the operator declines at the proceed
+prompt writes nothing.
+
+Replaces `peipkg.claim`.
+
+field: subject.token.sid               required
+field: transaction.id                  optional
+field: object.claim.role               required
+field: object.claim.holder             optional
+field: outcome.success                 required
+field: outcome.reason                  when outcome.success == false
+  values: stale | busy | denied | unowned | alternate-upgrade | unresolvable | untrusted | failed
+  closed: false
+field: outcome.detail                  optional
+
+--- event peipkg.repository.added
+tier: essential
+gating: none — every repository trust ceremony is recorded
+cardinality: once per repository add
+
+The record that peipkg added a repository and established trust in it, or
+tried to and failed. Adding a repository decides whose packages the system
+will install, which is why it is essential. A command refused before it
+names a base URL, such as `repo add <name>` for a repository with no
+configuration, writes nothing.
+
+Replaces `peipkg.repo-add`.
+
+field: subject.token.sid               required
+field: object.repository.name          required
+field: object.repository.url           required
+field: outcome.success                 required
+field: outcome.reason                  when outcome.success == false
+  values: stale | busy | denied | unowned | alternate-upgrade | unresolvable | untrusted | failed
+  closed: false
+field: outcome.detail                  optional
+  The error as peipkg reported it to the operator. Absent on success.
+
+--- event peipkg.repository.removed
+tier: essential
+gating: none — every repository removal is recorded
+cardinality: once per repository remove
+
+The record that peipkg removed a repository from its configuration and
+database, or tried to and failed. Removing a repository that is not
+configured succeeds.
+
+Replaces `peipkg.repo-remove`.
+
+field: subject.token.sid               required
+field: object.repository.name          required
+field: outcome.success                 required
+field: outcome.detail                  optional
+  The error as peipkg reported it to the operator. Absent on success.
+
+--- event peipkg.repository.reconfigured
+tier: essential
+gating: none — every trust-relevant change is recorded
+cardinality: once per changed setting
+
+The record that a repository add changed one of an existing repository's
+trust-relevant settings. One record for each setting that changed, written
+after the add's own `peipkg.repository.added`. The settings are
+`signature_policy`, `allow_insecure_transport`, `max_trusted_age_days`,
+`min_index_version`, `max_index_staleness_days` and `trust_anchors`.
+
+Only a change made through the flags of `repo add` is seen. An operator who
+edits the repository file directly and re-runs the ceremony leaves nothing
+to compare.
+
+Replaces `peipkg.config-change`.
+
+field: subject.token.sid               required
+field: object.repository.name          required
+field: config.name                     required
+  The setting's name as written in the repository file.
+field: config.text                     when config.name == signature_policy
+field: config.text-previous            when config.name == signature_policy
+field: config.value                    optional
+  The setting in force, for every setting except `signature_policy`: a
+  number of days or an index version as written, 0 for a setting left at
+  its default; 1 or 0 for `allow_insecure_transport`; for
+  `trust_anchors`, how many anchors are configured, so replacing one
+  anchor with another records equal counts.
+field: config.value-previous           optional
+  The setting it replaced, in the same form as `config.value`.
+
+--- event peipkg.repository.refreshed
+tier: standard
+gating: none
+cardinality: once per refresh command
+
+The record that peipkg refreshed the metadata of its configured
+repositories. One refresh covers every repository it was asked to; a failure
+of one does not stop the others, so a refresh can partly succeed. A refresh
+that fails before it reaches any repository writes nothing.
+
+Replaces `peipkg.refresh`.
+
+field: subject.token.sid               required
+field: operation.succeeded-count       required
+  Repositories refreshed.
+field: operation.failed-count          required
+  Repositories whose refresh failed.
+field: outcome.success                 required
+  False when any repository failed to refresh.
+
+--- event peipkg.transaction.recovered
+tier: standard
+gating: none
+cardinality: once per run of peipkg recover
+
+The record that `peipkg recover` reconciled interrupted transactions,
+rolling back each one it found pending, or failed to. Every run writes it,
+one that found nothing to recover included. An automatic recovery at the
+start of an ordinary operation does not write it.
+
+Replaces `peipkg.recovery`.
+
+field: subject.token.sid               required
+field: operation.succeeded-count       required
+  Interrupted transactions rolled back, before the failure on a run that
+  failed. Zero when there were none.
+field: outcome.success                 required
+field: outcome.detail                  optional
+  The error, on a run that failed.
+
+--- event peipkg.action.authorised
+tier: essential
+gating: none — every authorisation is recorded
+cardinality: once per elevated action put to the operator, and once per stale repository proceeded with
+
+The record that the operator was asked to authorise an elevated action
+specifically, apart from the routine proceed prompt, and what they answered.
+`outcome.success` false means they declined. The routine prompt and its
+`--yes` never answer one of these. Asked about several actions, the
+operator answers them in turn, and the first refusal ends the questions.
+
+`stale-trust-state` and `stale-index` are answered by `--allow-stale`
+rather than a prompt, so they are only ever recorded as authorised: without
+the flag the command fails instead, and writes no record of this type.
+
+Replaces `peipkg.authorisation`.
+
+field: subject.token.sid               required
+field: operation.name                  required
+  values: low-trust-provides | foreign-replaces | downgrade | remove-modified-file | stale-trust-state | stale-index
+  closed: false
+  Which elevated action was put to the operator.
+field: object.package.name             optional
+  The package the action concerns: the package substituted by
+  `provides` for `low-trust-provides`, the successor for
+  `foreign-replaces`, the package moving backward for `downgrade`, and the
+  package being uninstalled for `remove-modified-file`.
+field: object.file.path                when operation.name == remove-modified-file
+  The modified file the uninstall would remove, as the package database
+  records it: absolute within the root peipkg operated on.
+field: object.repository.name          optional
+  The repository, for `stale-trust-state` and `stale-index`.
+field: outcome.success                 required
+  False when the operator declined. For `remove-modified-file`, keeping
+  the file and aborting the transaction both decline the removal.
+field: outcome.detail                  optional
+  The action as it was put to the operator.
