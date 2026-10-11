@@ -158,25 +158,40 @@ func candidateKey(c Candidate) string {
 }
 
 // pickBest returns the §4.2.4-preferred candidate, or nil for an empty
-// slice. Selection is a deterministic total order.
+// slice. First choose one revision per concrete package, then compare those
+// providers. A pairwise exception for same-name candidates alone would make
+// the ordering cyclic when an old native revision, its newer noarch revision
+// and another native provider all match the same role.
 func pickBest(matches []match, primaryArch, dependerRepo string, dependerPriority int) *Candidate {
 	if len(matches) == 0 {
 		return nil
 	}
+	byName := make(map[string]int)
+	providers := make([]match, 0, len(matches))
+	for _, candidate := range matches {
+		if i, ok := byName[candidate.cand.Name]; ok {
+			if morePreferred(candidate, providers[i], primaryArch, dependerRepo, dependerPriority) {
+				providers[i] = candidate
+			}
+		} else {
+			byName[candidate.cand.Name] = len(providers)
+			providers = append(providers, candidate)
+		}
+	}
 	best := 0
-	for i := 1; i < len(matches); i++ {
-		if morePreferred(matches[i], matches[best], primaryArch, dependerRepo, dependerPriority) {
+	for i := 1; i < len(providers); i++ {
+		if morePreferred(providers[i], providers[best], primaryArch, dependerRepo, dependerPriority) {
 			best = i
 		}
 	}
-	chosen := matches[best].cand
+	chosen := providers[best].cand
 	return &chosen
 }
 
 // morePreferred reports whether match a is preferred over b, applying
 // the §4.2.4 candidate-selection rules in order:
 //
-//   - Rule 1: an exact architecture match beats noarch.
+//   - Rule 1: between distinct providers, an exact architecture match beats noarch.
 //   - Rule 2: a candidate from the depending package's own repository
 //     beats a cross-repository candidate — but only when that repository
 //     is at least as high-priority as the cross-repository alternative.
@@ -194,9 +209,12 @@ func pickBest(matches []match, primaryArch, dependerRepo string, dependerPriorit
 // dependerRepo is empty when there is no depending package or its
 // repository is unknown; rule 2 is then inert.
 func morePreferred(a, b match, primaryArch, dependerRepo string, dependerPriority int) bool {
-	// Rule 1: architecture match.
-	if am, bm := a.cand.Architecture == primaryArch, b.cand.Architecture == primaryArch; am != bm {
-		return am
+	// Architecture chooses between providers, not between releases of one
+	// package. Within one name it breaks a version tie below.
+	if a.cand.Name != b.cand.Name {
+		if am, bm := a.cand.Architecture == primaryArch, b.cand.Architecture == primaryArch; am != bm {
+			return am
+		}
 	}
 	// Rule 2: bounded same-repository preference. It applies only when
 	// exactly one candidate is from the depender's repository, and only
@@ -236,6 +254,9 @@ func morePreferred(a, b match, primaryArch, dependerRepo string, dependerPriorit
 	if a.cand.Name == b.cand.Name {
 		if c := version.Compare(a.cand.Version, b.cand.Version); c != 0 {
 			return c > 0
+		}
+		if am, bm := a.cand.Architecture == primaryArch, b.cand.Architecture == primaryArch; am != bm {
+			return am
 		}
 	}
 	// Total-order tiebreaks.
