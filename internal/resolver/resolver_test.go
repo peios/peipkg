@@ -485,7 +485,7 @@ func opRepo(p resolver.Plan, name string) string {
 func TestSelectionRule2PrefersDependerRepo(t *testing.T) {
 	// app (repo "official", priority 10) depends on lib. lib is offered
 	// by "official" at 1.0-1 and by "extra" (equal priority) at 2.0-1.
-	// §4.2.4 rule 2: the depender's own repository wins over the higher
+	// peipkg TRM §4.3 rule 2: the depender's own repository wins over the higher
 	// version, because "official" is at least as high-priority as "extra".
 	app := cand(t, "app", "1.0-1", dep(t, "lib", ""))
 	libOfficial := cand(t, "lib", "1.0-1")
@@ -507,7 +507,7 @@ func TestSelectionRule2PrefersDependerRepo(t *testing.T) {
 
 func TestSelectionRule2BoundedByPriority(t *testing.T) {
 	// A low-priority depender does not pull its own repository's
-	// candidate over a higher-trust alternative: §4.2.4 rule 2 does not
+	// candidate over a higher-trust alternative: peipkg TRM §4.3 rule 2 does not
 	// apply when the depender's repo is lower-priority than the
 	// cross-repository candidate, so rule 3 selects the higher-priority
 	// repository instead.
@@ -535,7 +535,7 @@ func TestLowTrustProvidesRaisesAuthorization(t *testing.T) {
 	// package literally named smtp-server, but only at 1.0-1 — it fails
 	// the constraint. A lower-priority repo's postfix provides
 	// smtp-server 3.0-1. Choosing postfix shadows the official
-	// name-match, so §4.2.4 requires explicit operator authorisation.
+	// name-match, so peipkg TRM §4.3 requires explicit operator authorisation.
 	mailapp := cand(t, "mailapp", "1.0-1", dep(t, "smtp-server", ">= 2.0-1"))
 	smtpOfficial := cand(t, "smtp-server", "1.0-1") // "official", priority 10
 	postfix := cand(t, "postfix", "3.8-1")
@@ -793,7 +793,7 @@ func TestGoalViaProvidesTieBreaksOnPackageName(t *testing.T) {
 }
 
 // Two versions of one package providing the same role version tie on
-// every §4.2.4 rule; the newer package must win regardless of candidate
+// every peipkg TRM §4.3 rule; the newer package must win regardless of candidate
 // order. Found when a farm listing loregd_0.21.4 before loregd_0.21.5 kept
 // composing the older registryd provider.
 func TestProvidesTieBetweenVersionsOfOnePackagePrefersNewer(t *testing.T) {
@@ -885,7 +885,7 @@ func TestUpgradeDoesNotResolveViaProvides(t *testing.T) {
 	}
 }
 
-// §4.2.4 rule 2 scopes itself to "when the dependency is being resolved
+// peipkg TRM §4.3 rule 2 scopes itself to "when the dependency is being resolved
 // for a depending package D", with no restriction to packages being
 // newly installed. originRepo returned "" for a depender that was already
 // installed and had no chosen candidate, and morePreferred treats an
@@ -988,7 +988,7 @@ func TestNoarchDependerPrefersThePrimaryArchitecture(t *testing.T) {
 	}
 }
 
-// §4.2.4 rule 6's rationale: "Rule 6 guarantees the rules impose a total
+// peipkg TRM §4.3 rule 6's rationale: "Rule 6 guarantees the rules impose a total
 // order, so a resolution never depends on enumeration order."
 //
 // Two different versions of the same package matched through an

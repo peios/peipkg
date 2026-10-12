@@ -2,11 +2,12 @@
 // requested operations, the currently-installed packages, and the
 // packages available from configured repositories, it produces an
 // ordered plan of installs, upgrades, downgrades, and removals — or a
-// rejection explaining why none exists (PSD-009 §4.2).
+// rejection explaining why none exists (peipkg TRM, Resolution).
+// Candidate selection is documented in peipkg TRM §4.3, Candidate Selection.
 //
 // Resolve is a pure function: identical inputs yield an identical plan,
 // so a dry run matches the operation that would be applied (§4.2.7).
-// The algorithm is greedy and non-backtracking — it picks the §4.2.4
+// The algorithm is greedy and non-backtracking — it picks the peipkg TRM §4.3
 // best candidate for each dependency and never reconsiders. This is the
 // acceptable bootstrap resolver; the constraint model (real packages
 // plus virtual `provides` packages) is shaped so a backtracking solver
@@ -194,7 +195,7 @@ const (
 	// AuthLowTrustProvides marks a dependency satisfied via `provides`
 	// by a candidate from a lower-priority repository while a
 	// higher-priority repository offers a name-matching package that
-	// failed the dependency's version constraint (§4.2.4).
+	// failed the dependency's version constraint (peipkg TRM §4.3).
 	AuthLowTrustProvides AuthKind = iota
 	// AuthForeignReplaces marks a `replaces` succession (§4.1.5)
 	// declared by a package from a lower-priority repository against a
