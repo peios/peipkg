@@ -35,6 +35,7 @@ type ClaimDirective struct {
 // staged symlinks to create on disk, and the database row changes —
 // holders to set or clear and links to delete or insert (§4.4.4).
 type claimWork struct {
+	warnings       []string
 	fileOps        []fileOp
 	createdDirs    []string
 	stagedSymlinks []stagedSymlink
@@ -85,7 +86,7 @@ func planClaims(ctx context.Context, env Env, pins *pinnedDirs, plan resolver.Pl
 	if err != nil {
 		return claimWork{}, nil, err
 	}
-	return w, withdrawalWarnings(current, post, postInstalled), nil
+	return w, append(w.warnings, withdrawalWarnings(current, post, postInstalled)...), nil
 }
 
 // reconcileClaims diffs the desired link set (from postInstalled and the
@@ -153,9 +154,9 @@ func reconcileClaims(ctx context.Context, env Env, pins *pinnedDirs, plan resolv
 	}
 	sort.Strings(w.delHolders)
 
-	// Create and repoint both stage a fresh symlink; plannedOp makes the
-	// repoint a replace because the old link still occupies the path.
-	for _, l := range append(append([]claims.Link{}, recPlan.Create...), recPlan.Repoint...) {
+	// Changes that need materialisation stage a fresh symlink. An identical
+	// unowned link can instead be adopted; an existing claim is repointed.
+	for i, l := range append(append([]claims.Link{}, recPlan.Create...), recPlan.Repoint...) {
 		physical := filepath.Join(env.Root, l.Path)
 		staged := tempPath(physical, stagedMarker, txnID)
 		rememberCreatedDirs(pins, env.Root, filepath.Dir(staged), plannedDirs, &w.createdDirs)
@@ -169,6 +170,41 @@ func reconcileClaims(ctx context.Context, env Env, pins *pinnedDirs, plan resolv
 		fo, err := plannedOp(pins, physical, staged, txnID)
 		if err != nil {
 			return claimWork{}, err
+		}
+		if i < len(recPlan.Create) {
+			// A new claim path is not manager-owned. Apply the payload's
+			// unowned-content gate before planning any replacement. An
+			// existing claim repoint is already owned by the manager.
+			entry := archive.PayloadEntry{Type: archive.EntrySymlink, LinkTarget: target}
+			keep, _, err := unownedPolicy(ctx, env, fo.dir, post[l.Role], physical, l.Path, entry)
+			if err != nil {
+				return claimWork{}, err
+			}
+			fo.keepBackup = keep
+			if keep {
+				w.warnings = append(w.warnings, fmt.Sprintf(
+					"%s overwrote %s, which belonged to no package; the previous content is kept at %s",
+					post[l.Role], l.Path, fo.backupPath))
+			} else if fo.action == actionReplace {
+				owners, err := env.DB.FileOwners(ctx, l.Path)
+				if err != nil {
+					return claimWork{}, err
+				}
+				if len(owners) == 0 {
+					same, err := matchesPayload(fo.dir, filepath.Base(physical), entry)
+					if err != nil {
+						return claimWork{}, err
+					}
+					if same {
+						// Adopt without touching the inode. Keep the desired
+						// database row below, but no staged link or file op.
+						continue
+					}
+				}
+				// A package-owned path freed in this transaction still
+				// needs its swap, even when it is already the same link:
+				// resolveClaimOverRemoval must suppress the removal op.
+			}
 		}
 		// §5.23: each repoint of a holder swap is atomic, so no consumer
 		// of a claim path ever observes it absent. A create has nothing
@@ -562,7 +598,7 @@ func Claim(ctx context.Context, env Env, req ClaimRequest) (Result, error) {
 				"committing the claim failed"))
 	}
 
-	result := Result{TxnID: txnID}
+	result := Result{TxnID: txnID, Warnings: w.warnings}
 	result.Warnings = append(result.Warnings, discardBackups(w.fileOps)...)
 	return result, nil
 }
