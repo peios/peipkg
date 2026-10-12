@@ -97,8 +97,12 @@ func (app *App) authorize(auths []resolver.Authorization) bool {
 			granted = app.ask(map[string]any{"kind": "authorise", "text": a.Detail}) == "yes"
 		} else {
 			app.printf("\nthis operation requires elevated authorisation:\n  %s\n", a.Detail)
-			app.printf("authorise this specific action? [y/N] ")
-			granted = app.readConfirmation()
+			phrase := "authorise " + authAction(a.Kind) + " " + a.Package
+			app.printf("type %q to authorise this action (anything else refuses): ", phrase)
+			line, err := app.reader.ReadString('\n')
+			// Generic affirmatives must never satisfy an elevated gate.
+			// Require a complete line; EOF or a read failure is a refusal.
+			granted = err == nil && strings.TrimSpace(line) == phrase
 		}
 		// §7.6.6: the authorising act and what it authorised are
 		// recorded in the audit stream, and so is a refusal: the operator
