@@ -128,7 +128,7 @@ func cmdInit(args []string) error {
 	}
 	fmt.Printf("initialised repository %q at %s\n", *name, dir)
 	fmt.Printf("  trust anchor: %s\n",
-		groupFingerprint(signature.Fingerprint(key.Public().(ed25519.PublicKey))))
+		signature.GroupFingerprint(signature.Fingerprint(key.Public().(ed25519.PublicKey))))
 	fmt.Printf("\nDistribute that fingerprint out of band: a consumer supplies it when adding\n" +
 		"the repository, and it is the only thing standing between them and a substituted\n" +
 		"descriptor (PSD-009 §6.5.2).\n")
@@ -294,21 +294,4 @@ func parseTimestamp(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("%w: timestamp %q: %v", errUsage, s, err)
 	}
 	return t.UTC(), nil
-}
-
-// groupFingerprint renders a fingerprint in four-character groups, the
-// form §6.5.2 requires when a fingerprint is shown for a human to
-// compare against one they hold. Printing it here means the operator
-// distributing the anchor and the consumer confirming it are looking at
-// the same shape.
-func groupFingerprint(fp string) string {
-	var b strings.Builder
-	for i := 0; i < len(fp); i += 4 {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		end := min(i+4, len(fp))
-		b.WriteString(fp[i:end])
-	}
-	return b.String()
 }

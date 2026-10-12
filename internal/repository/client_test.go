@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -201,14 +202,52 @@ func TestClientAddCacheFailureDoesNotRecordRepository(t *testing.T) {
 
 func TestClientAddRejectsUntrustedAnchor(t *testing.T) {
 	pub, priv := keypair(t)
+	otherPub, _ := keypair(t)
 	wrongAnchor, _ := keypair(t)
-	client := repository.NewClient(
-		publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline)), newTestStore(t), t.TempDir())
-
+	fetcher := publishRepo(t, pub, priv, 5, indexGeneratedAt(generatedBaseline))
+	var descriptor map[string]any
+	if err := json.Unmarshal(fetcher[testRepoBase+"/repo.json"], &descriptor); err != nil {
+		t.Fatal(err)
+	}
+	signing := descriptor["repo"].(map[string]any)["signing"].(map[string]any)
+	otherFP := signature.Fingerprint(otherPub)
+	signing["keys"] = append(signing["keys"].([]any), map[string]any{
+		"fingerprint": otherFP, "url": "/keys/" + otherFP + ".pub", "status": "active",
+	})
+	keys := signing["keys"].([]any)
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].(map[string]any)["fingerprint"].(string) < keys[j].(map[string]any)["fingerprint"].(string)
+	})
+	fetcher[testRepoBase+"/keys/"+otherFP+".pub"] = []byte(otherPub)
+	fetcher[testRepoBase+"/repo.json"] = mustJSON(t, descriptor)
+	fetcher[testRepoBase+"/repo.json.sig"] = detachedSig(priv, fetcher[testRepoBase+"/repo.json"])
+	store, cache := newTestStore(t), t.TempDir()
+	client := repository.NewClient(fetcher, store, cache)
 	cfg := testConfig(pub)
-	cfg.TrustAnchors = []string{signature.Fingerprint(wrongAnchor)}
-	if err := client.Add(t.Context(), cfg); err == nil {
-		t.Error("Add should fail when no signing key matches a trust anchor")
+	cfg.TrustAnchors = []string{signature.Fingerprint(wrongAnchor), strings.Repeat("a", 64)}
+	err := client.Add(t.Context(), cfg)
+	if err == nil {
+		t.Fatal("Add should fail when no signing key matches a trust anchor")
+	}
+	// Grouping is presentation only: both complete sets must remain visible.
+	for _, fp := range append(append([]string{}, cfg.TrustAnchors...), signature.Fingerprint(pub), otherFP) {
+		if !strings.Contains(strings.ReplaceAll(err.Error(), " ", ""), fp) {
+			t.Errorf("missing fingerprint %s in %v", fp, err)
+		}
+	}
+	if !strings.Contains(err.Error(), strings.Repeat("aaaa ", 15)+"aaaa") {
+		t.Errorf("fingerprints are not grouped for comparison: %v", err)
+	}
+	for _, label := range []string{"configured trust anchors:", "fetched key fingerprints (not yet trusted):"} {
+		if !strings.Contains(err.Error(), label) {
+			t.Errorf("missing label %q in %v", label, err)
+		}
+	}
+	if _, found, err := store.GetRepository(t.Context(), testRepoName); err != nil || found {
+		t.Fatalf("repository state after refusal: found=%v err=%v", found, err)
+	}
+	if entries, err := os.ReadDir(cache); err != nil || len(entries) != 0 {
+		t.Fatalf("cache after refusal: %v, %v", entries, err)
 	}
 }
 

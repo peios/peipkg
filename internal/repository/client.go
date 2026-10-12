@@ -12,6 +12,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/peios/peipkg/internal/config"
@@ -119,8 +121,18 @@ func (c *Client) Add(ctx context.Context, cfg config.RepoConfig) error {
 	// out-of-band — this is the trust bootstrap (§6.5.2).
 	anchorKeys := keysMatchingAnchors(keys, cfg.TrustAnchors)
 	if len(anchorKeys) == 0 {
+		anchors := make([]string, 0, len(cfg.TrustAnchors))
+		for _, fp := range cfg.TrustAnchors {
+			anchors = append(anchors, signature.GroupFingerprint(fp))
+		}
+		fetched := make([]string, 0, len(keys))
+		for fp := range keys {
+			fetched = append(fetched, signature.GroupFingerprint(fp))
+		}
+		sort.Strings(fetched)
 		return fmt.Errorf("peipkg/repository: no signing key of %q matches a configured "+
-			"trust anchor", cfg.Name)
+			"trust anchor\n  configured trust anchors: [%s]\n  fetched key fingerprints (not yet trusted): [%s]",
+			cfg.Name, strings.Join(anchors, "; "), strings.Join(fetched, "; "))
 	}
 	if err := VerifyDetached(descBytes, descSig, anchorKeys); err != nil {
 		return fmt.Errorf("peipkg/repository: descriptor for %q: %w", cfg.Name, err)
