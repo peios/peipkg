@@ -226,7 +226,8 @@ func withCode(code string, err error) error {
 //   - busy: another package operation holds the lock. Try again later.
 //   - denied: the operator may not do this.
 //   - unowned: a file that belongs to no package would be replaced.
-//     --overwrite-unowned proceeds, keeping the displaced copy.
+//     Move it aside and retry. For install, --overwrite-unowned also
+//     proceeds, keeping the displaced copy.
 //   - alternate-upgrade: a package declares that it is upgraded another
 //     way. --bypass-alternate-upgrade proceeds.
 //   - unresolvable: no plan satisfies the request.
