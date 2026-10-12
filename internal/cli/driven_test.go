@@ -277,6 +277,14 @@ func TestDrivenUpdatesAndDowngrade(t *testing.T) {
 		t.Fatalf("a refused downgrade changed the file: %q", got)
 	}
 
+	// The structured channel still authorises each separately identified question.
+	code, events = drive(t, root, `{"id":1,"answer":"yes"}`+"\n"+`{"id":2,"answer":"yes"}`+"\n", "downgrade", "widget", "1.0-1")
+	if code != 0 || !strings.Contains(kinds(events), "question:authorise question:proceed") {
+		t.Fatalf("approved downgrade: exit %d, %v", code, events)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "usr/bin/widget")); string(got) != "widget 1.0-1" {
+		t.Fatalf("approved downgrade did not apply: %q", got)
+	}
 }
 
 // TestQueryJSONShapes pins the query commands' JSON: snake_case names, and

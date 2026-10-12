@@ -222,21 +222,59 @@ func TestRepoList(t *testing.T) {
 	}
 }
 
-func TestAuthorizeRequiresExplicitYes(t *testing.T) {
-	auths := []resolver.Authorization{{Kind: resolver.AuthLowTrustProvides, Detail: "x"}}
-
-	// End-of-input is a refusal — --yes never reaches this gate.
+func TestAuthorizeRequiresSpecificAction(t *testing.T) {
+	for _, action := range []struct {
+		kind resolver.AuthKind
+		name string
+	}{
+		{resolver.AuthDowngrade, "downgrade"},
+		{resolver.AuthForeignReplaces, "foreign-replaces"},
+		{resolver.AuthLowTrustProvides, "low-trust-provides"},
+	} {
+		t.Run(action.name, func(t *testing.T) {
+			phrase := "authorise " + action.name + " app"
+			for _, tc := range []struct {
+				name, input string
+				want        bool
+			}{
+				{"eof", "", false},
+				{"generic-y", "y\ny\ny\n", false},
+				{"generic-yes", "yes\nyes\n", false},
+				{"wrong-package", "authorise " + action.name + " other\n", false},
+				{"wrong-action", "authorise install app\n", false},
+				{"unterminated", phrase, false},
+				{"explicit", phrase + "\n", true},
+				{"crlf", phrase + "\r\n", true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					out := &bytes.Buffer{}
+					app := newApp(t.TempDir(), strings.NewReader(tc.input), out, &bytes.Buffer{})
+					rec := &audit.Recorder{}
+					app.emitter = rec
+					if got := app.authorize([]resolver.Authorization{{Kind: action.kind, Package: "app", Detail: "specific action"}}); got != tc.want {
+						t.Errorf("authorize = %v, want %v", got, tc.want)
+					}
+					if !strings.Contains(out.String(), phrase) {
+						t.Errorf("prompt does not name the required phrase: %q", out.String())
+					}
+					recs := rec.OfType(audit.TypeActionAuthorised)
+					if len(recs) != 1 {
+						t.Fatalf("got %d audit records, want 1", len(recs))
+					}
+					for field, want := range map[string]any{
+						audit.FieldOperationName:  action.name,
+						audit.FieldPackageName:    "app",
+						audit.FieldOutcomeSuccess: tc.want,
+					} {
+						if got, _ := recs[0].Get(field); got != want {
+							t.Errorf("%s = %v, want %v", field, got, want)
+						}
+					}
+				})
+			}
+		})
+	}
 	app := newApp(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
-	if app.authorize(auths) {
-		t.Error("authorize should refuse on end-of-input")
-	}
-	// An explicit yes authorises the action.
-	app = newApp(t.TempDir(), strings.NewReader("y\n"), &bytes.Buffer{}, &bytes.Buffer{})
-	if !app.authorize(auths) {
-		t.Error("authorize should accept an explicit yes")
-	}
-	// With no elevated actions it is a no-op pass.
-	app = newApp(t.TempDir(), strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if !app.authorize(nil) {
 		t.Error("authorize should pass when there are no elevated actions")
 	}
@@ -570,7 +608,7 @@ func TestAuthorizeRecordsEveryAnswer(t *testing.T) {
 		{Kind: resolver.AuthForeignReplaces, Package: "fork", Detail: "fork replaces app"},
 		{Kind: resolver.AuthLowTrustProvides, Package: "sub", Detail: "sub provides dep"},
 	}
-	app := newApp(t.TempDir(), strings.NewReader("y\nn\ny\n"), &bytes.Buffer{}, &bytes.Buffer{})
+	app := newApp(t.TempDir(), strings.NewReader("authorise downgrade app\nn\nauthorise low-trust-provides sub\n"), &bytes.Buffer{}, &bytes.Buffer{})
 	rec := &audit.Recorder{}
 	app.emitter = rec
 	if app.authorize(auths) {

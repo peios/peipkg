@@ -2,6 +2,7 @@ package cli
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -475,7 +476,7 @@ func TestEndToEndDowngradeUndo(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// The downgrade's elevated authorisation reads one "y" from input.
+	// Generic affirmatives must not authorise the later downgrade, even with --yes.
 	out := &bytes.Buffer{}
 	app := newApp(t.TempDir(), strings.NewReader("y\n"), out, &bytes.Buffer{})
 	widgetPath := filepath.Join(app.paths.root, "usr/bin/widget")
@@ -489,6 +490,15 @@ func TestEndToEndDowngradeUndo(t *testing.T) {
 	if got, _ := os.ReadFile(widgetPath); string(got) != "widget v2" {
 		t.Fatalf("after install: content %q, want widget v2", got)
 	}
+
+	// --yes only approves the routine plan; a generic affirmative is refused.
+	if err := cmdDowngrade(app, []string{"widget", "1.0-1", "--yes"}); err != nil {
+		t.Fatalf("refused downgrade: %v", err)
+	}
+	if got, _ := os.ReadFile(widgetPath); string(got) != "widget v2" {
+		t.Fatalf("generic yes authorised downgrade: %q", got)
+	}
+	app.reader = bufio.NewReader(strings.NewReader("authorise downgrade widget\n"))
 
 	// Downgrade to the archived 1.0-1.
 	if err := cmdDowngrade(app, []string{"widget", "1.0-1", "--yes"}); err != nil {
