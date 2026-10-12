@@ -1002,6 +1002,7 @@ func availableSet(ctx context.Context, app *App, store *db.DB) (
 	var candidates []resolver.Candidate
 	for _, cfg := range repos {
 		configs[cfg.Name] = cfg
+		app.warnInsecureTransport(cfg)
 		idx, err := client.ActiveIndex(ctx, cfg.Name)
 		if err != nil {
 			return nil, nil, fmt.Errorf(

@@ -253,10 +253,10 @@ func TestDrivenUpdatesAndDowngrade(t *testing.T) {
 		t.Fatalf("refresh: %v", events)
 	}
 	code, events := drive(t, root, "", "upgrade", "--dry-run")
-	if code != 0 || kinds(events) != "plan done" || last(t, events)["summary"] != "dry run" {
+	if code != 0 || kinds(events) != "warning plan done" || last(t, events)["summary"] != "dry run" {
 		t.Fatalf("dry-run upgrade: exit %d, %v", code, events)
 	}
-	op := events[0]["operations"].([]any)[0].(map[string]any)
+	op := events[1]["operations"].([]any)[0].(map[string]any)
 	if op["kind"] != "upgrade" || op["from"] != "1.0-1" || op["to"] != "2.0-1" || op["repository"] != "test" {
 		t.Errorf("update: %v", op)
 	}
@@ -267,11 +267,11 @@ func TestDrivenUpdatesAndDowngrade(t *testing.T) {
 	// A downgrade is an elevated action, asked on its own before
 	// proceed; refusing it ends the run without a proceed question.
 	_, events = drive(t, root, `{"id":1,"answer":"no"}`+"\n", "downgrade", "widget", "1.0-1")
-	if kinds(events) != "plan question:authorise cancelled" {
+	if kinds(events) != "warning plan question:authorise cancelled" {
 		t.Fatalf("refused authorisation: %s", kinds(events))
 	}
-	if auths := events[0]["authorisations"].([]any); len(auths) != 1 || auths[0] != events[1]["text"] {
-		t.Errorf("the plan's authorisations and the question differ: %v / %v", auths, events[1])
+	if auths := events[1]["authorisations"].([]any); len(auths) != 1 || auths[0] != events[2]["text"] {
+		t.Errorf("the plan's authorisations and the question differ: %v / %v", auths, events[2])
 	}
 	if got, _ := os.ReadFile(filepath.Join(root, "usr/bin/widget")); string(got) != "widget 2.0-1" {
 		t.Fatalf("a refused downgrade changed the file: %q", got)
