@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +55,9 @@ func claimProvide(t *testing.T, p testPkg, provides, deps []any) install.Provide
 		payload = append(payload, archive.PayloadEntry{
 			Path: path, Type: archive.EntryFile,
 			Size: int64(len(content)), Hash: hex.EncodeToString(sum[:])})
+	}
+	for path, target := range p.symlinks {
+		payload = append(payload, archive.PayloadEntry{Path: path, Type: archive.EntrySymlink, LinkTarget: target})
 	}
 	pkg := &archive.Package{Manifest: decoded, ManifestJSON: js, Payload: payload}
 	return install.ProvidedPackage{Pkg: pkg, Archive: bytes.NewReader(archiveBytes(t, p))}
@@ -301,33 +306,41 @@ func TestClaimPathCollidesWithAPayloadInTheSameTransaction(t *testing.T) {
 // transaction that materialises the claim is legal, because the
 // post-transaction state has no collision.
 func TestClaimPathFreedByARemovalInTheSameTransaction(t *testing.T) {
-	ctx := t.Context()
-	store, root, lock := freshEnv(t)
+	for _, sameLink := range []bool{false, true} {
+		t.Run(fmt.Sprintf("same-target-symlink=%t", sameLink), func(t *testing.T) {
+			ctx := t.Context()
+			store, root, lock := freshEnv(t)
 
-	owner := testPkg{name: "otherd", version: "1.0-1",
-		files: map[string]string{"usr/sbin/registryd": "somebody else's binary"}}
-	env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
-		Provider: fakeProvider{"otherd": claimProvide(t, owner, nil, nil)}}
-	if _, err := install.Execute(ctx,
-		resolver.Plan{Operations: []resolver.Operation{installOp(t, "otherd", "1.0-1")}},
-		env); err != nil {
-		t.Fatalf("installing the owner: %v", err)
-	}
+			owner := testPkg{name: "otherd", version: "1.0-1",
+				files: map[string]string{"usr/sbin/registryd": "somebody else's binary"}}
+			if sameLink {
+				owner.files = nil
+				owner.symlinks = map[string]string{"usr/sbin/registryd": "loregd"}
+			}
+			env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test",
+				Provider: fakeProvider{"otherd": claimProvide(t, owner, nil, nil)}}
+			if _, err := install.Execute(ctx,
+				resolver.Plan{Operations: []resolver.Operation{installOp(t, "otherd", "1.0-1")}},
+				env); err != nil {
+				t.Fatalf("installing the owner: %v", err)
+			}
 
-	loregd := testPkg{name: "loregd", version: "1.0-1",
-		files: map[string]string{"usr/sbin/loregd": "the daemon"}}
-	env.Provider = fakeProvider{"loregd": claimProvide(t, loregd,
-		providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil)}
-	plan := resolver.Plan{Operations: []resolver.Operation{
-		{Kind: resolver.OpRemove, Name: "otherd", FromVersion: mustVer(t, "1.0-1")},
-		installOp(t, "loregd", "1.0-1"),
-	}}
-	if _, err := install.Execute(ctx, plan, env); err != nil {
-		t.Fatalf("the owner is removed in the same transaction, so there is no collision: %v", err)
-	}
-	if target, err := os.Readlink(filepath.Join(root, "usr/sbin/registryd")); err != nil ||
-		target != "loregd" {
-		t.Errorf("claim symlink: target %q err %v", target, err)
+			loregd := testPkg{name: "loregd", version: "1.0-1",
+				files: map[string]string{"usr/sbin/loregd": "the daemon"}}
+			env.Provider = fakeProvider{"loregd": claimProvide(t, loregd,
+				providesRole("registryd", "/usr/sbin/loregd", "/usr/sbin/registryd"), nil)}
+			plan := resolver.Plan{Operations: []resolver.Operation{
+				{Kind: resolver.OpRemove, Name: "otherd", FromVersion: mustVer(t, "1.0-1")},
+				installOp(t, "loregd", "1.0-1"),
+			}}
+			if _, err := install.Execute(ctx, plan, env); err != nil {
+				t.Fatalf("the owner is removed in the same transaction, so there is no collision: %v", err)
+			}
+			if target, err := os.Readlink(filepath.Join(root, "usr/sbin/registryd")); err != nil ||
+				target != "loregd" {
+				t.Errorf("claim symlink: target %q err %v", target, err)
+			}
+		})
 	}
 }
 
@@ -473,5 +486,138 @@ func TestClaimRepointNeverLeavesThePathAbsent(t *testing.T) {
 	}
 	if holder, found, _ := store.ClaimHolder(ctx, "registryd"); !found || holder != "altregd" {
 		t.Errorf("ClaimHolder: %q found=%v, want altregd", holder, found)
+	}
+}
+
+// PEI-1093: claim-only paths must preserve manually installed content just
+// like payload paths, for both package installation and explicit grants.
+func TestClaimUnownedPathPolicy(t *testing.T) {
+	for _, flow := range []string{"install", "grant"} {
+		for _, kind := range []string{"file", "symlink", "directory", "identical"} {
+			for _, overwrite := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/overwrite=%t", flow, kind, overwrite), func(t *testing.T) {
+					ctx := t.Context()
+					store, root, lock := freshEnv(t)
+					provider := testPkg{name: "loregd", version: "1.0-1", files: map[string]string{"usr/sbin/loregd": "daemon"}}
+					consumer := testPkg{name: "client", version: "1.0-1", files: map[string]string{"usr/bin/client": "client"}}
+					env := install.Env{Root: root, DB: store, LockPath: lock, PeipkgVersion: "test", Provider: fakeProvider{
+						"loregd": claimProvide(t, provider, providesRole("registryd", "/usr/sbin/loregd", ""), nil),
+						"client": claimProvide(t, consumer, nil, dependsRole("registryd", "/usr/sbin/registryd")),
+					}}
+					plan := resolver.Plan{Operations: []resolver.Operation{installOp(t, "loregd", "1.0-1"), installOp(t, "client", "1.0-1")}}
+					if flow == "grant" {
+						env.Claims.NoClaim = true
+						if _, err := install.Execute(ctx, plan, env); err != nil {
+							t.Fatal(err)
+						}
+						env.Claims.NoClaim = false
+					}
+					victim := filepath.Join(root, "usr/sbin/registryd")
+					if err := os.MkdirAll(filepath.Dir(victim), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					var err error
+					switch kind {
+					case "file":
+						err = os.WriteFile(victim, []byte("operator data"), 0o644)
+					case "symlink":
+						err = os.Symlink("operator-target", victim)
+					case "identical":
+						err = os.Symlink("loregd", victim)
+					case "directory":
+						if err = os.Mkdir(victim, 0o755); err == nil {
+							err = os.WriteFile(filepath.Join(victim, "saved"), []byte("operator data"), 0o644)
+						}
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					before, err := os.Lstat(victim)
+					if err != nil {
+						t.Fatal(err)
+					}
+					checkOriginal := func(path string) {
+						t.Helper()
+						if kind == "symlink" || kind == "identical" {
+							want := "operator-target"
+							if kind == "identical" {
+								want = "loregd"
+							}
+							got, err := os.Readlink(path)
+							if err != nil || got != want {
+								t.Fatalf("original link: %q, %v", got, err)
+							}
+						} else {
+							if kind == "directory" {
+								path = filepath.Join(path, "saved")
+							}
+							got, err := os.ReadFile(path)
+							if err != nil || string(got) != "operator data" {
+								t.Fatalf("original data: %q, %v", got, err)
+							}
+						}
+					}
+					env.OverwriteUnowned = overwrite
+					var result install.Result
+					if flow == "install" {
+						result, err = install.Execute(ctx, plan, env)
+					} else {
+						result, err = install.Claim(ctx, env, install.ClaimRequest{Role: "registryd", Holder: "loregd"})
+					}
+					backups, globErr := filepath.Glob(victim + ".peipkg-backup-*")
+					if globErr != nil {
+						t.Fatal(globErr)
+					}
+					if !overwrite && kind != "identical" {
+						var unowned *install.UnownedFileError
+						if !errors.As(err, &unowned) {
+							t.Fatalf("want unowned-file refusal, got %v", err)
+						}
+						checkOriginal(victim)
+						if len(backups) != 0 {
+							t.Fatalf("refused transaction left backups: %v", backups)
+						}
+						if links, err := store.ClaimLinks(ctx); err != nil || len(links) != 0 {
+							t.Fatalf("claim metadata changed: %v, %v", links, err)
+						}
+						if _, found, err := store.ClaimHolder(ctx, "registryd"); err != nil || found {
+							t.Fatalf("holder changed after refusal: %t, %v", found, err)
+						}
+						if flow == "install" {
+							if _, found, err := store.GetPackage(ctx, "loregd"); err != nil || found {
+								t.Fatalf("package committed after refusal: %t, %v", found, err)
+							}
+						}
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if target, err := os.Readlink(victim); err != nil || target != "loregd" {
+						t.Fatalf("claim target %q: %v", target, err)
+					}
+					if links, err := store.ClaimLinks(ctx); err != nil || len(links) != 1 {
+						t.Fatalf("claim metadata: %v, %v", links, err)
+					}
+					if kind == "identical" {
+						after, err := os.Lstat(victim)
+						if err != nil || !os.SameFile(before, after) {
+							t.Fatal("identical link must be adopted without replacement")
+						}
+						if len(backups) != 0 || len(result.Warnings) != 0 {
+							t.Fatalf("adoption left backups/warnings: %v, %v", backups, result.Warnings)
+						}
+					} else {
+						if len(backups) != 1 {
+							t.Fatalf("displaced content must survive commit: %v", backups)
+						}
+						checkOriginal(backups[0])
+						if !strings.Contains(strings.Join(result.Warnings, "\n"), backups[0]) {
+							t.Fatalf("warning must identify actual backup %s: %v", backups[0], result.Warnings)
+						}
+					}
+				})
+			}
+		}
 	}
 }
