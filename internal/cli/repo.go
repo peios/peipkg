@@ -42,6 +42,15 @@ func (app *App) warnUnsigned(cfg config.RepoConfig) {
 	}
 }
 
+// warnInsecureTransport keeps the configured transport allowance visible
+// on each operation, before any network or cache access can fail (§5.36).
+func (app *App) warnInsecureTransport(cfg config.RepoConfig) {
+	if cfg.AllowInsecureTransport {
+		fmt.Fprintf(app.errOut, "peipkg: warning: repository %q allows insecure transport; "+
+			"HTTPS is not required by its configuration (§5.36)\n", cfg.Name)
+	}
+}
+
 // cmdRepo dispatches the repo subcommands.
 func cmdRepo(app *App, args []string) error {
 	if len(args) == 0 {
@@ -166,6 +175,7 @@ func (app *App) addRepository(cfg config.RepoConfig, preconfigured bool) (*confi
 			return previous, err
 		}
 	}
+	app.warnInsecureTransport(cfg)
 	if err := app.repoClient(store).Add(ctx, cfg); err != nil {
 		// The trust ceremony failed; back out the configuration file so
 		// a half-added repository is not left behind.
@@ -438,6 +448,7 @@ func cmdRefresh(app *App, args []string) error {
 		if !known {
 			op = client.Add
 		}
+		app.warnInsecureTransport(cfg)
 		if err := op(ctx, cfg); err != nil {
 			fmt.Fprintf(app.errOut, "peipkg: refreshing %q failed: %v\n", cfg.Name, err)
 			failures++
