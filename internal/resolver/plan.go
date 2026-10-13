@@ -14,12 +14,12 @@ type removedPkg struct {
 	inst Installed
 }
 
-// buildPlan diffs the resolved world against the installed set and
-// orders the resulting operations: removals first — dependents before
-// their dependencies — then installs, upgrades, and downgrades —
-// dependencies before their dependents (§4.2.1). Operations carry their
-// target root; dependency ordering follows edges across roots, so a
-// cross-root dependency is sequenced before the dependent that needs it.
+// buildPlan diffs the resolved world against the installed set and orders the
+// resulting operations: removals first — dependents before their dependencies
+// — then installs, upgrades, and downgrades — dependencies before their
+// dependents (peipkg TRM §4.1). Operations carry their target root;
+// dependency ordering follows edges across roots, so a cross-root dependency
+// is sequenced before the dependent that needs it.
 func buildPlan(world map[string]*worldPkg, installedByRoot map[string][]Installed,
 	refToPath map[string]string, primaryArch string) (Plan, error) {
 
@@ -93,7 +93,7 @@ func orderForward(ops []Operation, world map[string]*worldPkg, refToPath map[str
 }
 
 // orderRemovals sorts removal operations so each package precedes the
-// packages it depended on (§4.2.1), across roots.
+// packages it depended on (peipkg TRM §4.1), across roots.
 func orderRemovals(removed []removedPkg, refToPath map[string]string,
 	primaryArch string) ([]Operation, error) {
 	byKey := make(map[string]removedPkg, len(removed))

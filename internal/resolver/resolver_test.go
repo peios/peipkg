@@ -428,7 +428,7 @@ func TestNoarchInstalls(t *testing.T) {
 }
 
 func TestNoarchDependsOnArchSpecific(t *testing.T) {
-	// §4.1.3: a noarch depender's effective architecture is the system's
+	// PSPU §5.21: a noarch depender's effective architecture is the system's
 	// primary architecture — its deps on arch-specific packages resolve
 	// like a native package's (the build-essentials / script→interpreter
 	// shape).
@@ -535,7 +535,7 @@ func TestLowTrustProvidesRaisesAuthorization(t *testing.T) {
 	// package literally named smtp-server, but only at 1.0-1 — it fails
 	// the constraint. A lower-priority repo's postfix provides
 	// smtp-server 3.0-1. Choosing postfix shadows the official
-	// name-match, so peipkg TRM §4.3 requires explicit operator authorisation.
+	// name-match, so peipkg TRM §3.7 requires explicit operator authorisation.
 	mailapp := cand(t, "mailapp", "1.0-1", dep(t, "smtp-server", ">= 2.0-1"))
 	smtpOfficial := cand(t, "smtp-server", "1.0-1") // "official", priority 10
 	postfix := cand(t, "postfix", "3.8-1")
@@ -562,7 +562,7 @@ func TestLowTrustProvidesRaisesAuthorization(t *testing.T) {
 }
 
 func TestReplacesSupersedesInstalled(t *testing.T) {
-	// nginx supersedes the renamed nginx-core (§4.1.5). Installing nginx
+	// nginx supersedes the renamed nginx-core (PSPU §5.21). Installing nginx
 	// removes nginx-core and installs nginx in its place.
 	nginx := cand(t, "nginx", "1.26-1")
 	nginx.Replaces = []manifest.Replaces{{Name: "nginx-core"}}
@@ -646,8 +646,8 @@ func TestLegacyUpgradeTraversesExplicitMigrationPackage(t *testing.T) {
 }
 
 func TestForeignReplacesRaisesAuthorization(t *testing.T) {
-	// A package from a low-priority repository replacing one installed
-	// from a higher-priority repository is an elevated action (§6.5.7).
+	// A package from a low-priority repository replacing one installed from a
+	// higher-priority repository is an elevated action (peipkg TRM §3.7).
 	nginx := cand(t, "nginx", "1.26-1")
 	nginx.Repo, nginx.RepoPriority = "extra", 50
 	nginx.Replaces = []manifest.Replaces{{Name: "nginx-core"}}
@@ -702,7 +702,8 @@ func TestForeignReplacesStillRaisedAfterVictimUpgradeSelection(t *testing.T) {
 }
 
 func TestDowngradeRaisesAuthorization(t *testing.T) {
-	// Moving a package backward is an elevated action (§7.2.5, §7.6.6).
+	// Moving a package backward is an elevated action (peipkg TRM §6.5,
+	// peipkg TRM §13.4).
 	plan, err := resolver.Resolve(
 		[]resolver.Request{{Kind: resolver.Downgrade, Name: "libc", Version: ver(t, "2.39-1")}},
 		[]resolver.Installed{inst(t, "libc", "2.40-1")},
@@ -721,7 +722,7 @@ func TestDowngradeRaisesAuthorization(t *testing.T) {
 }
 
 // A goal may name a role rather than a concrete package: nothing is named
-// "coreutils", but coreutils-gnu provides it (§4.2.3).
+// "coreutils", but coreutils-gnu provides it (peipkg TRM §4.2).
 func TestInstallGoalResolvesViaProvides(t *testing.T) {
 	gnu := cand(t, "coreutils-gnu", "9.9-1")
 	roleVer := ver(t, "9.9-1")
@@ -844,7 +845,7 @@ func TestGoalPrefersHigherRoleVersionOverNameMatch(t *testing.T) {
 	}
 }
 
-// An unversioned `provides` satisfies any constraint (§4.1.4) but asserts
+// An unversioned `provides` satisfies any constraint (PSPU §5.21) but asserts
 // no version, so it loses rule 4 to a provider that states one.
 func TestGoalPrefersVersionedProvidesOverUnversioned(t *testing.T) {
 	quiet := cand(t, "aaa-quiet", "1.0-1")
@@ -930,17 +931,17 @@ func TestSelectionRule2AppliesToAnInstalledDepender(t *testing.T) {
 	}
 }
 
-// §5.21: a depending package's effective architecture is its own when
+// PSPU §5.21: a depending package's effective architecture is its own when
 // arch-specific, and the system's primary architecture when the depender
 // is noarch.
 //
 // Skipping the architecture test outright for a noarch depender let any
-// architecture satisfy, foreign ones included. The foreign candidate
-// then entered the matching set, won on version, was placed, and was
-// caught only by checkConsistency — which rejects the *entire*
-// resolution. §4.2.5(1) permits failure only when no available package
-// satisfies, and a satisfying noarch candidate was available the whole
-// time (PEI-395).
+// architecture satisfy, foreign ones included. The foreign candidate then
+// entered the matching set, won on version, was placed, and was caught only
+// by checkConsistency — which rejects the *entire* resolution.
+// peipkg TRM §4.4 (Unsatisfiable) permits failure only when no available
+// package satisfies, and a satisfying noarch candidate was available the
+// whole time (PEI-395).
 func TestNoarchDependerResolvesAgainstThePrimaryArchitecture(t *testing.T) {
 	candidates := []resolver.Candidate{
 		{Name: "build-meta", Version: ver(t, "1.0-1"), Architecture: "noarch",
@@ -988,14 +989,13 @@ func TestNoarchDependerPrefersThePrimaryArchitecture(t *testing.T) {
 	}
 }
 
-// peipkg TRM §4.3 rule 6's rationale: "Rule 6 guarantees the rules impose a total
-// order, so a resolution never depends on enumeration order."
+// peipkg TRM §4.3 selects one revision per concrete package name before
+// comparing providers. Its rule 5 breaks equal role-version ties using
+// the package version, including when the provides entry is unversioned.
 //
-// Two different versions of the same package matched through an
-// *unversioned* provides tie on every rule above — a provides entry
-// carries the role's version, not the package's — and then on name and
-// on repository, so the winner was whichever the index enumerated first
-// (PEI-418).
+// Before that rule, different versions of one package matched through an
+// *unversioned* provides tied on role version, name and repository. The
+// winner was whichever the index enumerated first (PEI-418).
 func TestUnversionedProvidesDoesNotFallToEnumerationOrder(t *testing.T) {
 	provides := []manifest.Provides{{Name: "sh"}}
 	older := resolver.Candidate{Name: "foo", Version: ver(t, "1.0-1"),
@@ -1024,9 +1024,9 @@ func TestUnversionedProvidesDoesNotFallToEnumerationOrder(t *testing.T) {
 	}
 }
 
-// §5.37: an orphan's origin — a repository removed or revoked — counts
+// PSPU §5.37: an orphan's origin — a repository removed or revoked — counts
 // as at least as trusted as any configured one wherever a gate compares
-// priorities, so the §6.5.7 foreign-replaces gate still fires.
+// priorities, so the peipkg TRM §3.7 foreign-replaces gate still fires.
 //
 // Leaving an unresolvable origin zero-valued skipped the gate entirely,
 // so any newly added low-trust repository could declare `replaces`

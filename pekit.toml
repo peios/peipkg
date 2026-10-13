@@ -170,6 +170,7 @@ gate = true
 needs = ["main", "vendor"]
 command = '''
 set -eu
+python3 tools/check-resolver-citations.py
 SRC=$(pwd -P)
 BUILD="$PEKIT_OUT/test-build"
 rm -rf "$BUILD" "$PEKIT_OUT/gocache"

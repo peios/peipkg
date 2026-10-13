@@ -8,7 +8,7 @@ import (
 	"github.com/peios/peipkg/internal/resolver"
 )
 
-// depRoot builds a dependency placed in a named root (§4.1.1).
+// depRoot builds a dependency placed in a named root (PSPU §5.21).
 func depRoot(t *testing.T, name, constraint, root string) manifest.Dependency {
 	t.Helper()
 	d := dep(t, name, constraint)

@@ -14,12 +14,12 @@ import (
 // dependency naming `coreutils` is asking what coreutils each candidate
 // offers, and `coreutils-gnu 9.9` versus `peiosutils 0.4` is not a
 // comparison of anything. Ordering by the role version keeps rule 4
-// meaningful across distinct providers, and matches how §4.2 already
-// evaluates constraints ("the candidate's version, or when matched via
-// `provides`, the provides-entry's version").
+// meaningful across distinct providers, and matches how PSPU §5.21
+// evaluates constraints against the candidate's version for a name match
+// and the provides-entry's version for a provides match.
 //
 // roleVer is nil when the match came from an unversioned `provides`,
-// which satisfies any constraint (§4.1.4) but asserts no version. Such a
+// which satisfies any constraint (PSPU §5.21) but asserts no version. Such a
 // candidate carries no rule-4 information and orders below any candidate
 // that states one.
 type match struct {
@@ -71,10 +71,10 @@ func bestNamed(cands []Candidate, constraint version.Constraint, primaryArch str
 	return pickBest(matching, primaryArch, "", 0)
 }
 
-// bestForGoal returns the preferred candidate satisfying an install goal
-// for name, or nil if none does. A goal resolves by name or via a
-// `provides` entry, exactly as a dependency does (§4.2.3) — a goal naming
-// a role such as `sh` or `coreutils` is asking for whatever fills it.
+// bestForGoal returns the preferred candidate satisfying an install goal for
+// name, or nil if none does. A goal resolves by name or via a `provides`
+// entry, exactly as a dependency does (peipkg TRM §4.2) — a goal naming a
+// role such as `sh` or `coreutils` is asking for whatever fills it.
 //
 // There is no depending package, so peipkg TRM §4.3 rule 2 is inert.
 func bestForGoal(idx candidateIndex, name string, constraint version.Constraint,
@@ -93,7 +93,7 @@ func bestForGoal(idx candidateIndex, name string, constraint version.Constraint,
 		if m == nil {
 			return
 		}
-		// An unversioned `provides` satisfies any constraint (§4.1.4).
+		// An unversioned `provides` satisfies any constraint (PSPU §5.21).
 		if m.roleVer != nil && !constraint.Matches(*m.roleVer) {
 			return
 		}
@@ -268,7 +268,7 @@ func morePreferred(a, b match, primaryArch, dependerRepo string, dependerPriorit
 
 // installableArch reports whether a package of architecture arch may be
 // installed on a system whose primary architecture is primaryArch
-// (§2.3.4).
+// (PSPU §5.8).
 func installableArch(arch, primaryArch string) bool {
 	return arch == primaryArch || arch == archNoarch
 }
