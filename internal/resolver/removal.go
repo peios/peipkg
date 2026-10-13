@@ -7,9 +7,9 @@ import (
 	"github.com/peios/peipkg/internal/manifest"
 )
 
-// applyRemovals removes the requested packages and — under the cascade
-// policy — their now-broken dependents from the world (§4.2.6). targets
-// are world keys (root, name); a removal names one package in one root.
+// applyRemovals removes the requested packages and — under the cascade policy
+// — their now-broken dependents from the world (peipkg TRM §4.6). targets are
+// world keys (root, name); a removal names one package in one root.
 func applyRemovals(world map[string]*worldPkg, targets []string,
 	refToPath map[string]string, opts Options) error {
 

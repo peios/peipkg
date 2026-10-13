@@ -10,7 +10,7 @@ import (
 )
 
 // maxResolveSteps bounds the resolver's work against a pathological
-// dependency graph (§4.2.8). It is generous: a real transaction
+// dependency graph (peipkg TRM §4.4). It is generous: a real transaction
 // processes a few hundred packages.
 const maxResolveSteps = 100_000
 
@@ -51,13 +51,13 @@ type worldPkg struct {
 	// installed at in its root, or nil if it is not installed.
 	installedVersion *version.Version
 	// installedRepo and installedRepoPriority record the repository the
-	// package was installed from, for the §6.5.7 foreign-replaces gate;
-	// installedRepo is empty when the package is not installed or its
+	// package was installed from, for the peipkg TRM §3.7 foreign-replaces
+	// gate; installedRepo is empty when the package is not installed or its
 	// origin is unknown.
 	installedRepo         string
 	installedRepoPriority int
 	// installedOrphaned marks an installed package whose origin
-	// repository has been removed or revoked (§5.37).
+	// repository has been removed or revoked (PSPU §5.37).
 	installedOrphaned bool
 	// candidate is the chosen replacement, or nil if the package is left
 	// at its installed version.
@@ -84,11 +84,11 @@ func (p *worldPkg) originRepo() (repo string, priority int) {
 }
 
 // Resolve computes a single-root plan that brings the installed set to a
-// state satisfying the requests, or returns a rejection (§4.2). It is the
-// unchanged single-root entry point: every package lives in one root, and
-// a dependency's placement `root` field is inert (a single-root operation
-// has nowhere else to place a dependency). Existing callers are
-// unaffected; the resulting plan's operations all carry the empty root.
+// state satisfying the requests, or returns a rejection (peipkg TRM §4.1). It
+// is the unchanged single-root entry point: every package lives in one root,
+// and a dependency's placement `root` field is inert (a single-root operation
+// has nowhere else to place a dependency). Existing callers are unaffected;
+// the resulting plan's operations all carry the empty root.
 func Resolve(reqs []Request, installed []Installed, available []Candidate, opts Options) (Plan, error) {
 	return resolveCore(reqs, map[string][]Installed{"": installed}, available, nil, opts)
 }
@@ -97,7 +97,7 @@ func Resolve(reqs []Request, installed []Installed, available []Candidate, opts 
 // (DESIGN-named-roots.md → cross-root dependencies). installed is the
 // installed set of each participating root, keyed by the same opaque
 // root key the requests use (a resolved filesystem path in practice).
-// refToPath maps a dependency's named placement reference (§3.3.6) to the
+// refToPath maps a dependency's named placement reference (PSPU §5.19) to the
 // root key it resolves to; a dependency whose `root` names a reference
 // absent from refToPath is rejected as placed in an unregistered root.
 // available is the shared candidate set — v1 fetches every root's
@@ -175,7 +175,7 @@ func resolveCore(reqs []Request, installedByRoot map[string][]Installed, availab
 		return Plan{}, err
 	}
 	// A move backward to an older version is an elevated action the
-	// operator must explicitly authorise (§7.2.5, §7.6.6).
+	// operator must explicitly authorise (peipkg TRM §6.5, peipkg TRM §13.4).
 	for _, op := range plan.Operations {
 		if op.Kind == OpDowngrade {
 			auths = append(auths, Authorization{
@@ -239,9 +239,9 @@ func applyGoal(req Request, world map[string]*worldPkg, idx candidateIndex, opts
 		if _, ok := world[key]; ok {
 			return []string{key}, nil // already present in this root; just resolve its deps
 		}
-		// An install goal resolves by name or via `provides` (§4.2.3), so a
-		// goal may name a role — `sh`, `cc`, `coreutils` — rather than a
-		// concrete package.
+		// An install goal resolves by name or via `provides`
+		// (peipkg TRM §4.2), so a goal may name a role — `sh`, `cc`,
+		// `coreutils` — rather than a concrete package.
 		cand := bestForGoal(idx, req.Name, version.Constraint{}, opts.PrimaryArch)
 		if cand == nil {
 			return nil, &Rejection{Reason: ReasonUnsatisfiable,
@@ -324,7 +324,7 @@ func placeCandidate(world map[string]*worldPkg, cand *Candidate, root string) {
 }
 
 // resolveForward greedily satisfies the dependencies of every package
-// reachable from the goals, adding candidates as needed (§4.2). A
+// reachable from the goals, adding candidates as needed (peipkg TRM §4.1). A
 // dependency is satisfied and placed in the root routeRoot selects — the
 // depender's root by default, or the root its `root` field names.
 func resolveForward(world map[string]*worldPkg, idx candidateIndex, goals []string,
@@ -404,7 +404,7 @@ func worldSatisfiesInRoot(world map[string]*worldPkg, dep manifest.Dependency,
 }
 
 // effectiveArch is a package's architecture for resolution purposes
-// (§5.21): its own when arch-specific, and the system's primary
+// (PSPU §5.21): its own when arch-specific, and the system's primary
 // architecture when it is noarch. A noarch package's payload is
 // architecture-independent, but its resolution context is not.
 func effectiveArch(arch, primaryArch string) string {
@@ -415,27 +415,27 @@ func effectiveArch(arch, primaryArch string) string {
 }
 
 // satisfies reports whether a package — described by its name, version,
-// architecture, and provides — satisfies dep for a depender of
-// architecture dependerArch (§4.2.3). The caller restricts the candidate
-// to the dependency's target root; satisfaction within that root is what
-// this checks.
+// architecture, and provides — satisfies dep for a depender of architecture
+// dependerArch (peipkg TRM §4.2). The caller restricts the candidate to the
+// dependency's target root; satisfaction within that root is what this
+// checks.
 func satisfies(name string, ver version.Version, arch string, provides []manifest.Provides,
 	dep manifest.Dependency, dependerArch, primaryArch string) bool {
 
-	// §4.1.3/§5.21: the satisfier's architecture must be noarch or equal
+	// PSPU §5.21: the satisfier's architecture must be noarch or equal
 	// the depender's *effective* architecture — its own when
 	// arch-specific, and the system's primary architecture when the
 	// depender is noarch.
 	//
-	// Skipping the test outright for a noarch depender let any
-	// architecture satisfy, a foreign one included. That candidate then
-	// entered the matching set, could win rules 1-6, was placed, and was
-	// caught only by checkConsistency — which rejects the *entire*
-	// resolution. §4.2.5(1) permits failure only when no available
-	// package satisfies, and §4.2.5(3) is a check on the proposed plan,
-	// not a licence to build a bad one and then reject it. A noarch
-	// depender with a noarch candidate available was failing outright
-	// because a foreign-arch candidate outranked it.
+	// Skipping the test outright for a noarch depender let any architecture
+	// satisfy, a foreign one included. That candidate then entered the
+	// matching set, could win rules 1-6, was placed, and was caught only by
+	// checkConsistency — which rejects the *entire* resolution.
+	// peipkg TRM §4.4 (Unsatisfiable) permits failure only when no available
+	// package satisfies, and peipkg TRM §4.4 (Architecture mismatch) is a
+	// check on the proposed plan, not a licence to build a bad one and then
+	// reject it. A noarch depender with a noarch candidate available was
+	// failing outright because a foreign-arch candidate outranked it.
 	if arch != archNoarch && effectiveArch(dependerArch, primaryArch) != archNoarch &&
 		arch != effectiveArch(dependerArch, primaryArch) {
 		return false
@@ -447,7 +447,7 @@ func satisfies(name string, ver version.Version, arch string, provides []manifes
 		if p.Name != dep.Name {
 			continue
 		}
-		// An unversioned provides satisfies any constraint (§4.1.4).
+		// An unversioned provides satisfies any constraint (PSPU §5.21).
 		if p.Version == nil || dep.Constraint.Matches(*p.Version) {
 			return true
 		}
@@ -455,11 +455,11 @@ func satisfies(name string, ver version.Version, arch string, provides []manifes
 	return false
 }
 
-// lowTrustProvidesAuthorization reports the peipkg TRM §4.3 elevated action, if
-// any, raised by choosing cand to satisfy dep: cand satisfies dep only
+// lowTrustProvidesAuthorization reports the peipkg TRM §3.7 elevated action,
+// if any, raised by choosing cand to satisfy dep: cand satisfies dep only
 // through a `provides` entry, and a higher-priority repository offers a
-// package whose name matches dep but whose version fails dep's
-// constraint. The operator must authorise such a substitution (§7.6.6).
+// package whose name matches dep but whose version fails dep's constraint.
+// The operator must authorise such a substitution (peipkg TRM §13.4).
 func lowTrustProvidesAuthorization(idx candidateIndex, dep manifest.Dependency,
 	cand *Candidate) *Authorization {
 
@@ -502,7 +502,7 @@ func dedupeAuthorizations(auths []Authorization) []Authorization {
 	return out
 }
 
-// applyReplaces enacts §4.1.5 succession within each root. A package being
+// applyReplaces enacts PSPU §5.21 succession within each root. A package being
 // installed or upgraded that declares a `replaces` entry matching a
 // package installed in the same root supersedes it: the replaced package
 // is dropped from the desired world, so the plan removes it and installs
@@ -510,10 +510,10 @@ func dedupeAuthorizations(auths []Authorization) []Authorization {
 // in one root has no bearing on a same-named package in another. A
 // succession driven by a package from a lower-priority repository than the
 // replaced package's origin is an elevated action requiring explicit
-// operator authorisation (§6.5.7).
+// operator authorisation (peipkg TRM §3.7).
 //
 // World keys are visited in sorted order so the authorizations are
-// produced deterministically (§4.2.7).
+// produced deterministically (peipkg TRM §4.1).
 func applyReplaces(world map[string]*worldPkg, auths *[]Authorization) {
 	var superseded []string
 	for _, key := range sortedKeys(world) {
@@ -531,7 +531,7 @@ func applyReplaces(world map[string]*worldPkg, auths *[]Authorization) {
 				continue
 			}
 			superseded = append(superseded, victimKey)
-			// §5.37: an orphan carries OrphanPriority, so this gate fires
+			// PSPU §5.37: an orphan carries OrphanPriority, so this gate fires
 			// for it like any other high-trust origin. Leaving an
 			// unresolvable origin zero-valued meant removing a repository
 			// *lowered* the protection on the packages it left behind.
@@ -546,7 +546,7 @@ func applyReplaces(world map[string]*worldPkg, auths *[]Authorization) {
 					detail = fmt.Sprintf(
 						"%q from repository %q (priority %d) replaces %q, which was installed "+
 							"from %q — a repository that is no longer configured, so its "+
-							"packages count as maximally trusted (§5.37)",
+							"packages count as maximally trusted (PSPU §5.37)",
 						p.name, p.candidate.Repo, p.candidate.RepoPriority,
 						r.Name, victim.installedRepo)
 				}

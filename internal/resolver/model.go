@@ -6,7 +6,7 @@
 // Candidate selection is documented in peipkg TRM §4.3, Candidate Selection.
 //
 // Resolve is a pure function: identical inputs yield an identical plan,
-// so a dry run matches the operation that would be applied (§4.2.7).
+// so a dry run matches the operation that would be applied (peipkg TRM §4.1).
 // The algorithm is greedy and non-backtracking — it picks the peipkg TRM §4.3
 // best candidate for each dependency and never reconsiders. This is the
 // acceptable bootstrap resolver; the constraint model (real packages
@@ -22,7 +22,7 @@ import (
 )
 
 // archNoarch is the architecture identifier of an architecture-
-// independent package (§2.3.3).
+// independent package (PSPU §5.8).
 const archNoarch = "noarch"
 
 // RequestKind is the kind of operation an operator requested.
@@ -70,27 +70,27 @@ type Candidate struct {
 
 	Repo string
 	// RepoPriority orders repositories; a lower number is higher
-	// priority (§6.5.5).
+	// priority (PSPU §5.37).
 	RepoPriority int
 
 	// DefaultRoot is the package's top-level placement preference
-	// (§3.3.6, DESIGN-named-roots.md), carried from the index entry so the
+	// (PSPU §5.19, DESIGN-named-roots.md), carried from the index entry so the
 	// CLI can route a top-level install to the named root. "" when the
 	// package expresses no preference. The resolver itself does not act on
 	// it — placement is a CLI concern, not a resolution one.
 	DefaultRoot string
 
 	// AlternateUpgrade is the package's alternate_upgrade declaration
-	// (§5.18), carried from the index entry so the CLI can refuse a
+	// (PSPU §5.18), carried from the index entry so the CLI can refuse a
 	// request naming the package or hold it back from an every-package
 	// upgrade. nil when the package declares none. The resolver itself
 	// does not act on it — the refusal is a CLI concern, not a
 	// resolution one.
 	AlternateUpgrade *manifest.AlternateUpgrade
 
-	// LicenseClass is the package's licence class (§3.3.6), carried from
+	// LicenseClass is the package's licence class (PSPU §5.18), carried from
 	// the index entry so a licence policy can be applied at planning time
-	// and the manifest's claim checked against it (§5.26 step 8).
+	// and the manifest's claim checked against it (PSPU §5.26 step 8).
 	// LicenseClassUnknown when the entry declares none.
 	LicenseClass manifest.LicenseClass
 
@@ -111,14 +111,14 @@ type Installed struct {
 
 	// Repo is the repository the package was installed from, and
 	// RepoPriority that repository's current priority — used to gate a
-	// §6.5.7 foreign `replaces`. Repo is empty when the origin is
+	// peipkg TRM §3.7 foreign `replaces`. Repo is empty when the origin is
 	// unknown: a local-file install, or an orphan.
 	Repo         string
 	RepoPriority int
 	// Orphaned marks a package whose originating repository is recorded
-	// but no longer configured — removed or revoked (§5.37).
+	// but no longer configured — removed or revoked (PSPU §5.37).
 	//
-	// An orphan is not a package with no origin. §5.37 requires an
+	// An orphan is not a package with no origin. PSPU §5.37 requires an
 	// unknown origin to count as *at least as trusted* as any configured
 	// one wherever a gate compares priorities, so that removing a
 	// repository cannot lower the protection on the packages it left
@@ -134,7 +134,7 @@ type Installed struct {
 }
 
 // OrphanPriority is the repository priority an orphaned package's origin
-// carries (§5.37). Priority orders ascending — a lower number is more
+// carries (PSPU §5.37). Priority orders ascending — a lower number is more
 // trusted — so this is below every configurable value, and every gate
 // that compares priorities therefore treats an orphan as at least as
 // trusted as anything currently configured, with no special case of its
@@ -144,14 +144,14 @@ const OrphanPriority = math.MinInt32
 // Options carries the system facts and per-transaction policy a
 // resolution depends on.
 type Options struct {
-	// PrimaryArch is the system's primary architecture (§2.3.4); a
+	// PrimaryArch is the system's primary architecture (PSPU §5.8); a
 	// planned package must be of this architecture or noarch.
 	PrimaryArch string
 	// AllowDowngrade permits a plan in which a package's version moves
-	// backward (§4.2.5(4)).
+	// backward (peipkg TRM §4.4, Version regression).
 	AllowDowngrade bool
 	// CascadeRemovals removes the dependents of a removed package; when
-	// false a removal blocked by dependents is rejected (§4.2.6).
+	// false a removal blocked by dependents is rejected (peipkg TRM §4.6).
 	CascadeRemovals bool
 }
 
@@ -187,7 +187,7 @@ type Operation struct {
 	Candidate *Candidate
 }
 
-// AuthKind identifies an elevated action that §7.6.6 requires the
+// AuthKind identifies an elevated action that peipkg TRM §13.4 requires the
 // operator to authorise with a deliberate, specific act.
 type AuthKind uint8
 
@@ -195,21 +195,21 @@ const (
 	// AuthLowTrustProvides marks a dependency satisfied via `provides`
 	// by a candidate from a lower-priority repository while a
 	// higher-priority repository offers a name-matching package that
-	// failed the dependency's version constraint (peipkg TRM §4.3).
+	// failed the dependency's version constraint (peipkg TRM §3.7).
 	AuthLowTrustProvides AuthKind = iota
-	// AuthForeignReplaces marks a `replaces` succession (§4.1.5)
+	// AuthForeignReplaces marks a `replaces` succession (PSPU §5.21)
 	// declared by a package from a lower-priority repository against a
-	// package installed from a higher-priority one (§6.5.7).
+	// package installed from a higher-priority one (peipkg TRM §3.7).
 	AuthForeignReplaces
 	// AuthDowngrade marks a plan operation that moves a package
-	// backward to an older version (§7.2.5, §7.6.6).
+	// backward to an older version (peipkg TRM §6.5, peipkg TRM §13.4).
 	AuthDowngrade
 )
 
-// Authorization is an elevated action in a resolved plan that the
-// operator MUST authorise with a deliberate, specific act before the
-// plan is applied (§7.6.6). The routine proceed-with-this confirmation
-// never satisfies it.
+// Authorization is an elevated action in a resolved plan that the operator
+// MUST authorise with a deliberate, specific act before the plan is applied
+// (peipkg TRM §13.4). The routine proceed-with-this confirmation never
+// satisfies it.
 type Authorization struct {
 	Kind AuthKind
 	// Package is the package the plan would install or move that raises
@@ -227,7 +227,7 @@ type NoticeKind uint8
 const (
 	// NoticeGoalViaProvides marks an install goal that no available
 	// package matched by name, satisfied instead by a package declaring
-	// the requested name in its `provides` (§4.2.3). Reported because
+	// the requested name in its `provides` (peipkg TRM §4.2). Reported because
 	// the operator asked for one name and got a package with another.
 	NoticeGoalViaProvides NoticeKind = iota
 )
@@ -244,11 +244,11 @@ type Notice struct {
 
 // Plan is a resolved, ordered sequence of operations: removals first
 // (dependents before their dependencies), then installs and upgrades
-// (dependencies before their dependents) — §4.2.1.
+// (dependencies before their dependents) — peipkg TRM §4.1.
 type Plan struct {
 	Operations []Operation
-	// Authorizations are elevated actions the plan contains that the
-	// operator must explicitly authorise before it is applied (§7.6.6).
+	// Authorizations are elevated actions the plan contains that the operator
+	// must explicitly authorise before it is applied (peipkg TRM §13.4).
 	Authorizations []Authorization
 	// Notices are resolution outcomes reported to the operator that do
 	// not gate applying the plan.

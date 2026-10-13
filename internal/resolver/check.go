@@ -7,7 +7,7 @@ import (
 	"github.com/peios/peipkg/internal/version"
 )
 
-// checkConsistency verifies the resolved world against the §4.2.5
+// checkConsistency verifies the resolved world against the peipkg TRM §4.4
 // failure conditions a greedy resolution can still leave: architecture
 // mismatch, an active conflict, and an unrequested version regression.
 // Conflicts and version checks are per-root: the same name in two roots
@@ -17,7 +17,8 @@ func checkConsistency(world map[string]*worldPkg, refToPath map[string]string, o
 	downgradeAllowed map[string]bool) error {
 	keys := sortedKeys(world)
 
-	// §4.2.5(3): every planned package must be installable here.
+	// peipkg TRM §4.4 (Architecture mismatch): every planned package must be
+	// installable here.
 	for _, key := range keys {
 		p := world[key]
 		if !installableArch(p.architecture, opts.PrimaryArch) {
@@ -27,9 +28,9 @@ func checkConsistency(world map[string]*worldPkg, refToPath map[string]string, o
 		}
 	}
 
-	// §4.2.5(2): no two packages in the same root may conflict. A
-	// conflicts entry carries no root and so is evaluated against the
-	// declaring package's own root — conflicts stay root-local.
+	// peipkg TRM §4.4 (Conflict): no two packages in the same root may
+	// conflict. A conflicts entry carries no root and so is evaluated against
+	// the declaring package's own root — conflicts stay root-local.
 	for _, ak := range keys {
 		a := world[ak]
 		for _, conflict := range a.conflicts {
@@ -51,11 +52,12 @@ func checkConsistency(world map[string]*worldPkg, refToPath map[string]string, o
 		}
 	}
 
-	// §4.2.5(1): every dependency in the final world must still be
-	// satisfied. The forward pass is greedy and may replace a package that
-	// satisfied an earlier edge when a later, tighter edge selects another
-	// version of the same package. Checking only while walking forward then
-	// allowed an internally inconsistent closure to escape as a valid plan.
+	// peipkg TRM §4.4 (Unsatisfiable): every dependency in the final world
+	// must still be satisfied. The forward pass is greedy and may replace a
+	// package that satisfied an earlier edge when a later, tighter edge
+	// selects another version of the same package. Checking only while
+	// walking forward then allowed an internally inconsistent closure to
+	// escape as a valid plan.
 	for _, key := range keys {
 		p := world[key]
 		for _, dep := range p.dependencies {
@@ -69,8 +71,9 @@ func checkConsistency(world map[string]*worldPkg, refToPath map[string]string, o
 		}
 	}
 
-	// §4.2.5(4): a package's version must not move backward unless the
-	// operator allowed it, transaction-wide or for that package.
+	// peipkg TRM §4.4 (Version regression): a package's version must not move
+	// backward unless the operator allowed it, transaction-wide or for that
+	// package.
 	if !opts.AllowDowngrade {
 		for _, key := range keys {
 			p := world[key]

@@ -66,3 +66,12 @@ required), Linux/amd64:
 
     go test ./...
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/peipkg ./cmd/peipkg-compose ./cmd/peipkg-repo
+
+Resolver comments and diagnostics qualify article references with `PSPU` or
+`peipkg TRM`. Check them without compiling (also run by the package test gate):
+
+    python3 tools/check-resolver-citations.py
+    python3 tools/check-resolver-citations.py --learn ../learn
+
+The optional learn checkout verifies that every cited article exists. Matching
+the cited article to the rule still requires review when a citation changes.

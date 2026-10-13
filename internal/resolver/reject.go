@@ -1,6 +1,6 @@
 package resolver
 
-// RejectReason categorises why a resolution produced no plan (§4.2.5).
+// RejectReason categorises why a resolution produced no plan (peipkg TRM §4.4).
 type RejectReason int
 
 const (
@@ -17,12 +17,12 @@ const (
 	// ReasonRemovalBlocked: a removal is blocked by dependents and
 	// cascade was not authorised.
 	ReasonRemovalBlocked
-	// ReasonTooComplex: resolution exceeded its work limit (§4.2.8).
+	// ReasonTooComplex: resolution exceeded its work limit (peipkg TRM §4.4).
 	ReasonTooComplex
 )
 
 // Rejection is a resolution failure. The spec requires the resolver to
-// report which condition failed and what was involved (§4.2.5); Reason
+// report which condition failed and what was involved (peipkg TRM §4.4); Reason
 // is the machine-readable condition and Detail the human explanation.
 type Rejection struct {
 	Reason RejectReason
