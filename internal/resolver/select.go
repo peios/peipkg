@@ -5,7 +5,7 @@ import (
 	"github.com/peios/peipkg/internal/version"
 )
 
-// match pairs a candidate with the version §4.2.4 rule 4 orders it by —
+// match pairs a candidate with the version peipkg TRM §4.3 rule 4 orders it by —
 // the *role* version, i.e. what this candidate offers for the name that
 // was asked for.
 //
@@ -76,7 +76,7 @@ func bestNamed(cands []Candidate, constraint version.Constraint, primaryArch str
 // `provides` entry, exactly as a dependency does (§4.2.3) — a goal naming
 // a role such as `sh` or `coreutils` is asking for whatever fills it.
 //
-// There is no depending package, so §4.2.4 rule 2 is inert.
+// There is no depending package, so peipkg TRM §4.3 rule 2 is inert.
 func bestForGoal(idx candidateIndex, name string, constraint version.Constraint,
 	primaryArch string) *Candidate {
 
@@ -113,7 +113,7 @@ func bestForGoal(idx candidateIndex, name string, constraint version.Constraint,
 // depending package, or nil if none does. A candidate may satisfy dep by
 // name or via a `provides` entry. dependerRepo and dependerPriority
 // identify the repository the depending package is itself being
-// installed from, for §4.2.4 rule 2; dependerRepo is empty when that
+// installed from, for peipkg TRM §4.3 rule 2; dependerRepo is empty when that
 // repository is unknown (an already-installed depender).
 func bestForDependency(idx candidateIndex, dep manifest.Dependency,
 	dependerArch, primaryArch, dependerRepo string, dependerPriority int) *Candidate {
@@ -157,7 +157,7 @@ func candidateKey(c Candidate) string {
 		"\x00" + c.Repo + "\x00" + c.URL + "\x00" + c.Hash
 }
 
-// pickBest returns the §4.2.4-preferred candidate, or nil for an empty
+// pickBest returns the peipkg TRM §4.3-preferred candidate, or nil for an empty
 // slice. First choose one revision per concrete package, then compare those
 // providers. A pairwise exception for same-name candidates alone would make
 // the ordering cyclic when an old native revision, its newer noarch revision
@@ -189,7 +189,7 @@ func pickBest(matches []match, primaryArch, dependerRepo string, dependerPriorit
 }
 
 // morePreferred reports whether match a is preferred over b, applying
-// the §4.2.4 candidate-selection rules in order:
+// the peipkg TRM §4.3 candidate-selection rules in order:
 //
 //   - Rule 1: between distinct providers, an exact architecture match beats noarch.
 //   - Rule 2: a candidate from the depending package's own repository

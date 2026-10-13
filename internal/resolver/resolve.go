@@ -65,7 +65,7 @@ type worldPkg struct {
 }
 
 // originRepo reports the repository this package came from and that
-// repository's priority, for §4.2.4 rule 2. Both are zero only when the
+// repository's priority, for peipkg TRM §4.3 rule 2. Both are zero only when the
 // package is neither installed nor being changed by this resolution.
 //
 // Rule 2 scopes itself to "when the dependency is being resolved for a
@@ -455,7 +455,7 @@ func satisfies(name string, ver version.Version, arch string, provides []manifes
 	return false
 }
 
-// lowTrustProvidesAuthorization reports the §4.2.4 elevated action, if
+// lowTrustProvidesAuthorization reports the peipkg TRM §4.3 elevated action, if
 // any, raised by choosing cand to satisfy dep: cand satisfies dep only
 // through a `provides` entry, and a higher-priority repository offers a
 // package whose name matches dep but whose version fails dep's
